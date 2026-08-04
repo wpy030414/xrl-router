@@ -79,7 +79,13 @@ pnpm build
 
 ### LLM 代理
 
-客户端请求 `/v1/messages`（Anthropic 格式）或 `/v1/chat/completions`（OpenAI 格式），网关根据模型别名解析到上游 Provider，进行协议转换后流式转发。仅支持流式响应。客户端消费端配置见 [CC Switch 消费端](#cc-switch-消费端)。
+客户端请求 `/v1/messages`（Anthropic 格式）或 `/v1/chat/completions`（OpenAI 格式），网关根据模型别名解析到上游 Provider，进行协议转换后流式转发。仅支持流式响应。
+
+**流式引擎架构**：handler.rs 是薄入口层（认证 + 请求体准备），核心逻辑委托给 stream.rs 的 `proxy_stream()` 函数完成路由解析、上游连接、密钥轮换和流式转发。
+
+**SSE 优化**：为避免客户端因等待上游响应（可能耗时数秒）而超时断开，passthrough 路径立即返回 HTTP Response（含 `:keepalive` 初始字节），后台 spawn 处理上游数据流。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳，确保连接存活。
+
+客户端消费端配置见 [CC Switch 消费端](#cc-switch-消费端)。
 
 ### 密钥池
 

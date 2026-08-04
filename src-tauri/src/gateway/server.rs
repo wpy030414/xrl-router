@@ -8,6 +8,7 @@ use crate::providers::ProviderRegistry;
 use anyhow::Result;
 use axum::http::HeaderValue;
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
@@ -30,6 +31,8 @@ pub struct AppState {
     pub provider_cooldowns: Arc<std::sync::RwLock<std::collections::HashMap<String, i64>>>,
     /// Plugin manager: tracks connected plugins and their delegated providers.
     pub plugins: PluginManager,
+    /// 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -67,6 +70,13 @@ impl AppState {
 
         let plugins = PluginManager::new(database.clone(), providers.providers_map());
 
+        // 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
+        // 复用后同一上游的后续请求无需重新 TCP+TLS 握手，减少首次响应延迟。
+        let http_client = crate::http::build_http_client()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build shared http client");
+
         Self {
             config,
             database,
@@ -80,6 +90,7 @@ impl AppState {
             failover_enabled,
             provider_cooldowns,
             plugins,
+            http_client,
         }
     }
 }

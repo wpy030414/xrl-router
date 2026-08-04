@@ -77,8 +77,10 @@ main.rs
             │    ├─ websocket.rs  (/ws 端点)
             │    └─ plugin.rs     (插件 REST + WS)
             └─ proxy/         LLM 代理核心
-                 ├─ handler.rs     三大入口: anthropic/openai/list_models + failover 双层循环
+                 ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~220 行)
+                 ├─ stream.rs      流式引擎核心: 路由 + 上游连接 + 密钥轮换 + 流式转发 (~530 行)
                  ├─ auth.rs        Service Key 验证
+                 ├─ quota.rs       5h/7d token 配额检查
                  ├─ route.rs       模型别名→上游 URL 解析 (resolve_route / resolve_route_candidates)
                  ├─ failover.rs    provider 级冷却表 (纯内存, 60s)
                  ├─ key_rotation.rs 密钥选取 + 健康反馈
@@ -135,25 +137,23 @@ main.rs
 [1] rate_limit_middleware ──── 令牌桶检查 (per Service Key)
   │
   ▼
-[2] proxy_anthropic_messages (handler.rs)
+[2] proxy_anthropic_messages / proxy_openai_chat (handler.rs)
   │
   ├─ 提取 x-api-key / Authorization: Bearer
   │
   ▼
-[3] verify_service_key (auth.rs) ──── Argon2 逐条校验
-  │  失败 → 401
-  │  成功 → ServiceKeyInfo { id, name, allowed_models, quota_5h, quota_7d }
+[3] authenticate_and_stream (handler.rs) ──── 认证 + 配额 + 请求体准备
+  │  verify_service_key → Argon2 逐条校验
+  │  check_quota → 5h/7d 滚动窗口用量聚合
+  │  allowed_models 白名单检查
+  │  预构造 body_anthropic / body_openai (translate)
+  │  失败 → 401/403/429
   │
   ▼
-[3a] check_quota (quota.rs) ──── 5h/7d 滚动窗口用量聚合 (usage_log)
-  │  limit>0 且 used>=limit → 429 (quota_error + retry-after)
+[4] proxy_stream (stream.rs) ──── 流式引擎核心
   │
   ▼
-[4] allowed_models 白名单 ──── 非空时必须在名单内
-  │  不匹配 → 403
-  │
-  ▼
-[5] resolve_route / resolve_route_candidates (route.rs)
+[4a] resolve_route / resolve_route_candidates (route.rs)
   │  failover_enabled=false → 仅主 provider (resolve_route, 历史行为)
   │  failover_enabled=true  → 全部候选 (同 display_name, 按 sort_order 排序,
   │                           按 provider_id 去重, 跳过离线插件 provider)
@@ -162,15 +162,15 @@ main.rs
   │  委托供应商 → 从 PluginManager 取实时 base_url
   │
   ▼
-[6] WebSearch 劫持判断 ──── websearch_hijack + has_websearch_tool
+[4b] WebSearch 劫持判断 ──── websearch_hijack + has_websearch_tool
   │  命中 → run_websearch_loop (websearch.rs) → 本地 Bing loop → SSE 返回
   │
   ▼
-[7] 协议转换 (translate/) ──── 同协议透传 / 异协议双向转换
+[4c] 协议转换 (translate/) ──── 同协议透传 / 异协议双向转换
   │  强制 stream=true, model=real_model_id
   │
   ▼
-[8] failover 双层重试循环 (handler.rs + key_rotation.rs + failover.rs)
+[4d] failover 双层重试循环 (stream.rs + key_rotation.rs + failover.rs)
   │  外层: 遍历 provider 候选 (冷却中的直接跳过)
   │  内层: pick_key_for() → round-robin, 跳过 Red/Yellow
   │  http::build_http_client() → 自动继承系统代理
@@ -183,13 +183,18 @@ main.rs
   │  无 winner: key 4xx 耗尽透传最后一次上游失败响应 / 无可用 key → 503
   │
   ▼
-[9] 流式转发
-  │  同协议: SniffStream (透传字节 + 后台解析 usage)
-  │  异协议: 逐 SSE chunk 解析 + translate_chunk + 重发
+[4e] 流式转发 (stream.rs 的 4 种分支)
+  │  同协议: spawn_passthrough() ──── 立即返回 Response + :keepalive 初始字节
+  │           └─ 后台 spawn 转发 + 15s keepalive 心跳
+  │           └─ 响应头: Cache-Control: no-cache, Connection: keep-alive, X-Accel-Buffering: no
+  │           └─ SniffStream (透传字节 + 后台解析 usage)
+  │  异协议: spawn_translate_openai_to_anthropic() / spawn_translate_anthropic_to_openai()
+  │           └─ 初始 keepalive 事件
+  │           └─ 逐 SSE chunk 解析 + translate_chunk + 重发
   │  120s chunk 间隔超时
   │
   ▼
-[10] 异步记录 usage_log ──── provider/model/key/service_key + token 用量
+[4f] 异步记录 usage_log ──── provider/model/key/service_key + token 用量
   │
   ▼
 SSE 流返回客户端
@@ -266,6 +271,7 @@ src/
 │  RateLimiter      令牌桶状态                       │
 │  PluginManager    插件连接状态                     │
 │  websearch_hijack AtomicBool                      │
+│  http_client      reqwest::Client (共享连接池)     │
 └───────────────────────────────────────────────────┘
 ```
 

@@ -20,7 +20,18 @@ src-tauri/src/                 后端 Rust
 ├── api/
 │   ├── router.rs              axum 路由表（build_admin_router / build_public_router）
 │   ├── handlers/*             管理 API 处理器（按实体分文件；install.rs 托管 /install 页面；data.rs 数据导出/导入/重置）
-│   └── proxy/*                LLM 代理核心（handler/auth/quota/route/failover/key_rotation/upstream/websearch/sniff/translate）
+│   └── proxy/*                LLM 代理核心
+│       ├── handler.rs         薄入口层：认证 + 请求体准备，委托 stream::proxy_stream()
+│       ├── stream.rs          流式引擎核心：路由解析 + 上游连接 + 密钥轮换 + 流式转发
+│       ├── auth.rs            Service Key 验证
+│       ├── quota.rs           5h/7d token 配额检查
+│       ├── route.rs           模型别名→上游 URL 解析
+│       ├── failover.rs        provider 级冷却表
+│       ├── key_rotation.rs    密钥选取 + 健康反馈
+│       ├── upstream.rs        上游错误转发
+│       ├── websearch.rs       Bing 劫持 loop
+│       ├── sniff.rs           SniffStream (透传+嗅探)
+│       └── translate/         协议转换
 ├── db/*                       SQLite 封装（mod.rs + schema.rs + 按实体分文件）
 ├── types/*                    数据结构定义（Provider/Model/ApiKey/Chat/Route/...）
 ├── providers/                 Provider 适配器（proxy 不经过它）
@@ -72,6 +83,13 @@ docs/                          文档（本目录）
 ### 代理只支持流式
 
 `api/proxy/handler.rs` 强制 `stream: true`。不要加非流式分支 ——Claude Code 等主流客户端始终流式，加非流式只会增加代码复杂度。
+
+### 代理代码组织
+
+- **handler.rs** 是薄入口层（~220 行）：提取 API key → authenticate_and_stream() → 委托 stream.rs
+- **stream.rs** 是流式引擎核心（~530 行）：路由解析 + 双循环重试 + 4 种流式分支 + SSE 优化
+- 新增代理逻辑时，应修改 stream.rs 而非 handler.rs
+- 修改认证/配额/请求体准备时，修改 handler.rs 的 authenticate_and_stream()
 
 ### 协议转换
 
@@ -166,7 +184,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**，即使用户描述�
 | 修改 install 页面 | `src-tauri/assets/install.html`（include_str! 编译进二进制）+ `docs/specs/spec-lan-deploy.md` 契约 |
 | 修改网关启动/监听 | `gateway/server.rs`（双 listener）+ `config.rs` |
 | 新增 DB 表/列 | `db/schema.rs`（追加迁移）、`db/mod.rs`（UPSERT 测试） |
-| 修改代理逻辑 | `api/proxy/handler.rs`（整个文件）、`api/proxy/translate/`、`http.rs`（代理配置） |
+| 修改代理逻辑 | `api/proxy/stream.rs`（流式引擎核心）、`api/proxy/handler.rs`（薄入口）、`api/proxy/translate/`、`http.rs`（代理配置） |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
 | 修改前端 | `src/main.ts`（MD3 导入模式）、`src/styles/global.css`（design tokens） |
 | 新增插件消息 | `plugin/types.rs`、`plugin/registry.rs` |

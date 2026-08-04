@@ -11,6 +11,7 @@ pub mod key_rotation;
 pub mod quota;
 pub mod route;
 pub mod sniff;
+pub mod stream;
 pub mod translate;
 pub mod upstream;
 pub mod websearch;
