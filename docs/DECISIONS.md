@@ -824,9 +824,10 @@ AGENTS.md 原 Non-Goal「不做国际化，中文即可」，2026-08 用户主�
 ### 决策
 
 1. **handler.rs 拆为薄入口层**（~250 行）：每个 handler 只负责提取 API key + 调用 `authenticate_and_stream()` + 委托 `stream::proxy_stream()`。`proxy_list_models` 保留不变（独立逻辑）。
-2. **新建 stream.rs 作为流式引擎核心**（~860 行）：`proxy_stream()` 接收已认证的 `StreamContext`，完成路由解析→WebSearch 劫持→双循环重试→错误处理→4 种流式分支。
-3. **SSE 即时响应**：passthrough 分支立即返回 Response（含 `:keepalive\n\n` 初始字节），后台 `tokio::spawn` 处理上游数据流。响应头补全 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳。translation 分支在 spawn 开头发送 keepalive 事件，追加 `X-Accel-Buffering: no`。
-4. **共享 HTTP client**：`AppState` 新增 `http_client: reqwest::Client` 字段，handler 使用 `state.http_client.clone()`（只复制 Arc，零成本），复用连接池和 TLS 缓存。
+2. **新建 stream.rs 作为流式引擎核心**（~550 行）：`proxy_stream()` 接收已认证的 `StreamContext`，完成路由解析→WebSearch 劫持→立即返回 Response（含 keepalive）→后台 spawn 双循环重试→错误处理→委托 forward.rs 流式转发。
+3. **新建 forward.rs 作为流式转发分支**（~350 行）：passthrough / O→A / A→O 三种流转发模式，在 spawn 内调用。
+4. **SSE 即时响应**：路由解析后立即返回 Response（含 `:keepalive\n\n` 初始字节），后台 `tokio::spawn` 处理上游连接+密钥轮换+流式转发。响应头补全 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳。上游错误通过 SSE error event 传达（而非 HTTP status code）。
+5. **共享 HTTP client**：`AppState` 新增 `http_client: reqwest::Client` 字段，handler 使用 `state.http_client.clone()`（只复制 Arc，零成本），复用连接池和 TLS 缓存。
 
 ### 原因
 
@@ -834,7 +835,7 @@ AGENTS.md 原 Non-Goal「不做国际化，中文即可」，2026-08 用户主�
 2. **修复超时**：客户端在毫秒级内收到首字节（keepalive 注释），不再因 8 秒上游等待而超时断开
 3. **修复缓冲**：正确的 SSE 响应头防止中间代理/客户端缓冲数据，token 逐字显示
 4. **减少延迟**：共享 HTTP client 复用连接池，同一上游的后续请求无需重新 TCP+TLS 握手
-5. **可维护性**：handler.rs 从 1371 行降到 ~250 行，stream.rs ~860 行，职责清晰
+5. **可维护性**：handler.rs 从 1371 行降到 ~250 行，stream.rs ~550 行 + forward.rs ~350 行，职责清晰
 
 ### 代价
 
@@ -846,6 +847,8 @@ AGENTS.md 原 Non-Goal「不做国际化，中文即可」，2026-08 用户主�
 | 文件 | 变化 |
 |------|------|
 | `gateway/server.rs` | AppState 添加 `http_client: reqwest::Client` |
-| `api/proxy/stream.rs` | **新建**：流式引擎核心（proxy_stream + 4 种流式分支 + SSE 修复） |
+| `api/proxy/stream.rs` | **新建**：流式引擎核心（路由解析 → 立即返回 Response → 后台 spawn 双循环 + 错误处理） |
+| `api/proxy/forward.rs` | **新建**：流式转发分支（passthrough / O→A / A→O） |
 | `api/proxy/handler.rs` | 1371→~250 行：薄入口 + authenticate_and_stream() |
-| `api/proxy/mod.rs` | 添加 `pub mod stream;` |
+| `api/proxy/upstream.rs` | **删除**：上游错误改为 SSE error event 传达 |
+| `api/proxy/mod.rs` | 添加 `pub mod stream;` + `pub mod forward;`，移除 `pub mod upstream;` |

@@ -1,11 +1,12 @@
 //! 代理层入口：Anthropic / OpenAI 格式互转 + 上游转发 + WebSearch 劫持。
 //!
-//! 三个 pub handler 在 `handler`；认证 / 路由解析 / 密钥轮换 / 上游错误
-//! 转发 / WebSearch 劫持分别下沉到 `auth` / `route` / `key_rotation` /
-//! `upstream` / `websearch`。`translate` / `sniff` 为既有子模块。
+//! 三个 pub handler 在 `handler`；认证 / 路由解析 / 密钥轮换 /
+//! WebSearch 劫持分别下沉到 `auth` / `route` / `key_rotation` /
+//! `websearch`。`translate` / `sniff` / `stream` / `forward` 为既有子模块。
 
 pub mod auth;
 pub mod failover;
+pub mod forward;
 pub mod handler;
 pub mod key_rotation;
 pub mod quota;
@@ -13,7 +14,6 @@ pub mod route;
 pub mod sniff;
 pub mod stream;
 pub mod translate;
-pub mod upstream;
 pub mod websearch;
 
 pub use handler::{proxy_anthropic_messages, proxy_list_models, proxy_openai_chat};

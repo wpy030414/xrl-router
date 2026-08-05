@@ -22,13 +22,13 @@ src-tauri/src/                 后端 Rust
 │   ├── handlers/*             管理 API 处理器（按实体分文件；install.rs 托管 /install 页面；data.rs 数据导出/导入/重置）
 │   └── proxy/*                LLM 代理核心
 │       ├── handler.rs         薄入口层：认证 + 请求体准备，委托 stream::proxy_stream()
-│       ├── stream.rs          流式引擎核心：路由解析 + 上游连接 + 密钥轮换 + 流式转发
+│       ├── stream.rs          流式引擎核心：路由解析 → 立即返回 Response → 后台 spawn 双循环
+│       ├── forward.rs         流式转发分支：passthrough / O→A / A→O
 │       ├── auth.rs            Service Key 验证
 │       ├── quota.rs           5h/7d token 配额检查
 │       ├── route.rs           模型别名→上游 URL 解析
 │       ├── failover.rs        provider 级冷却表
 │       ├── key_rotation.rs    密钥选取 + 健康反馈
-│       ├── upstream.rs        上游错误转发
 │       ├── websearch.rs       Bing 劫持 loop
 │       ├── sniff.rs           SniffStream (透传+嗅探)
 │       └── translate/         协议转换
@@ -89,8 +89,9 @@ docs/                          文档（本目录）
 ### 代理代码组织
 
 - **handler.rs** 是薄入口层（~250 行）：提取 API key → authenticate_and_stream() → 委托 stream.rs
-- **stream.rs** 是流式引擎核心（~860 行）：路由解析 + 双循环重试 + 4 种流式分支 + SSE 优化
-- 新增代理逻辑时，应修改 stream.rs 而非 handler.rs
+- **stream.rs** 是流式引擎核心（~550 行）：路由解析 → 立即返回 Response（含 keepalive）→ 后台 spawn 双循环重试 + 流式转发
+- **forward.rs** 是流式转发分支（~350 行）：passthrough / O→A / A→O 三种流转发模式
+- 新增代理逻辑时，应修改 stream.rs（路由/重试）或 forward.rs（流转发）而非 handler.rs
 - 修改认证/配额/请求体准备时，修改 handler.rs 的 authenticate_and_stream()
 
 ### 协议转换

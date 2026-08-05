@@ -121,7 +121,8 @@ data: [DONE]
 ## 实现位置
 
 - `src-tauri/src/api/proxy/handler.rs` - 薄入口层（认证 + 请求体准备）
-- `src-tauri/src/api/proxy/stream.rs` - 流式引擎核心（路由 + 上游连接 + 密钥轮换 + 流式转发）
+- `src-tauri/src/api/proxy/stream.rs` - 流式引擎核心（路由解析 → 立即返回 Response → 后台 spawn 双循环）
+- `src-tauri/src/api/proxy/forward.rs` - 流式转发分支（passthrough / O→A / A→O）
 - `src-tauri/src/api/proxy/auth.rs` - 认证
 - `src-tauri/src/api/proxy/quota.rs` - 配额检查
 - `src-tauri/src/api/proxy/route.rs` - 路由解析

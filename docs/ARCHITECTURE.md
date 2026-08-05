@@ -78,13 +78,13 @@ main.rs
             │    └─ plugin.rs     (插件 REST + WS)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~250 行)
-                 ├─ stream.rs      流式引擎核心: 路由 + 上游连接 + 密钥轮换 + 流式转发 (~860 行)
+                 ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn 双循环 (~550 行)
+                 ├─ forward.rs     流式转发分支: passthrough / O→A / A→O (~350 行)
                  ├─ auth.rs        Service Key 验证
                  ├─ quota.rs       5h/7d token 配额检查
                  ├─ route.rs       模型别名→上游 URL 解析 (resolve_route / resolve_route_candidates)
                  ├─ failover.rs    provider 级冷却表 (纯内存, 60s)
                  ├─ key_rotation.rs 密钥选取 + 健康反馈
-                 ├─ upstream.rs    上游错误转发
                  ├─ websearch.rs   Bing 劫持 loop
                  ├─ sniff.rs       SniffStream (透传+嗅探)
                  └─ translate/     协议转换

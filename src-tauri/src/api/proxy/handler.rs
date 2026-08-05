@@ -3,8 +3,8 @@
 //! handler 是薄入口层：提取 API key → authenticate_and_stream() → 委托给
 //! `stream::proxy_stream()` 完成路由解析、上游连接、密钥轮换、流式转发。
 //!
-//! 认证 / 路由 / 密钥轮换 / 上游错误转发 / WebSearch 劫持分别下沉到
-//! `auth` / `route` / `key_rotation` / `upstream` / `websearch`。
+//! 认证 / 路由 / 密钥轮换 / WebSearch 劫持分别下沉到
+//! `auth` / `route` / `key_rotation` / `websearch`。
 //! `translate` / `sniff` / `stream` 为既有子模块。
 
 use std::sync::Arc;

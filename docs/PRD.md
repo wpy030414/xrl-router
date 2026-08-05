@@ -110,12 +110,12 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-01 | **Provider CRUD** | `api/handlers/providers.rs` |
 | F-02 | **API Key CRUD + 密钥池轮询** | `api/handlers/keys.rs` + `keys/pool/` |
 | F-03 | **Service Key 认证（Argon2）** | `api/proxy/auth.rs` |
-| F-04 | **LLM 流式代理** | `api/proxy/handler.rs`（薄入口）+ `api/proxy/stream.rs`（流式引擎） |
+| F-04 | **LLM 流式代理** | `api/proxy/handler.rs`（薄入口）+ `api/proxy/stream.rs`（流式引擎）+ `api/proxy/forward.rs`（流式转发） |
 | F-05 | **Anthropic ↔ OpenAI 协议转换** | `api/proxy/translate/` |
 | F-06 | **模型别名** | `api/proxy/route.rs` |
 | F-07 | **密钥健康监控（红绿灯）** | `keys/pool/health.rs` |
 | F-08 | **桌面应用（Tauri 2）** | `src-tauri/` |
-| F-09 | **请求超时保护（60s 头 + 120s 流）** | `api/proxy/stream.rs` + `api/proxy/mod.rs` |
+| F-09 | **请求超时保护（60s 头 + 120s 流）** | `api/proxy/stream.rs` + `api/proxy/forward.rs` + `api/proxy/mod.rs` |
 | F-10 | **密钥轮询指针持久化** | `keys/pool/persistence.rs` |
 | F-11 | **AES-256-GCM 加密 Provider Key** | `crypto/mod.rs` |
 | F-12 | **令牌桶限流（60 req/min）** | `middleware/rate_limit.rs` |
@@ -153,7 +153,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-34 | **ConnectionStatus 绝对路径修复** | `ConnectionStatus.vue` |
 | F-35 | **局域网分发（install 页面 + 分发链接）** | `api/handlers/install.rs` + `assets/install.html` + `KeysView.vue` |
 | F-36 | **双 listener 分离监听（admin/public）** | `gateway/server.rs` + `api/router.rs` + `config.rs` |
-| F-37 | **故障转移（Provider Failover）** | `api/proxy/stream.rs`（双循环重试）+ `api/proxy/failover.rs`（冷却表）+ `api/proxy/route.rs`（候选解析） |
+| F-37 | **故障转移（Provider Failover）** | `api/proxy/stream.rs`（双循环重试）+ `api/proxy/forward.rs`（流式转发）+ `api/proxy/failover.rs`（冷却表）+ `api/proxy/route.rs`（候选解析） |
 | F-38 | **请求日志分页** | `api/handlers/stats.rs` + `db/usage.rs` + `StatsView.vue` |
 | F-39 | **国际化（zh-CN/en，前端 + 托盘菜单 + install 页）** | `src/i18n/` + `lib.rs` + `assets/install.html` |
 | F-40 | **主题跟随系统（light/dark/system）** | `theme.ts` |
