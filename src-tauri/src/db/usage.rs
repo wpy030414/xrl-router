@@ -47,12 +47,15 @@ impl super::Database {
         Ok(result)
     }
 
-    /// 指定 service key 在 5h / 7d 滚动窗口内已用的 tokens。
-    /// 只累计 5 分钟前的用量，保证流式请求尚未写库的尾巴不被漏计（窗口是近似的）。
+    /// 指定 service key 在 5h / 7d 固定窗口内已用的 tokens。
+    /// 窗口按 epoch 对齐（`now - now % window_secs`），与 quota.rs 的
+    /// `window_reset_ts` 保持一致，确保新窗口开始时用量归零。
     /// 返回 `(used_5h, used_7d)`；无记录时为 0。
     pub fn get_service_key_usage(&self, service_key_id: &str, now: i64) -> anyhow::Result<(i64, i64)> {
         const FIVE_HOURS: i64 = 5 * 3600;
         const SEVEN_DAYS: i64 = 7 * 86400;
+        let window_start_5h = now - (now % FIVE_HOURS);
+        let window_start_7d = now - (now % SEVEN_DAYS);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT
@@ -61,7 +64,7 @@ impl super::Database {
              FROM usage_log
              WHERE service_key_id = ?1"
         )?;
-        let row = stmt.query_row(rusqlite::params![service_key_id, now - FIVE_HOURS, now - SEVEN_DAYS], |row| {
+        let row = stmt.query_row(rusqlite::params![service_key_id, window_start_5h, window_start_7d], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })?;
         Ok(row)
@@ -333,7 +336,7 @@ mod tests {
         assert!(page4.is_empty());
     }
 
-    /// 5h / 7d 滚动窗口聚合：只有窗口内的行被计入，且两个窗口互不影响。
+    /// 5h / 7d 固定窗口聚合：只有当前窗口内的行被计入，跨窗口后用量归零。
     #[test]
     fn test_get_service_key_usage_windows() {
         let db = super::super::Database::open_in_memory().unwrap();
@@ -352,11 +355,11 @@ mod tests {
             .unwrap();
         };
 
-        // 5h 内（计入 5h + 7d）
+        // 当前 5h 窗口内（计入 5h + 7d）
         insert(now - 3600, 100);
-        // 5h~7d 之间（只计入 7d）
+        // 5h 窗口之前、7d 窗口之内（只计入 7d）
         insert(now - 6 * 3600, 200);
-        // 7d 外（两个窗口都不计入）
+        // 7d 窗口之外（两个窗口都不计入）
         insert(now - 8 * 86400, 400);
 
         let (used_5h, used_7d) = db.get_service_key_usage("sk1", now).unwrap();
@@ -366,5 +369,39 @@ mod tests {
         // 无记录 key 返回 0
         let (a, b) = db.get_service_key_usage("nobody", now).unwrap();
         assert_eq!((a, b), (0, 0));
+    }
+
+    /// 固定窗口语义：进入新窗口后，旧窗口的用量不再计入。
+    #[test]
+    fn test_get_service_key_usage_fixed_window_reset() {
+        let db = super::super::Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+
+        let insert = |ts: i64, tokens: i64| {
+            db.insert_usage_log(
+                ts,
+                "p1", "P1", "m1", "M1",
+                Some("pk1"), "PK", "pk-masked",
+                Some("sk1"), "SK", "sk-masked",
+                "/v1/messages",
+                tokens, 0, 10, true, None, 0,
+            )
+            .unwrap();
+        };
+
+        // 窗口边界 = 18000 的倍数。设在 36000 处有一个边界。
+        let boundary = 36_000i64;
+
+        // 上一个窗口（timestamp < boundary）插入 500 tokens
+        insert(boundary - 100, 500);
+
+        // 新窗口刚开始（boundary + 60），5h 用量应为 0
+        let (used_5h, _used_7d) = db.get_service_key_usage("sk1", boundary + 60).unwrap();
+        assert_eq!(used_5h, 0);
+
+        // 在新窗口内插入 200 tokens
+        insert(boundary + 300, 200);
+        let (used_5h, _) = db.get_service_key_usage("sk1", boundary + 600).unwrap();
+        assert_eq!(used_5h, 200);
     }
 }

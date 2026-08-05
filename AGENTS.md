@@ -50,7 +50,9 @@ src/                           前端 Vue 3
 ├── main.ts / App.vue / router.ts
 ├── api.ts                     REST 客户端（BASE_URL 硬编码为 http://localhost:19068，含 installApi）
 ├── ws.ts                      WebSocket 客户端（自动重连 3s）
-├── theme.ts                   明/暗主题（localStorage 持久化）
+├── theme.ts                   明/暗/跟随系统主题（localStorage 持久化，prefers-color-scheme 监听）
+├── i18n/                      自研 i18n：index.ts（t/setLocale/initI18n）+ zh-CN.ts / en.ts
+├── styles/global.css          全局样式（MD3 design tokens + [data-theme="dark"]）
 ├── views/*                    5 个页面（Providers/ProviderNew/Keys/Stats/Settings）
 ├── components/*               AppShell / ConnectionStatus / PluginRegisterDialog
 └── stores/*                   4 个 Pinia stores（providers/keys/models/dashboard）
@@ -86,8 +88,8 @@ docs/                          文档（本目录）
 
 ### 代理代码组织
 
-- **handler.rs** 是薄入口层（~220 行）：提取 API key → authenticate_and_stream() → 委托 stream.rs
-- **stream.rs** 是流式引擎核心（~530 行）：路由解析 + 双循环重试 + 4 种流式分支 + SSE 优化
+- **handler.rs** 是薄入口层（~250 行）：提取 API key → authenticate_and_stream() → 委托 stream.rs
+- **stream.rs** 是流式引擎核心（~860 行）：路由解析 + 双循环重试 + 4 种流式分支 + SSE 优化
 - 新增代理逻辑时，应修改 stream.rs 而非 handler.rs
 - 修改认证/配额/请求体准备时，修改 handler.rs 的 authenticate_and_stream()
 

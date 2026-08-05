@@ -120,10 +120,13 @@ data: [DONE]
 
 ## 实现位置
 
-- `src-tauri/src/api/proxy/handler.rs` - 主处理逻辑
+- `src-tauri/src/api/proxy/handler.rs` - 薄入口层（认证 + 请求体准备）
+- `src-tauri/src/api/proxy/stream.rs` - 流式引擎核心（路由 + 上游连接 + 密钥轮换 + 流式转发）
 - `src-tauri/src/api/proxy/auth.rs` - 认证
+- `src-tauri/src/api/proxy/quota.rs` - 配额检查
 - `src-tauri/src/api/proxy/route.rs` - 路由解析
 - `src-tauri/src/api/proxy/key_rotation.rs` - 密钥轮换
+- `src-tauri/src/api/proxy/failover.rs` - 故障转移冷却表
 - `src-tauri/src/api/proxy/translate/` - 协议转换
 
 ## 测试要求

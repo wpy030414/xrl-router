@@ -125,7 +125,7 @@ impl super::Database {
 mod tests {
     use super::*;
 
-    /// list_service_keys 应带回 5h/7d 滚动窗口已用量（与 get_service_key_usage 同口径）。
+    /// list_service_keys 应带回 5h/7d 固定窗口已用量（与 get_service_key_usage 同口径）。
     #[test]
     fn test_list_service_keys_includes_window_usage() {
         let db = crate::db::Database::open_in_memory().unwrap();

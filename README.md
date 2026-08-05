@@ -85,7 +85,7 @@ pnpm build
 
 **SSE 优化**：为避免客户端因等待上游响应（可能耗时数秒）而超时断开，passthrough 路径立即返回 HTTP Response（含 `:keepalive` 初始字节），后台 spawn 处理上游数据流。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳，确保连接存活。
 
-客户端消费端配置见 [CC Switch 消费端](#cc-switch-消费端)。
+客户端消费端配置见 [接入 CC Switch](#接入-cc-switch)。
 
 ### 密钥池
 

@@ -77,8 +77,8 @@ main.rs
             │    ├─ websocket.rs  (/ws 端点)
             │    └─ plugin.rs     (插件 REST + WS)
             └─ proxy/         LLM 代理核心
-                 ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~220 行)
-                 ├─ stream.rs      流式引擎核心: 路由 + 上游连接 + 密钥轮换 + 流式转发 (~530 行)
+                 ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~250 行)
+                 ├─ stream.rs      流式引擎核心: 路由 + 上游连接 + 密钥轮换 + 流式转发 (~860 行)
                  ├─ auth.rs        Service Key 验证
                  ├─ quota.rs       5h/7d token 配额检查
                  ├─ route.rs       模型别名→上游 URL 解析 (resolve_route / resolve_route_candidates)
