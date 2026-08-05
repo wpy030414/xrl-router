@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info, warn};
 
@@ -183,17 +183,40 @@ pub async fn proxy_stream(
         let trace_id = &trace_id_owned;
         let model_name = &model_name_owned;
 
-        // keepalive 心跳：上游等待期间每 15s 发一次
+        // ── keepalive 心跳 + 取消信号 ─────────────────────────────
+        // 心跳在后台单独 spawn：上游等待期间（可能数秒）每 15s 发一次
+        // `:keepalive` 注释，防止客户端超时断开。
+        //
+        // 关键：`tx` 必须唯一属于主任务。keepalive 任务只持有取消信号
+        // （oneshot）而不持有 tx clone —— 否则 mpsc 的 rx 侧永远等不到
+        // channel 关闭，HTTP 响应永不结束，客户端会一直 pending。
+        // 主任务任何路径结束时 Drop guard 触发 cancel，keepalive 随之
+        // 退出，rx 收到 channel 关闭信号 → 流干净收尾。
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         let keepalive_tx = tx.clone();
-        tokio::spawn(async move {
+        let keepalive_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(SSE_KEEPALIVE_SECS));
             loop {
-                interval.tick().await;
-                if keepalive_tx.send(Ok(Bytes::from(":keepalive\n\n"))).await.is_err() {
-                    break;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if keepalive_tx.send(Ok(Bytes::from(":keepalive\n\n"))).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = &mut cancel_rx => break,
                 }
             }
         });
+        struct CancelOnDrop(Option<oneshot::Sender<()>>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let _cancel_guard = CancelOnDrop(Some(cancel_tx));
+        let _keepalive_handle = keepalive_handle;
 
         // ── 双循环：外层 provider 候选，内层 key 轮换 ─────────────
         let mut body_anthropic = body_anthropic;
