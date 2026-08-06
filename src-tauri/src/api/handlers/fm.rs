@@ -12,10 +12,10 @@
 //!   ├─ locate(pos) → 当前曲目 + 曲内偏移
 //!   ├─ resolve_src() → paugram / 网易云外链
 //!   ├─ reqwest GET → CDN 字节流
-//!   └─ broadcast::send(Bytes) → 所有 /api/fm/live 订阅者
+//!   └─ broadcast::send(Bytes) → 所有 /fm/live 订阅者
 //! ```
 //!
-//! 前端只需一个 `<audio>` 标签挂在 `/api/fm/live`，像收音机一样收听永不关闭的直播流。
+//! 前端只需一个 `<audio>` 标签挂在 `/fm/live`，像收音机一样收听永不关闭的直播流。
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -80,7 +80,7 @@ const TOTAL_DURATION: u64 = 4306;
 /// 广播电台引擎（进程级单例）。
 ///
 /// 后台任务持续从 CDN 拉取音频字节并通过 `broadcast` 推送给所有订阅者。
-/// 所有 `/api/fm/live` 客户端共享同一数据源，一份 CDN 流量多人收听。
+/// 所有 `/fm/live` 客户端共享同一数据源，一份 CDN 流量多人收听。
 #[derive(Clone)]
 pub struct FmEngine {
     audio_tx: broadcast::Sender<Bytes>,
@@ -110,13 +110,13 @@ impl FmEngine {
         });
     }
 
-    /// 返回当前曲目元数据（供 `/api/fm/meta` 和 Tauri command 使用）。
+    /// 返回当前曲目元数据（供 `/fm/meta` 和 Tauri command 使用）。
     pub fn current_meta(&self) -> (&'static str, &'static str, usize) {
         let idx = self.track_index.load(Ordering::Relaxed) % TRACKS.len();
         (TRACKS[idx].artist, TRACKS[idx].title, idx)
     }
 
-    /// 订阅音频广播（供 `/api/fm/live` handler 使用）。
+    /// 订阅音频广播（供 `/fm/live` handler 使用）。
     pub fn subscribe(&self) -> broadcast::Receiver<Bytes> {
         self.audio_tx.subscribe()
     }
@@ -228,7 +228,7 @@ async fn engine_loop(
             }
         };
 
-        // 流式读取字节 → broadcast::send → 所有 /api/fm/live 订阅者。
+        // 流式读取字节 → broadcast::send → 所有 /fm/live 订阅者。
         let mut stream = resp.bytes_stream();
         let mut chunk_err = false;
 
@@ -283,7 +283,7 @@ async fn resolve_src(client: &reqwest::Client, id: u64) -> Option<String> {
 
 // ── HTTP handlers ────────────────────────────────────────────────────────────
 
-/// GET /api/fm/live — 永不关闭的直播音频流（HTTP chunked）。
+/// GET /fm/live — 永不关闭的直播音频流（HTTP chunked）。
 ///
 /// 客户端（前端 `<audio>` 标签）挂上此端点即开始收听。
 /// 所有客户端共享同一 `broadcast` 通道，一份 CDN 数据多人收听。
@@ -317,9 +317,9 @@ pub(crate) struct FmMetaResponse {
     index: usize,
 }
 
-/// GET /api/fm/meta — 返回当前播放曲目的元数据。
+/// GET /fm/meta — 返回当前播放曲目的元数据。
 ///
-/// 前端在挂载 `/api/fm/live` 后调用此端点获取初始曲目信息，
+/// 前端在挂载 `/fm/live` 后调用此端点获取初始曲目信息，
 /// 后续切歌由 Tauri `fm-meta` 事件推送（无需轮询）。
 pub(crate) async fn fm_current_meta(State(state): State<Arc<AppState>>) -> Json<FmMetaResponse> {
     let (artist, title, index) = state.fm.current_meta();

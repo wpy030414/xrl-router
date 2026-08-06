@@ -50,7 +50,7 @@ pnpm build
 
 把本机变成局域网 API 网关：在「密钥管理」页创建密钥后，弹窗里复制「分发链接」，发给局域网设备打开。页面按平台生成单行命令（装 Claude Code CLI + 写 `~/.claude/settings.json` 指向本机网关），复制到终端运行一次即可。详见 [docs/specs/spec-lan-deploy.md](docs/specs/spec-lan-deploy.md)。
 
-> 网关双端口：管理端口 `19068` 仅本机（`127.0.0.1`），公共端口 `19069` 绑 `0.0.0.0` 供局域网设备访问 `/install` 与 `/v1/*`。局域网分发需放行防火墙 19069 端口。
+> 网关单端口 `19068` 绑 `0.0.0.0`，`/api/*` 管理端点通过 IP 中间件限制仅本机（loopback）可访问，`/install` 与 `/v1/*` 对外开放供局域网设备使用。局域网分发需放行防火墙 19068 端口。
 
 ### 配置
 
@@ -58,11 +58,8 @@ pnpm build
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `19068` | 管理 HTTP 监听端口 |
-| `HOST` | `127.0.0.1` | 管理绑定地址 |
-| `PUBLIC_HOST` | `0.0.0.0` | 公共监听绑定地址（局域网分发） |
-| `PUBLIC_PORT` | `19069` | 公共监听端口（install 页面 + `/v1/*` 代理） |
-| `ENABLE_PUBLIC` | `true` | 是否启用公共 listener（`1`/`true`） |
+| `PORT` | `19068` | HTTP 监听端口 |
+| `HOST` | `0.0.0.0` | 绑定地址（`/api/*` 由 IP 中间件限制仅 loopback 可访问） |
 | `DB_PATH` | _(系统数据目录)_ | SQLite 文件路径 |
 | `LOG_LEVEL` | `info` | 日志级别 |
 | `API_KEY` | _(无)_ | 预留 API Key 字段（当前未启用认证） |
@@ -101,11 +98,11 @@ pnpm build
 
 - Provider API Key: **AES-256-GCM** 加密存储，主密钥独立于数据库（`master.key`，权限 0600）
 - Service Key: **Argon2** 哈希存储（随机盐），创建时仅返回一次明文
-- 管理 API 绑定 `127.0.0.1`（admin listener），CORS origin 白名单；公共 listener（`0.0.0.0`）只暴露 `/v1/*`（需 key 鉴权）与 `/install` 页面，管理接口局域网不可达
+- 管理 API 通过 `admin_ip_guard` 中间件限制仅 loopback IP 可访问（`/api/*` 端点），CORS origin 白名单；公开路径（`/v1/*` 需 key 鉴权、`/install` 页面）对外开放，管理接口局域网不可达
 
 ### 局域网分发（install 页面）
 
-密钥管理页创建密钥后可复制「分发链接」（`http://<本机IP>:19069/install?t=<明文key>`），局域网设备打开即得按平台生成的一行命令：装 Claude Code CLI + 写 `~/.claude/settings.json`（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` 指向网关，模型别名走下拉选择）。密钥明文嵌入 URL，仅限可信设备，撤销即在密钥列表删除。
+密钥管理页创建密钥后可复制「分发链接」（`http://<本机IP>:19068/install?t=<明文key>`），局域网设备打开即得按平台生成的一行命令：装 Claude Code CLI + 写 `~/.claude/settings.json`（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` 指向网关，模型别名走下拉选择）。密钥明文嵌入 URL，仅限可信设备，撤销即在密钥列表删除。
 
 ### 插件系统
 
@@ -117,7 +114,7 @@ pnpm build
 
 ### Claude FM（后端广播电台引擎）
 
-应用内置一台「电台」：所有播放逻辑（歌单管理、墙钟时间轴、音源解析、预加载、切歌）由 Rust 后端 `FmEngine` 完成。引擎以 `tokio::spawn` 后台任务持续运行，通过 `broadcast::channel` 将音频字节推送给所有订阅者。前端输出一条永不关闭的 HTTP chunked 直播流（`GET /api/fm/live`），前端只需一个 `<audio>` 标签像收音机一样收听——路由切换不销毁 `<audio>`，窗口关闭只隐藏到托盘，音乐持续。音源就绪后托盘菜单加入「Claude FM」勾选项（勾选播放 / 取消暂停）；曲目切换由 `fm-meta` Tauri 事件主动推送给前端。
+应用内置一台「电台」：所有播放逻辑（歌单管理、墙钟时间轴、音源解析、预加载、切歌）由 Rust 后端 `FmEngine` 完成。引擎以 `tokio::spawn` 后台任务持续运行，通过 `broadcast::channel` 将音频字节推送给所有订阅者。前端输出一条永不关闭的 HTTP chunked 直播流（`GET /fm/live`），前端只需一个 `<audio>` 标签像收音机一样收听——路由切换不销毁 `<audio>`，窗口关闭只隐藏到托盘，音乐持续。音源就绪后托盘菜单加入「Claude FM」勾选项（勾选播放 / 取消暂停）；曲目切换由 `fm-meta` Tauri 事件主动推送给前端。
 
 ### WebSocket 实时推送
 

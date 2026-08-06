@@ -7,4 +7,4 @@ pub mod handlers;
 pub mod proxy;
 pub mod router;
 
-pub use router::{build_admin_router, build_public_router, build_router};
+pub use router::build_router;

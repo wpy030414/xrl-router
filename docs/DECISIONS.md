@@ -707,43 +707,47 @@ pub fn resolve_route(state: &AppState, display_name: &str) -> Option<ResolvedRou
 
 ---
 
-## ADR-017: 双 listener 分离监听（局域网分发）
+## ADR-017: 单 listener + 路径级 IP 限制（局域网分发）
 
-**日期**: 2026-08-03  
-**状态**: 已接受
+**日期**: 2026-08-06  
+**状态**: 已接受  
+**取代**: ADR-017 旧版（双 listener 分离监听，2026-08-03）
 
 ### 背景
 
-需求：让局域网设备通过主机网关使用 Claude Code（install 页面 + 分发链接）。原方案是单 listener 绑 `127.0.0.1:19068`，局域网设备无法访问。
+旧方案（ADR-017 旧版）用两个 listener 分离：admin 绑 `127.0.0.1:19068`，public 绑 `0.0.0.0:19069`。虽然安全隔离清晰，但增加了设计复杂度——两个端口维护、两处挂 `/v1/*` 路由、防火墙要放行两个端口、CORS 两套策略。实际运行中管理端点已有 CORS 白名单保护，且本机进程访问是接受的代价。
 
 ### 决策
 
-拆成两个独立 listener：
+合并为单 listener 绑 `0.0.0.0:19068`，通过路径级 IP 中间件控制访问权限：
 
-| listener | 绑定 | 路由 | CORS |
-|----------|------|------|------|
-| **admin** | `127.0.0.1:19068` (`HOST:PORT`) | `/api/*`、`/health`、`/ws`、`/ws/plugin`、`/api/install/local-ip`、`/v1/*` 代理 | origin 白名单（7 个） |
-| **public** | `0.0.0.0:19069` (`PUBLIC_HOST:PUBLIC_PORT`) | `/install` 静态页、`/v1/*` 代理 | 全开 (Any) |
+| 路径类型 | 限制方式 | 路由 |
+|----------|----------|------|
+| 公开 | 不限 IP | `/health`、`/ws`、`/ws/plugin`、`/install` 静态页、`/v1/*` 代理 |
+| 管理 | `admin_ip_guard` 中间件限 loopback | `/api/*` CRUD、`/api/install/local-ip`、`/api/data/*` |
 
-- `router.rs` 拆出 `build_admin_router` / `build_public_router`，`/v1/*` 由共享 `proxy_routes(state)` 构建（套 `rate_limit_middleware`），两边各自 merge；`build_router` 保留为 admin 别名（`lib.rs` 与冒烟测试沿用）
-- `Config` 新增 `public_host` / `public_port` / `enable_public`，环境变量 `PUBLIC_HOST` / `PUBLIC_PORT` / `ENABLE_PUBLIC` 覆盖
+- `router.rs` 统一为 `build_router(state)`，`/api/*` 子路由挂 `middleware::from_fn(admin_ip_guard)` 层
+- `admin_ip_guard` 用 `ConnectInfo<SocketAddr>` 提取客户端 IP，非 loopback（`127.0.0.1` / `::1`）返回 403
+- `server.rs` 使用 `into_make_service_with_connect_info::<SocketAddr>()` 启用 IP 提取
+- `Config` 删除 `public_host` / `public_port` / `enable_public` 字段，`host` 默认值改为 `0.0.0.0`
+- CORS 统一使用 origin 白名单（`Config.cors_origins`，7 个）
 
 ### 原因
 
-1. **admin 必须保留 `/v1/*`（兼容）**：拆双端口前 `/v1/*` 就在 19068 上，本机既有客户端（CC Switch 等直连 19068 取模型列表/余额）拆走会 404 而坏。admin 是「本机既有面」的超集
-2. **单独公共端口而非放开 admin 端口**：0.0.0.0 会同时含 127.0.0.1，若同一端口既做 admin 又做 public 无法用两个 listener 绑；更重要的是管理端点（`/api/*` 无认证）绝不能出现在局域网暴露面上。独立端口 + 独立 router 从结构上保证隔离
-3. **public CORS 全开**：CLI 客户端（Claude Code）无 origin 约束，install 页面同源（19069 自身），白名单没有意义
-4. **install 页面编译进二进制**（`include_str!`）：零运行时文件依赖，不引入静态文件服务器
+1. **单端口简化运维**：防火墙只需放行 19068，前端/客户端只需配一个端口
+2. **IP 中间件而非双 listener**：axum 的 `ConnectInfo` 提供可靠的客户端 IP 提取，路径级限制比端口级更灵活（新增管理端点自动受保护，无需记得"两个 router 都挂"）
+3. **保留 loopback 安全模型**：`admin_ip_guard` 确保 `/api/*` 管理端点永不对外开放，与旧方案的安全等级一致
+4. **统一 CORS**：不再需要 public 的全开 CORS（install 页面同源，CLI 无 origin 约束），白名单对所有路径统一生效
 
 ### 代价
 
-- 两个端口都要维护、都要在防火墙放行（局域网分发需放行 19069）
-- `/v1/*` 同一份路由挂两处，新增代理端点时需记得两处都挂（AGENTS.md 已注明）
-- `0.0.0.0:19069` 向局域网暴露：任何人可调 `/v1/*`（需有效 key）、可看 `/install`（无 key 仅提示页）。密钥明文嵌在分发 URL 里，局域网嗅探可见——接受此风险，分发 key 即普通 service key，撤销即在密钥列表删除
+- `0.0.0.0:19068` 向局域网暴露：任何人可调 `/v1/*`（需有效 key）、可看 `/install`（无 key 仅提示页）。密钥明文嵌在分发 URL 里，局域网嗅探可见——接受此风险，分发 key 即普通 service key，撤销即在密钥列表删除
+- 依赖 `ConnectInfo` 正确提取 IP（axum + tokio TCP listener 已验证可靠）；若未来加反向代理，需改用 `X-Forwarded-For` 或 `X-Real-IP`
 
 ### 未来改进
 
-- 若需公网访问（不在设计内），应做 TLS + 反向代理，而不是放开 public listener 到公网
+- 若需公网访问（不在设计内），应做 TLS + 反向代理 + `X-Forwarded-For` 提取，而不是改绑定地址
+- 若需更细粒度权限（如只读/只写分离），可在 `/api/*` 子路由上加多层 IP guard 或引入 role-based middleware
 
 
 ---

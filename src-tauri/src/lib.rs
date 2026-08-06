@@ -40,13 +40,19 @@ fn get_autostart_status(app: tauri::AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
-/// 返回本机 gateway 的 admin 地址（前端 Claude FM 音频代理用）。
-/// 端口由环境变量可配，前端无法静态硬编码，故由后端告知。
+/// 返回本机 gateway 的客户端可连接地址（前端 Claude FM 音频 + API 调用用）。
+/// `Config.host` 可能是 `0.0.0.0`（bind 通配地址，客户端不可直连），
+/// 故对 `0.0.0.0` / `::` 统一返回 `127.0.0.1`。
 #[tauri::command]
 fn get_gateway_base(app: tauri::AppHandle) -> String {
     let state = app.state::<Arc<AppState>>();
     let cfg = &state.config;
-    format!("http://{}:{}", cfg.host, cfg.port)
+    let host = if cfg.host == "0.0.0.0" || cfg.host == "::" {
+        "127.0.0.1"
+    } else {
+        &cfg.host
+    };
+    format!("http://{}:{}", host, cfg.port)
 }
 
 #[tauri::command]

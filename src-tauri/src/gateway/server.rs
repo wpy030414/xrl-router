@@ -104,9 +104,9 @@ impl AppState {
 
 /// Start the gateway HTTP server as a background service.
 ///
-/// 双 listener 分离监听：管理 Router 绑 127.0.0.1:port（仅本机访问 /api/* 管理
-/// 与密钥端点），公共 Router 绑 0.0.0.0:public_port（install 页面 + /v1/* 代理，
-/// 供局域网设备访问）。两端口分离避免 0.0.0.0 含 127.0.0.1 的绑定冲突。
+/// 单 listener 绑 `0.0.0.0:port`，通过路径级 IP 中间件（`admin_ip_guard`）控制
+/// 访问权限：`/api/*` 管理路径仅 loopback IP 可访问，其余路径对外开放。
+/// `into_make_service_with_connect_info::<SocketAddr>()` 为中间件提供客户端 IP 提取。
 pub async fn start_gateway(state: Arc<AppState>) -> Result<()> {
     let cors = build_cors_layer(&state.config);
 
@@ -125,7 +125,7 @@ pub async fn start_gateway(state: Arc<AppState>) -> Result<()> {
         });
     }
 
-    // FM 广播电台引擎：后台持续拉取音源并广播给所有 /api/fm/live 订阅者。
+    // FM 广播电台引擎：后台持续拉取音源并广播给所有 /fm/live 订阅者。
     // app_handle 用于 emit fm-meta 事件通知前端切歌。
     // 注意：start_gateway 无法直接拿到 app_handle，由 lib.rs setup 中调用。
 
@@ -141,32 +141,21 @@ pub async fn start_gateway(state: Arc<AppState>) -> Result<()> {
         });
     }
 
-    // 管理 listener：127.0.0.1，承载全部 /api/* + /health + /ws（CORS 用白名单）
-    {
-        let admin_router = crate::api::build_admin_router(state.clone()).layer(cors);
-        let admin_addr = state.config.addr();
-        let listener = tokio::net::TcpListener::bind(&admin_addr).await?;
-        info!("Admin listener on http://{}", admin_addr);
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, admin_router).await {
-                error!("Admin listener error: {}", e);
-            }
-        });
-    }
-
-    // 公共 listener：0.0.0.0，承载 /install + /v1/*（CORS 全开——CLI 无 origin 约束、install 同源）
-    if state.config.enable_public {
-        let public_router = crate::api::build_public_router(state.clone())
-            .layer(CorsLayer::new().allow_methods(Any).allow_headers(Any).allow_origin(Any));
-        let public_addr = state.config.public_addr();
-        let listener = tokio::net::TcpListener::bind(&public_addr).await?;
-        info!("Public listener on http://{}", public_addr);
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, public_router).await {
-                error!("Public listener error: {}", e);
-            }
-        });
-    }
+    // 单 listener：0.0.0.0:port，承载全部路由（/api/* 由 admin_ip_guard 限制 loopback）
+    let router = crate::api::build_router(state.clone()).layer(cors);
+    let addr = state.config.addr();
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    info!("HTTP server on http://{}", addr);
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
+            error!("HTTP server error: {}", e);
+        }
+    });
 
     Ok(())
 }
@@ -196,11 +185,10 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
-    /// 端到端冒烟测试：真实 TCP 起网关，实测四条路径。
-    /// 覆盖 build_admin_router → handlers/* → proxy 认证 → AppState（DB 迁移、
-    /// providers/models 注册表、密钥池、插件管理器）的完整拆分后链路。
-    /// admin router 已含 /v1/*（本机兼容入口），故单用 admin 即可测全链路；
-    /// 另起 public router 验证 /install 静态页。
+    /// 端到端冒烟测试：真实 TCP 起网关，实测全部路径。
+    /// 覆盖 build_router → handlers/* → proxy 认证 → AppState（DB 迁移、
+    /// providers/models 注册表、密钥池、插件管理器）→ admin_ip_guard 的完整链路。
+    /// 单 listener 绑定 127.0.0.1（loopback），/api/* 管理路径应正常放行。
     #[tokio::test]
     async fn test_gateway_smoke_end_to_end() {
         let db = Database::open_in_memory().unwrap();
@@ -211,12 +199,17 @@ mod tests {
             ..Default::default()
         };
         let state = Arc::new(AppState::new(config, db, [7u8; 32]));
-        let router = crate::api::build_admin_router(state.clone());
+        let router = crate::api::build_router(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
 
         let client = reqwest::Client::new();
@@ -236,7 +229,7 @@ mod tests {
         assert_eq!(body["service"], "xrl-router");
         assert_eq!(body["database"], "ok");
 
-        // /api/providers：CRUD handler 路径（空库返回空数组）
+        // /api/providers：CRUD handler 路径（loopback → admin_ip_guard 放行，空库返回空数组）
         let resp = client.get(format!("http://{}/api/providers", addr)).send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let providers: serde_json::Value = resp.json().await.unwrap();
@@ -312,21 +305,8 @@ mod tests {
         );
         assert!(zm["data"].get("quota_7_day").is_none(), "未设限窗口应省略");
 
-        // /install：public router 静态页（独立 listener 验证，防与 admin merge 冲突）
-        let pub_state = state.clone();
-        let pub_router = crate::api::build_public_router(pub_state);
-        let pub_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let pub_addr = pub_listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(pub_listener, pub_router).await.unwrap();
-        });
-        for _ in 0..50 {
-            if client.get(format!("http://{}/install", pub_addr)).send().await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        let resp = client.get(format!("http://{}/install", pub_addr)).send().await.unwrap();
+        // /install：静态页（公开路径，单 listener 下与 /api/* 共存）
+        let resp = client.get(format!("http://{}/install", addr)).send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let html = resp.text().await.unwrap();
         assert!(html.contains("客户分发 / Client Deploy"), "/install 应返回 install 页面 HTML");
@@ -456,11 +436,16 @@ mod tests {
             ..Default::default()
         };
         let state = Arc::new(AppState::new(config, db.clone(), master_key));
-        let router = crate::api::build_admin_router(state.clone());
+        let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
 
         let client = reqwest::Client::new();
@@ -486,9 +471,10 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("hello from B"), "响应应来自备选 provider B: {}", text);
 
-        // 开关关：主 provider A 的 500 直接透传
+        // 开关关：主 provider A 的 500 直接透传（同时清掉冷却表，避免残留干扰）
         db.set_setting("failover_enabled", "false").unwrap();
         state.failover_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+        state.provider_cooldowns.write().unwrap().clear();
         let resp = send().send().await.unwrap();
         assert_eq!(resp.status(), 500, "failover 关闭时 5xx 应透传");
     }

@@ -31,6 +31,8 @@ export default defineConfig({
       '/api': 'http://localhost:19068',
       '/v1': 'http://localhost:19068',
       '/health': 'http://localhost:19068',
+      '/fm': 'http://localhost:19068',
+      '/install': 'http://localhost:19068',
       '/ws': {
         target: 'ws://localhost:19068',
         ws: true,
