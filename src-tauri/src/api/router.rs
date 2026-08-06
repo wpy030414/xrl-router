@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{get, post, put};
 use axum::Router;
@@ -33,6 +34,9 @@ fn proxy_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             state.rate_limiter.clone(),
             rate_limit_middleware,
         ))
+        // axum 默认只放行 2MiB 请求体；超长会话（多轮历史 + base64 截图）
+        // 会被 413 拒绝，正是「输入太大」报错的成因之一。放宽到 64MiB。
+        .layer(DefaultBodyLimit::max(super::proxy::MAX_REQUEST_BODY_BYTES))
 }
 
 /// 管理 Router：/api/* + /health + /ws + /v1/* 代理（绑 127.0.0.1）。

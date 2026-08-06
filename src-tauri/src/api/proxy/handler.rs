@@ -144,6 +144,8 @@ async fn authenticate_and_stream(
 
     // ── 输入 token 估算（translation 路径 message_start 占位用） ─
     let est_input = translate::estimate_input_tokens(&body);
+    // 大上下文（缓存恢复）首字节延迟高，按输入规模放宽响应头超时
+    let header_timeout_secs = super::header_timeout_for(est_input);
 
     // ── 委托流式引擎 ────────────────────────────────────────────
     super::stream::proxy_stream(
@@ -158,6 +160,7 @@ async fn authenticate_and_stream(
             body_openai,
             client_format,
             est_input,
+            header_timeout_secs,
         },
     )
     .await

@@ -32,7 +32,6 @@ use super::forward::{
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::{resolve_route, ResolvedRoute};
 use super::websearch::{has_websearch_tool, run_websearch_loop};
-use super::{UPSTREAM_HEADER_TIMEOUT_SECS};
 
 /// HTTP error tuple returned by proxy handlers.
 pub type ErrorTuple = (StatusCode, HeaderMap, Json<Value>);
@@ -58,6 +57,10 @@ pub struct StreamContext {
     pub(super) client_format: ClientFormat,
     /// 输入 token 估算（translation 路径 message_start 占位用）。
     pub(super) est_input: u64,
+    /// 按输入规模放宽后的「等待上游响应头」超时（秒），handler 预计算。
+    /// 路由器的头超时比客户端 SSE 空闲看门狗（90s）大得多，但网关每 15s
+    /// 发一次 keepalive 注释，足以维持客户端连接存活。
+    pub(super) header_timeout_secs: u64,
 }
 
 /// provider 级失败（5xx/网络错误/响应头超时）：failover 切换后若无任何
@@ -101,6 +104,7 @@ pub async fn proxy_stream(
 ) -> Result<Response, ErrorTuple> {
     let trace_id = &ctx.trace_id;
     let model_name = &ctx.model_name;
+    let header_timeout_secs = ctx.header_timeout_secs;
 
     // ── 1. 路由解析（同步段，~1ms） ─────────────────────────────────
     let failover = state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed);
@@ -281,7 +285,7 @@ pub async fn proxy_stream(
                 }
 
                 let resp = match tokio::time::timeout(
-                    Duration::from_secs(UPSTREAM_HEADER_TIMEOUT_SECS),
+                    Duration::from_secs(header_timeout_secs),
                     req_builder
                         .header("Content-Type", "application/json")
                         .json(&attempt_body)
@@ -322,7 +326,7 @@ pub async fn proxy_stream(
                                 key_id: picked.id.clone(),
                                 key_name: picked.name.clone(),
                                 key_masked: picked.key_masked.clone(),
-                                secs: UPSTREAM_HEADER_TIMEOUT_SECS,
+                                secs: header_timeout_secs,
                             });
                             super::failover::mark_provider_failed(&state, &cand.provider_id);
                             continue 'provider;
@@ -330,7 +334,7 @@ pub async fn proxy_stream(
                         let duration_ms = start_time.elapsed().as_millis() as i64;
                         let msg = format!(
                             "upstream timed out after {}s waiting for response headers",
-                            UPSTREAM_HEADER_TIMEOUT_SECS
+                            header_timeout_secs
                         );
                         warn!(trace_id = %trace_id, duration_ms, key_id = %picked.id, "{}", msg);
                         let _ = state.database.insert_usage_log(
