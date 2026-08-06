@@ -233,7 +233,7 @@ const chartOptions = computed(() => ({
   maintainAspectRatio: false,
   interaction: { mode: 'index' as const, intersect: false },
   plugins: {
-    legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 16, font: { family: 'Roboto Flex', size: 12 } } },
+    legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 16, font: { family: "'PingFang SC', system-ui, sans-serif", size: 12 } } },
     tooltip: {
       callbacks: {
         title: function (ctx: any) {
@@ -271,9 +271,9 @@ const chartOptions = computed(() => ({
   scales: {
     x: {
       grid: { display: false },
-      title: { display: true, text: t('stats.chart.x_axis'), font: { family: 'Roboto Flex', size: 12 } },
+      title: { display: true, text: t('stats.chart.x_axis'), font: { family: "'PingFang SC', system-ui, sans-serif", size: 12 } },
       ticks: {
-        font: { family: 'Roboto Flex', size: 10 },
+        font: { family: "'PingFang SC', system-ui, sans-serif", size: 10 },
         maxTicksLimit: 7,
         callback: function(_value: any, index: number) {
           const dayCount = dates.value.length;
@@ -290,9 +290,9 @@ const chartOptions = computed(() => ({
     y: {
       beginAtZero: true,
       min: 0,
-      title: { display: true, text: t('stats.chart.y_axis'), font: { family: 'Roboto Flex', size: 12 } },
+      title: { display: true, text: t('stats.chart.y_axis'), font: { family: "'PingFang SC', system-ui, sans-serif", size: 12 } },
       ticks: {
-        font: { family: 'Roboto Flex', size: 10 },
+        font: { family: "'PingFang SC', system-ui, sans-serif", size: 10 },
         maxTicksLimit: 6,
         callback: function(value: any) { return (Number(value) / 10000).toFixed(0); }
       }

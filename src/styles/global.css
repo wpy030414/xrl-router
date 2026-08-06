@@ -3,6 +3,18 @@
    含 MD3 设计令牌、暗色主题覆盖、排版助手、桌面交互体验。
    ============================================================ */
 
+/* 苹方字体：仅打包 Regular 字重以控制体积，bold/medium 由引擎合成；
+   macOS 自带苹方，local() 命中系统字体、不下载 webfont，
+   且 macOS 构建时由 vite 插件剔除该文件（见 vite.config.ts） */
+@font-face {
+  font-family: 'PingFang SC';
+  src: local('PingFang SC'), local('PingFangSC-Regular'),
+       url('/fonts/PingFangSC-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
 
@@ -51,9 +63,11 @@
   --md-sys-shape-corner-extra-large: 28px;
   --md-sys-shape-corner-full: 9999px;
 
-  /* Typography */
-  --md-sys-typescale-body-large-font: 'Roboto Flex', sans-serif;
-  font-family: 'Roboto Flex', system-ui, sans-serif;
+  /* Typography — 全局统一苹方 */
+  --md-ref-typeface-brand: 'PingFang SC', system-ui, sans-serif;
+  --md-ref-typeface-plain: 'PingFang SC', system-ui, sans-serif;
+  --md-sys-typescale-body-large-font: 'PingFang SC', system-ui, sans-serif;
+  font-family: 'PingFang SC', system-ui, sans-serif;
 
   /* Brand tokens — light */
   --md-sys-color-openai-brand: #10a37f;
