@@ -90,6 +90,18 @@
             ></md-outlined-segmented-button>
           </md-outlined-segmented-button-set>
         </div>
+        <div class="section__body hue-row">
+          <span class="hue-label md-typescale-label-large">{{ t('settings.theme.hue') }}</span>
+          <input
+            type="range" min="0" max="360" step="1"
+            :value="hue"
+            class="hue-slider"
+            @input="onHueInput"
+          />
+          <span class="hue-value mono">{{ hue }}°</span>
+          <span class="hue-preview" :style="{ background: `hsl(${hue}, 50%, 42%)` }"></span>
+          <md-text-button class="hue-reset" @click="resetHue">{{ t('settings.theme.hue_reset') }}</md-text-button>
+        </div>
       </section>
 
       <!-- 开机静默启动 -->
@@ -212,7 +224,7 @@ import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { getVersion } from '@tauri-apps/api/app';
 import { settingsApi, dataApi } from '../api';
-import { getTheme, setTheme, type Theme } from '../theme';
+import { getTheme, setTheme, getHue, setHue, type Theme } from '../theme';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
@@ -248,10 +260,22 @@ function switchLocale(loc: Locale) {
 
 // ── 主题 ──
 const theme = ref<Theme>(getTheme());
+const hue = ref(getHue());
 
 function chooseTheme(t: Theme) {
   theme.value = t;
   setTheme(t);
+}
+
+function onHueInput(e: Event) {
+  const val = Number((e.target as HTMLInputElement).value);
+  hue.value = val;
+  setHue(val);
+}
+
+function resetHue() {
+  hue.value = 264;
+  setHue(264);
 }
 
 // ── 开机自启 ──
@@ -440,4 +464,60 @@ md-secondary-tab {
 
 .confirm-destroy { color: var(--md-sys-color-error); }
 .dialog-content { min-width: 320px; }
+
+/* 令牌色滑块 */
+.hue-row {
+  display: flex; align-items: center; gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.hue-label {
+  flex-shrink: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: nowrap;
+}
+.hue-slider {
+  flex: 1; min-width: 120px;
+  -webkit-appearance: none; appearance: none;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(to right,
+    hsl(0,50%,42%), hsl(60,50%,42%), hsl(120,50%,42%),
+    hsl(180,50%,42%), hsl(240,50%,42%), hsl(300,50%,42%), hsl(360,50%,42%));
+  outline: none;
+  cursor: pointer;
+}
+.hue-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--md-sys-color-primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  cursor: pointer;
+}
+.hue-slider::-moz-range-thumb {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--md-sys-color-primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  cursor: pointer;
+}
+.hue-value {
+  flex-shrink: 0;
+  min-width: 40px; text-align: right;
+  color: var(--md-sys-color-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+.hue-preview {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: var(--md-sys-shape-corner-full);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
+}
+.hue-reset {
+  flex-shrink: 0;
+  --md-sys-color-primary: var(--md-sys-color-on-surface-variant);
+}
 </style>

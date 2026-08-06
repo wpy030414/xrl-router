@@ -49,6 +49,8 @@ export default {
   'settings.theme.system': '跟随系统',
   'settings.theme.light': '浅色',
   'settings.theme.dark': '深色',
+  'settings.theme.hue': '令牌色',
+  'settings.theme.hue_reset': '重置',
 
   'settings.autostart.title': '开机静默启动',
   'settings.autostart.desc': '开启后，应用会在开机时自动启动并隐藏到系统托盘',
@@ -182,6 +184,7 @@ export default {
   'stats.log.col_status': '状态',
   'stats.log.status_ok': '成功',
   'stats.log.status_fail': '失败',
+  'stats.log.status_pending': '进行中',
   'stats.log.prev': '上一页',
   'stats.log.next': '下一页',
   'stats.log.page': '第 {current} / {total} 页',

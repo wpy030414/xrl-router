@@ -490,10 +490,10 @@ function statusClass(row: RequestLogRow): string {
   return row.success ? 'status--ok' : 'status--fail';
 }
 
-/** 本地时间 YYYY-MM-DD HH:mm */
+/** 本地时间 YYYY-MM-DD HH:mm:ss */
 function formatTime(tSec: number): string {
   const d = new Date(tSec * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
 onMounted(() => {

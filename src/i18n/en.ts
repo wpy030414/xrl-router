@@ -49,6 +49,8 @@ export default {
   'settings.theme.system': 'Follow System',
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
+  'settings.theme.hue': 'Accent',
+  'settings.theme.hue_reset': 'Reset',
 
   'settings.autostart.title': 'Start Silently at Login',
   'settings.autostart.desc': 'When enabled, the app automatically starts at login and hides to the system tray',
@@ -182,6 +184,7 @@ export default {
   'stats.log.col_status': 'Status',
   'stats.log.status_ok': 'Success',
   'stats.log.status_fail': 'Failed',
+  'stats.log.status_pending': 'In Progress',
   'stats.log.prev': 'Previous',
   'stats.log.next': 'Next',
   'stats.log.page': 'Page {current} of {total}',
