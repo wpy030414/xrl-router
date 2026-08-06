@@ -1,9 +1,15 @@
 export default {
   // ── Navigation ──
+  'nav.fm': 'Claude FM',
   'nav.providers': 'Providers',
   'nav.keys': 'Keys',
   'nav.stats': 'Stats',
   'nav.settings': 'Settings',
+
+  // ── Claude FM ──
+  'fm.play': 'Play',
+  'fm.pause': 'Pause',
+  'fm.error': 'Track unavailable, skipped',
 
   // ── Common ──
   'common.cancel': 'Cancel',

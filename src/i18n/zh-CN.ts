@@ -1,9 +1,15 @@
 export default {
   // ── 导航 ──
+  'nav.fm': 'Claude FM',
   'nav.providers': '供应商',
   'nav.keys': '密钥',
   'nav.stats': '统计',
   'nav.settings': '设置',
+
+  // ── Claude FM ──
+  'fm.play': '播放',
+  'fm.pause': '暂停',
+  'fm.error': '曲目无法播放，已自动跳过',
 
   // ── 通用 ──
   'common.cancel': '取消',

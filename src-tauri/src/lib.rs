@@ -8,7 +8,7 @@
 use crate::config::Config;
 use crate::db::Database;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::{info, error};
 
 mod config;
@@ -56,14 +56,20 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 struct TrayMenuState {
     show_item: tauri::menu::MenuItem<tauri::Wry>,
     quit_item: tauri::menu::MenuItem<tauri::Wry>,
+    /// 当前 locale（持久化于 DB；此处缓存避免 fm_ready 依赖 AppState，
+    /// 启动早期 AppState 尚未 manage 时会 panic）。
+    locale: String,
+    /// Claude FM 勾选项：勾选 = 播放，取消 = 暂停。
+    /// 预热完成（fm_ready）后才加入菜单，初始为 None（隐藏）。
+    fm_item: Option<tauri::menu::CheckMenuItem<tauri::Wry>>,
 }
 
 /// 按 locale 返回托盘菜单文本（zh-CN 默认）。
-fn tray_texts(locale: &str) -> (&'static str, &'static str) {
+fn tray_texts(locale: &str) -> (&'static str, &'static str, &'static str) {
     if locale == "en" {
-        ("Show Window", "Quit")
+        ("Show Window", "Quit", "Claude FM")
     } else {
-        ("显示窗口", "退出")
+        ("显示窗口", "退出", "Claude FM")
     }
 }
 
@@ -76,11 +82,60 @@ fn set_locale(app: tauri::AppHandle, locale: String) -> Result<(), String> {
         .database
         .set_setting("locale", &locale)
         .map_err(|e| e.to_string())?;
-    let (show_txt, quit_txt) = tray_texts(&locale);
-    let menu_state = app.state::<TrayMenuState>();
+    let (show_txt, quit_txt, fm_txt) = tray_texts(&locale);
+    let menu_state = app.state::<std::sync::Mutex<TrayMenuState>>();
+    let mut menu_state = menu_state.lock().map_err(|e| e.to_string())?;
     let _ = menu_state.show_item.set_text(show_txt);
     let _ = menu_state.quit_item.set_text(quit_txt);
+    if let Some(fm) = &menu_state.fm_item {
+        let _ = fm.set_text(fm_txt);
+    }
+    // 更新缓存 locale（供 fm_ready 使用，避免依赖 AppState）
+    menu_state.locale = locale;
     Ok(())
+}
+
+/// 前端 Claude FM 播放状态变化时调用：同步托盘菜单勾选。
+/// 勾选 = 播放中；取消勾选 = 已暂停。
+#[tauri::command]
+fn fm_set_playing(app: tauri::AppHandle, playing: bool) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<TrayMenuState>>();
+    let state = state.lock().map_err(|e| e.to_string())?;
+    if let Some(fm) = &state.fm_item {
+        fm.set_checked(playing).map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// 前端 Claude FM 预热完成时调用：把 FM 勾选项加入托盘菜单。
+/// 预热完成前 FM 菜单项隐藏，避免在音源未就绪时误操作。
+#[tauri::command]
+fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {
+    let state_guard = app.state::<std::sync::Mutex<TrayMenuState>>();
+    let mut state = state_guard.lock().map_err(|e| e.to_string())?;
+    if state.fm_item.is_some() {
+        return Ok(()); // 已加入过，幂等
+    }
+    // 重建托盘菜单：显示窗口 / Claude FM / 退出
+    // 用缓存 locale（不依赖 AppState——启动早期 AppState 尚未 manage）
+    let (_, _, fm_txt) = tray_texts(&state.locale);
+    let fm_item = tauri::menu::CheckMenuItem::with_id(
+        &app,
+        "fm",
+        fm_txt,
+        true,
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let menu = tauri::menu::Menu::with_items(&app, &[&state.show_item, &fm_item, &state.quit_item])
+        .map_err(|e| e.to_string())?;
+    state.fm_item = Some(fm_item.clone());
+    app.tray_by_id("main-tray")
+        .ok_or_else(|| "tray not found".to_string())?
+        .set_menu(Some(menu))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -117,7 +172,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_autostart_status,
             set_autostart,
-            set_locale
+            set_locale,
+            fm_set_playing,
+            fm_ready
         ])
         .setup(move |app| {
             // Resolve data directory using Tauri's path API:
@@ -177,15 +234,18 @@ pub fn run() {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "zh-CN".to_string());
-            let (show_txt, quit_txt) = tray_texts(&locale);
+            let (show_txt, quit_txt, _fm_txt) = tray_texts(&locale);
             let show_item =
                 tauri::menu::MenuItem::with_id(app, "show", show_txt, true, None::<&str>)?;
             let quit_item =
                 tauri::menu::MenuItem::with_id(app, "quit", quit_txt, true, None::<&str>)?;
-            app.manage(TrayMenuState {
+            // Claude FM 勾选项：预热完成（fm_ready）后才加入菜单，初始隐藏。
+            app.manage(std::sync::Mutex::new(TrayMenuState {
                 show_item: show_item.clone(),
                 quit_item: quit_item.clone(),
-            });
+                locale: locale.clone(),
+                fm_item: None,
+            }));
             let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
             let _tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().cloned().unwrap())
@@ -197,6 +257,12 @@ pub fn run() {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
+                    }
+                    // Claude FM：勾选 = 播放，取消勾选 = 暂停。
+                    // 勾选状态由点击事件自行翻转（CheckMenuItem 原生行为），
+                    // 播放器随后 emit fm-toggle 事件驱动前端 toggle。
+                    "fm" => {
+                        let _ = app.emit("fm-toggle", ());
                     }
                     "quit" => app.exit(0),
                     _ => {}

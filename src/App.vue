@@ -12,10 +12,14 @@ import { listen } from '@tauri-apps/api/event';
 import AppShell from './components/AppShell.vue';
 import ConnectionStatus from './components/ConnectionStatus.vue';
 import PluginRegisterDialog from './components/PluginRegisterDialog.vue';
+import { initTraySync } from './fm/player';
 
 const pluginDialogRef = ref<InstanceType<typeof PluginRegisterDialog> | null>(null);
 
 onMounted(async () => {
+  // Claude FM 托盘菜单联动：启动即绑定，播放状态与托盘勾选双向同步
+  initTraySync();
+
   // 监听插件注册事件
   await listen('plugin-register', (event: any) => {
     console.log('[Plugin] Register event:', event.payload);

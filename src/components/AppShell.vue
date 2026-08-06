@@ -29,6 +29,7 @@ const router = useRouter();
 const route = useRoute();
 
 const navItems: { path: string; labelKey: string; icon: string }[] = [
+  { path: '/fm', labelKey: 'nav.fm', icon: 'mdi-radio' },
   { path: '/providers', labelKey: 'nav.providers', icon: 'mdi-cloud' },
   { path: '/keys', labelKey: 'nav.keys', icon: 'mdi-key' },
   { path: '/stats', labelKey: 'nav.stats', icon: 'mdi-chart-bar' },
