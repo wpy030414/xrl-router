@@ -100,7 +100,7 @@ data: [DONE]
 2. **模型替换**: 将 `display_name` 替换为上游的 `model_id`
 3. **配额检查**: 认证后先查 5h/7d 滚动窗口配额（`quota.rs::check_quota`），任一窗口触顶返回 429（`quota_error` + `retry-after`，message 含重置时间）
 4. **密钥轮换**: 401/403 标红，402/429 标黄，自动切换下一个 key
-5. **超时控制**: 连接 10s，响应头 60s，流间隔 120s
+5. **超时控制**: 连接 10s，响应头自适应（`header_timeout_for()`：≥100k token → 600s、≥50k → 480s、基准 300s），流间隔 120s。请求体上限 64MiB（`MAX_REQUEST_BODY_BYTES`）。
 6. **重试边界**: 内层最多重试当前 provider 的 `key_count` 次；外层候选数由 `resolve_route_candidates` 决定，开关关闭时仅 1 个候选
 
 ## 错误处理

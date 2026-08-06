@@ -1,6 +1,6 @@
 # xrl-router — 产品需求文档
 
-> 版本: CalVer (tauri 26.8.4) · 更新日期: 2026-08-04
+> 版本: CalVer (tauri 26.8.6+1500) · 更新日期: 2026-08-06
 >
 > 📎 [架构文档](./ARCHITECTURE.md) · [决策记录](./DECISIONS.md) · [规格契约](./specs/)
 
@@ -115,7 +115,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-06 | **模型别名** | `api/proxy/route.rs` |
 | F-07 | **密钥健康监控（红绿灯）** | `keys/pool/health.rs` |
 | F-08 | **桌面应用（Tauri 2）** | `src-tauri/` |
-| F-09 | **请求超时保护（60s 头 + 120s 流）** | `api/proxy/stream.rs` + `api/proxy/forward.rs` + `api/proxy/mod.rs` |
+| F-09 | **请求超时保护（自适应头超时 + 120s chunk 间隔）** | `api/proxy/stream.rs` + `api/proxy/forward.rs` + `api/proxy/mod.rs`（`header_timeout_for()` 按估算输入规模放宽） |
 | F-10 | **密钥轮询指针持久化** | `keys/pool/persistence.rs` |
 | F-11 | **AES-256-GCM 加密 Provider Key** | `crypto/mod.rs` |
 | F-12 | **令牌桶限流（60 req/min）** | `middleware/rate_limit.rs` |
@@ -159,16 +159,17 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-40 | **主题跟随系统（light/dark/system）** | `theme.ts` |
 | F-41 | **开机静默启动（--minimized 驻留托盘）** | `lib.rs` + `tauri-plugin-autostart` |
 | F-42 | **数据导出/导入/重置** | `api/handlers/data.rs` + `db/settings.rs` + `SettingsView.vue` |
+| F-43 | **Claude FM 播放器（墙钟直播流 + 托盘控制）** | `src/fm/player.ts`（模块级单例）+ `src/views/ClaudeFmView.vue` + `lib.rs`（托盘 `fm`/`fm_ready`/`fm_set_playing` command）+ `src/i18n/*`（`fm.*` key） |
 
 ### 4.4 未实现（计划中）
 
 | ID | 功能 | 计划版本 |
 |----|------|---------|
-| F-43 | 管理 API 认证层（Basic Auth / Session Token） | v0.3 |
-| F-44 | 路由规则引擎（`routes` 表，优先级 + 权重） | v0.3 |
-| F-45 | 指数退避重试（failover 已实现 provider 级切换 + 60s 冷却，退避算法未做） | v0.3 |
-| F-46 | 更多 Provider 内置（DeepSeek、Gemini） | v0.3 |
-| F-47 | 自动更新机制 | v1.0 |
+| F-44 | 管理 API 认证层（Basic Auth / Session Token） | v0.3 |
+| F-45 | 路由规则引擎（`routes` 表，优先级 + 权重） | v0.3 |
+| F-46 | 指数退避重试（failover 已实现 provider 级切换 + 60s 冷却，退避算法未做） | v0.3 |
+| F-47 | 更多 Provider 内置（DeepSeek、Gemini） | v0.3 |
+| F-48 | 自动更新机制 | v1.0 |
 
 ### 4.5 已知断裂（待修复）
 
@@ -261,6 +262,24 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 
 ---
 
+## 6.3 Claude FM 规格（墙钟直播流播放器）
+
+应用内置一台「电台」：一张固定歌单循环，时间轴完全由墙钟定义，任何设备任何时刻算出的是同一个直播位置——暂停只是静音，恢复时跳到当前直播点（如 YouTube Live，错过即错过）。
+
+| 项 | 规则 |
+|----|------|
+| 时间轴 | `pos = (Date.now()/1000) % TOTAL_DURATION`，锚点为 Unix epoch；歌单总时长为取模周期 |
+| 暂停语义 | 暂停 = 静音，时间轴照常推进；恢复时跳到当前直播位置，不续播暂停点 |
+| 生命周期 | 与应用进程绑定，非任何视图：模块首次 import 创建单例 `<audio>`，路由切换（组件卸载）不销毁，窗口关闭只隐藏到托盘（进程 + webview 常驻），音乐持续 |
+| 预热 | 音源就绪后才解锁播放按钮与托盘 FM 项；就绪前菜单项隐藏，避免误操作 |
+| 视图 | `/fm` 路由（`ClaudeFmView.vue`）：大圆形播放/暂停按钮 + 底部等宽字体「标题 - 艺人」（电台语义，不显示时间码） |
+| 托盘 | 预热完成后菜单加入「Claude FM」勾选项：勾选 = 播放，取消 = 暂停；语言随 `settings.locale` |
+| i18n | `fm.play` / `fm.pause` / `fm.error`（曲目无法播放自动跳过） |
+
+用途：编码时挂一台低打扰的氛围电台，无需开第三方播放器；托盘勾选即控，与应用窗口解耦。
+
+---
+
 ## 7. 插件系统规格
 
 外部服务通过 WebSocket 注册为「委托供应商」。职责分工：
@@ -305,7 +324,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | 代理额外延迟（转换） | ≤ 20ms |
 | 内存占用（空闲） | ≤ 100MB |
 | 并发 | ≤ 50 请求 |
-| 请求头超时 | 60 秒 |
+| 请求头超时 | 自适应 300/480/600s（按估算输入 token 分档，基准 300s；见 `header_timeout_for()`） |
 | 流 chunk 间隔超时 | 120 秒 |
 
 ### 8.2 安全
@@ -361,5 +380,5 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | 上游 API 格式变更 | 中 | 版本锁定 + 兼容性测试 |
 | SQLite 高并发瓶颈 | 低 | WAL 模式 + 异步批量写入 |
 | 协议转换丢失特性 | 中 | 不兼容特性显式报错 |
-| 上游挂起网关卡死 | 低 | 独立超时保护（60s + 120s） |
+| 上游挂起网关卡死 | 低 | 独立超时保护（自适应头超时 300/480/600s + 120s chunk 间隔） |
 | 密钥泄露 | 低 | AES-256-GCM + Argon2 |

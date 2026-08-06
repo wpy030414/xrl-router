@@ -798,7 +798,7 @@ AGENTS.md 原 Non-Goal「不做国际化，中文即可」，2026-08 用户主�
 ### 原因
 
 1. 按 provider_id 去重是必要的：同一 provider 多行同别名（如多个模型行指向同一 provider）去重后按 sort_order 取最前，避免同一上游被重复尝试
-2. 冷却 60s 而非指数退避：场景是「上游暂时不可用」，固定冷却足够且行为可预期；PRD 的指数退避重试（重试同一上游）已无意义，F-45 注明
+2. 冷却 60s 而非指数退避：场景是「上游暂时不可用」，固定冷却足够且行为可预期；PRD 的指数退避重试（重试同一上游）已无意义，F-46 注明
 3. 开关默认关闭符合 AGENTS.md「不主动改变既有行为」原则——failover 是增益特性，不是修复
 
 ### 代价
@@ -852,3 +852,111 @@ AGENTS.md 原 Non-Goal「不做国际化，中文即可」，2026-08 用户主�
 | `api/proxy/handler.rs` | 1371→~250 行：薄入口 + authenticate_and_stream() |
 | `api/proxy/upstream.rs` | **删除**：上游错误改为 SSE error event 传达 |
 | `api/proxy/mod.rs` | 添加 `pub mod stream;` + `pub mod forward;`，移除 `pub mod upstream;` |
+
+---
+
+## ADR-021: keepalive 心跳改用 oneshot 取消信号，修复流式响应永不结束
+
+**日期**: 2026-08-05  
+**状态**: 已接受
+
+### 背景
+
+ADR-020 的 SSE 即时响应里，keepalive 心跳任务持有 `tx`（mpsc 发送端）的 clone。问题：主任务（流式转发）结束后，keepalive 任务仍持有 `tx` clone，导致 mpsc 的 `rx` 侧永远等不到所有 sender drop，`Response<Body>` 的 stream 永不结束——客户端连接挂住，Claude Code 收到的是「永不收尾的 SSE」，表现为流式响应卡死。
+
+### 决策
+
+keepalive 任务**只持有取消信号**（`tokio::sync::oneshot`），不持有 `tx` clone：
+
+1. 主任务创建 `oneshot::channel::<()>()`，把 `cancel_tx` 包进 `CancelOnDrop` guard
+2. keepalive 任务持有 `keepalive_tx = tx.clone()` 与 `cancel_rx`，循环 `select!` 每 15s 发心跳 / 收到 cancel 即 break
+3. 主任务任何路径结束（正常收尾 / 上游错误 / 超时）→ Drop `CancelOnDrop` → 触发 cancel → keepalive 任务退出
+4. `tx` 唯一属于主任务，主任务 drop 后 `rx` 侧的 stream 自然收尾
+
+### 原因
+
+1. **mpsc 语义**：`rx` 的 `next()` 在所有 sender drop 后返回 `None`，stream 才结束。keepalive 持有 clone 就打破了「主任务结束 = stream 结束」的对应关系
+2. **取消信号单职责**：keepalive 只需知道「该停了」，不需要发送业务数据；oneshot 足够且零开销
+3. **Drop 兜底**：`CancelOnDrop` 保证任何 panic / 提前 return 路径都能触发取消，不会泄漏 keepalive 任务
+
+### 代价
+
+- 多一个 `oneshot` channel 与 `CancelOnDrop` guard 的样板代码
+- keepalive 任务不再能独立于主任务存活（本就是期望行为）
+
+### 实现
+
+```rust
+// api/proxy/stream.rs
+let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+let keepalive_tx = tx.clone();
+let keepalive_handle = tokio::spawn(async move {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                if keepalive_tx.send(Ok(Bytes::from(":keepalive\n\n"))).await.is_err() {
+                    break;
+                }
+            }
+            _ = &mut cancel_rx => break,
+        }
+    }
+});
+struct CancelOnDrop(Option<oneshot::Sender<()>>);
+impl Drop for CancelOnDrop { fn drop(&mut self) { ... } }
+```
+
+---
+
+## ADR-022: 自适应上游头超时 + 放宽请求体限制
+
+**日期**: 2026-08-06  
+**状态**: 已接受
+
+### 背景
+
+ADR-020 后头超时固定 60s。两个新问题在大输入长等待场景暴露：
+
+1. **头超时过短**：大上下文（~80k token 缓存输入）+ 上游排队时，首字节常超 60s。网关提前放弃并发 SSE error event 断流 → Claude Code 把「流中断」当可回退错误，切换非流式重试 → 网关强制 `stream=true`，回退请求收到 SSE 无法解析为 Message JSON → 用户看到「API returned an empty or malformed response (HTTP 200)」
+2. **请求体 413**：axum 默认 `DefaultBodyLimit` 只放行 2MiB，超长会话（多轮历史 + 工具结果 + base64 截图）被 413 直接拒绝——「输入太大」报错的另一半成因
+
+### 决策
+
+1. **基准头超时提到 300s**（`UPSTREAM_HEADER_TIMEOUT_SECS`）：对齐 Claude Code 的 `API_TIMEOUT_MS` 默认值与 CLI 侧 SSE 空闲看门狗 90s（等待头期间网关每 15s 的 keepalive 足以维持客户端连接）
+2. **按估算输入规模自适应放宽** `header_timeout_for(est_input_tokens)`：≥100k token → 600s；≥50k → 480s；其余 → 基准 300s
+3. **请求体上限放宽到 64MiB**（`MAX_REQUEST_BODY_BYTES`）：覆盖多模态大会话（Anthropic 对 base64 图片本身上限 5MB/张，64MiB 足够）；`proxy_routes()` 套 `DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES)`
+
+### 原因
+
+1. **头超时本质是兜底**：上游建连后挂起不响应才该放弃，正常大输入慢但会响应。固定 60s 把「慢但正常」误判成「挂死」
+2. **输入规模可估算**：输入 token 数与上游处理时间强相关，分档放宽既覆盖大输入又不让小请求白等 600s
+3. **300s 基准对齐客户端**：Claude Code 自身超时就是 300s 量级，网关比客户端早放弃毫无意义
+4. **64MiB 覆盖现实峰值**：2MiB 默认值对多模态不现实，64MiB 远超单张图片上限又有余量
+
+### 代价
+
+- 大输入挂起场景要等更久（300s 起）才判定失败——可接受，因为 keepalive 维持连接、客户端不会先断
+- 64MiB 请求体占内存：单用户本地场景并发低，无内存压力
+
+### 实现
+
+```rust
+// api/proxy/mod.rs
+pub(crate) const UPSTREAM_HEADER_TIMEOUT_SECS: u64 = 300;
+pub(crate) const UPSTREAM_CHUNK_TIMEOUT_SECS: u64 = 120;
+pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+pub(crate) fn header_timeout_for(est_input_tokens: u64) -> u64 {
+    if est_input_tokens >= 100_000 { 600 }
+    else if est_input_tokens >= 50_000 { 480 }
+    else { UPSTREAM_HEADER_TIMEOUT_SECS }
+}
+
+// api/router.rs
+fn proxy_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/v1/messages", post(proxy::proxy_anthropic_messages))
+        // ...
+        .layer(DefaultBodyLimit::max(super::proxy::MAX_REQUEST_BODY_BYTES))
+}
+```

@@ -13,8 +13,8 @@ xrl-router 是一个运行在本地的 LLM API 统一网关。客户端通过一
 | HTTP 客户端 | reqwest 0.12 (流式 SSE) |
 | 加密 | aes-gcm 0.10 (Provider Key 加密) + argon2 0.5 (Service Key 哈希) |
 | 前端 | Vue 3 + Pinia + Vue Router 4 |
-| UI | Material Web Components (MD3) + MDI 图标 + Chart.js + SortableJS (拖拽排序) + 自研 i18n (zh-CN/en) |
-| 桌面插件 | tauri-plugin-autostart (开机自启) + tauri-plugin-dialog/fs (数据导出导入) |
+| UI | Material Web Components (MD3) + MDI 图标 + Chart.js + vue-chartjs + SortableJS (拖拽排序) + 自研 i18n (zh-CN/en) |
+| 桌面插件 | tauri-plugin-autostart (开机自启) + tauri-plugin-dialog/fs (数据导出导入) + tauri-plugin-shell (外链打开) |
 | 构建 | Vite 8 (前端) + Cargo (后端) |
 
 ## 快速开始
@@ -83,7 +83,9 @@ pnpm build
 
 **流式引擎架构**：handler.rs 是薄入口层（认证 + 请求体准备），核心逻辑委托给 stream.rs 的 `proxy_stream()` 函数完成路由解析、上游连接、密钥轮换和流式转发。stream.rs 路由解析后立即返回 Response（含 keepalive），上游等待和流式转发在后台 spawn 中完成，客户端毫秒级收到首字节。流式转发分支（passthrough / O→A / A→O）实现在 forward.rs。
 
-**SSE 优化**：为避免客户端因等待上游响应（可能耗时数秒）而超时断开，passthrough 路径立即返回 HTTP Response（含 `:keepalive` 初始字节），后台 spawn 处理上游数据流。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳，确保连接存活。
+**SSE 优化**：为避免客户端因等待上游响应（可能耗时数秒）而超时断开，passthrough 路径立即返回 HTTP Response（含 `:keepalive` 初始字节），后台 spawn 处理上游数据流。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳（oneshot 取消信号驱动，主任务结束即停心跳，修复流式响应永不结束），确保连接存活。
+
+**自适应超时 + 请求体放宽**：上游响应头超时不再固定 60s，改为按估算输入 token 自适应（≥100k → 600s、≥50k → 480s、基准 300s），对齐 Claude Code 客户端超时，避免大上下文长排队被误判挂死而断流。请求体上限从 axum 默认 2MiB 放宽到 64MiB，覆盖多轮历史 + 工具结果 + base64 截图的多模态大会话。
 
 客户端消费端配置见 [接入 CC Switch](#接入-cc-switch)。
 
@@ -112,6 +114,10 @@ pnpm build
 ### 系统托盘 + 开机静默启动
 
 关闭窗口后应用隐藏到系统托盘，网关继续运行。开启「开机静默启动」（设置页通用 Tab）后，系统登录时以 `--minimized` 拉起应用，窗口不显示、网关照常运行、驻留托盘；托盘菜单语言跟随应用语言设置（zh-CN / en）。
+
+### Claude FM（墙钟直播流播放器）
+
+应用内置一台「电台」：一张固定歌单循环，时间轴完全由墙钟定义（`pos = (now/1000) % 总时长`，锚点 Unix epoch），任何设备任何时刻算出的是同一个直播位置——暂停只是静音，恢复时跳到当前直播点（如 YouTube Live）。播放器是模块级单例（`src/fm/player.ts`），生命周期绑定进程而非视图：路由切换不销毁 `<audio>`，窗口关闭只隐藏到托盘，音乐持续。音源预热完成后托盘菜单加入「Claude FM」勾选项（勾选播放 / 取消暂停）。
 
 ### WebSocket 实时推送
 

@@ -53,9 +53,12 @@ src/                           前端 Vue 3
 ├── theme.ts                   明/暗/跟随系统主题（localStorage 持久化，prefers-color-scheme 监听）
 ├── i18n/                      自研 i18n：index.ts（t/setLocale/initI18n）+ zh-CN.ts / en.ts
 ├── styles/global.css          全局样式（MD3 design tokens + [data-theme="dark"]）
-├── views/*                    5 个页面（Providers/ProviderNew/Keys/Stats/Settings）
+├── fm/                        Claude FM 播放器（模块级单例 <audio>，墙钟直播流时间轴，生命周期绑定进程而非视图）
+├── views/*                    6 个页面（ClaudeFm/Providers/ProviderNew/Keys/Stats/Settings）
 ├── components/*               AppShell / ConnectionStatus / PluginRegisterDialog
 └── stores/*                   4 个 Pinia stores（providers/keys/models/dashboard）
+
+> **Claude FM**：播放器本体是 `src/fm/player.ts` 的模块级单例，与视图生命周期解耦——`ClaudeFmView.vue` 只读共享状态、转发交互，路由切换不销毁 `<audio>`。托盘勾选经 `fm_set_playing` / `fm_ready` Tauri command 同步（见 `lib.rs`）。改 FM 行为改 `player.ts`，改播放器 UI 改 `ClaudeFmView.vue`。
 
 src-tauri/assets/install.html   局域网 install 静态页（include_str! 编译进二进制）
 
@@ -120,6 +123,7 @@ docs/                          文档（本目录）
 - 颜色用 CSS 变量 `var(--md-sys-color-*)`，**不要**硬编码 hex
 - MWC 组件在 `main.ts` 按需导入，**不要**导入 `all.js`
 - `api.ts` 的 `BASE_URL` 是写死的 `http://localhost:19068`，前端不走相对路径
+- 外链打开用 `@tauri-apps/plugin-shell` 的 `open()`（如 SettingsView），不要用 `window.open`（Tauri WebView 内不可靠）
 
 ## 测试
 
@@ -190,5 +194,6 @@ Agent 倾向于扩展。以下功能**不要主动实现**，即使用户描述�
 | 修改代理逻辑 | `api/proxy/stream.rs`（流式引擎核心）、`api/proxy/handler.rs`（薄入口）、`api/proxy/translate/`、`http.rs`（代理配置） |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
 | 修改前端 | `src/main.ts`（MD3 导入模式）、`src/styles/global.css`（design tokens） |
+| 修改 Claude FM | `src/fm/player.ts`（单例播放器逻辑）、`src/views/ClaudeFmView.vue`（UI）、`lib.rs`（托盘 `fm` command） |
 | 新增插件消息 | `plugin/types.rs`、`plugin/registry.rs` |
 | 修改协议转换 | `api/proxy/translate/common.rs`、两个方向文件 |

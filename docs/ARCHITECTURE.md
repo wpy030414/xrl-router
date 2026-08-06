@@ -174,7 +174,7 @@ main.rs
   │  外层: 遍历 provider 候选 (冷却中的直接跳过)
   │  内层: pick_key_for() → round-robin, 跳过 Red/Yellow
   │  http::build_http_client() → 自动继承系统代理
-  │  发送请求 → 60s 头超时
+  │  发送请求 → 自适应头超时 header_timeout_for() (300/480/600s 按估算输入 token)
   │  401/403 → mark_key_invalid(Red) → 换 key (内层继续)
   │  402/429 → mark_key_low_quota(Yellow) → 换 key (内层继续)
   │  5xx / 网络错误 / 头超时 → 有后续候选: mark_provider_failed(60s 冷却) → 切 provider
@@ -185,8 +185,9 @@ main.rs
   ▼
 [4e] 流式转发 (stream.rs 的 4 种分支)
   │  同协议: spawn_passthrough() ──── 立即返回 Response + :keepalive 初始字节
-  │           └─ 后台 spawn 转发 + 15s keepalive 心跳
+  │           └─ 后台 spawn 转发 + 15s keepalive 心跳 (oneshot 取消信号驱动, 见 ADR-021)
   │           └─ 响应头: Cache-Control: no-cache, Connection: keep-alive, X-Accel-Buffering: no
+  │           └─ 请求体上限 64MiB (MAX_REQUEST_BODY_BYTES, 覆盖多模态大会话)
   │           └─ SniffStream (透传字节 + 后台解析 usage)
   │  异协议: spawn_translate_openai_to_anthropic() / spawn_translate_anthropic_to_openai()
   │           └─ 初始 keepalive 事件
@@ -208,16 +209,19 @@ SSE 流返回客户端
 src/
 ├── main.ts            Vue 入口 + MD3 组件按需导入 + initI18n + initSystemThemeListener
 ├── App.vue            根组件: AppShell + PluginRegisterDialog + router-view
-├── router.ts          7 条路由 (6 个 lazy-loaded 组件路由 + 1 个 redirect)
+├── router.ts          8 条路由 (7 个 lazy-loaded 组件路由 + 1 个 redirect)
 ├── api.ts             REST 客户端 (BASE_URL=http://localhost:19068, 含 installApi/requestLogApi/dataApi)
 ├── ws.ts              WebSocket 客户端 (自动重连 3s, 事件 pub/sub)
 ├── theme.ts           主题 light/dark/system (localStorage 持久化, prefers-color-scheme 监听)
 ├── i18n/              自研 i18n: index.ts (t/setLocale/initI18n, localStorage + 后端托盘同步) + zh-CN.ts / en.ts
+├── fm/                Claude FM 播放器 (模块级单例 <audio>, 墙钟直播流时间轴)
+│    └─ player.ts      fmState/fmPlayer/currentTrack; 生命周期绑定进程而非视图
 │
 ├── styles/
 │    global.css                全局样式 (MD3 design tokens + [data-theme="dark"])
 │
 ├── views/
+│    ClaudeFmView.vue   Claude FM 播放器视图 (大圆按钮 + 歌曲信息, 只读共享状态转发交互)
 │    ProvidersView.vue    供应商列表 (网格卡片 + 拖拽排序 + WS 实时 key 统计)
 │    ProviderNewView.vue  供应商创建/编辑 (支持插件模式)
 │    KeysView.vue         Service Key 管理 (表格 + 权限对话框 + 分发链接)
@@ -236,7 +240,7 @@ src/
      dashboard.ts    仪表盘数据 (后端路由未注册, 见已知问题)
 ```
 
-前端通过 HTTP 访问管理 API（无认证），通过 WebSocket 接收实时推送。语言切换经 `set_locale` Tauri command 同步到后端（托盘菜单文本），开机启动经 `@tauri-apps/plugin-autostart`，数据文件读写经 `plugin-dialog` + `plugin-fs`（路径白名单见安全边界）。
+前端通过 HTTP 访问管理 API（无认证），通过 WebSocket 接收实时推送。语言切换经 `set_locale` Tauri command 同步到后端（托盘菜单文本），开机启动经 `@tauri-apps/plugin-autostart`，外链打开经 `@tauri-apps/plugin-shell`，数据文件读写经 `plugin-dialog` + `plugin-fs`（路径白名单见安全边界）。Claude FM 播放状态经 `fm_set_playing` / `fm_ready` Tauri command 同步到托盘菜单勾选。
 
 ---
 
@@ -344,6 +348,7 @@ xrl-router
   ├── tauri-plugin-autostart  开机自启 (LaunchAgent + --minimized)
   ├── tauri-plugin-dialog     导出/导入文件对话框
   ├── tauri-plugin-fs         读写 .sql 备份文件
+  ├── tauri-plugin-shell      外链打开 (SettingsView 内 openUrl)
   ├── axum 0.7         HTTP 框架
   ├── tokio            异步运行时
   ├── rusqlite 0.32    SQLite (bundled)
@@ -360,7 +365,7 @@ xrl-router
   ├── Vue 3            UI 框架
   ├── Pinia            状态管理
   ├── @material/web    MD3 组件
-  ├── Chart.js         统计图表
+  ├── Chart.js + vue-chartjs   统计图表
   └── SortableJS       拖拽排序
 ```
 
