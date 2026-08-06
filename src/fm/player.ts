@@ -1,7 +1,7 @@
 // Claude FM — 前端播放器（极简版）。
 //
 // 所有播放逻辑（歌单、时钟、预加载、切歌）已移入 Rust 后端 FmEngine。
-// 后端输出一条永不关闭的 HTTP chunked 直播流 GET /api/fm/live，
+// 后端输出一条永不关闭的 HTTP chunked 直播流 GET /fm/live，
 // 前端只需一个 <audio> 标签像收音机一样收听。
 //
 // 生命周期与应用进程绑定，而非任何视图组件：
@@ -50,12 +50,12 @@ async function prewarm() {
 
   // 获取初始曲目元数据（首次连接前）
   try {
-    const meta = await fetch(`${gatewayBase}/api/fm/meta`).then(r => r.json());
+    const meta = await fetch(`${gatewayBase}/fm/meta`).then(r => r.json());
     state.track = meta;
   } catch { /* 后端未就绪时静默 */ }
 
   // 挂上永不关闭的直播流
-  radio.src = `${gatewayBase}/api/fm/live`;
+  radio.src = `${gatewayBase}/fm/live`;
 
   radio.addEventListener('canplay', () => {
     if (!state.ready) {

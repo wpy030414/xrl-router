@@ -4,7 +4,7 @@
 
 ## 项目范围
 
-xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应用形式运行。Rust 后端（`src-tauri/src/`）跑 axum HTTP 服务：**admin listener 绑 `127.0.0.1:19068`**（管理 API + 本机 `/v1/*` 兼容入口），**public listener 绑 `0.0.0.0:19069`**（局域网 install 页面 + `/v1/*` 代理，`enable_public` 控制）。Vue 3 前端（`src/`）跑在 Tauri WebView 里。所有数据存本地 SQLite。
+xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应用形式运行。Rust 后端（`src-tauri/src/`）跑 axum HTTP 服务：**单 listener 绑 `0.0.0.0:19068`**，通过路径级 IP 中间件（`admin_ip_guard`）限制 `/api/*` 管理端点仅 loopback 可访问，其余路径（`/v1/*`、`/install`、`/health`、`/ws`）对外开放。Vue 3 前端（`src/`）跑在 Tauri WebView 里。所有数据存本地 SQLite。
 
 ## 代码组织
 
@@ -16,9 +16,9 @@ src-tauri/src/                 后端 Rust
 ├── error.rs                   AppError 统一错误类型
 ├── http.rs                    统一 HTTP 客户端工厂（系统代理自动继承）
 ├── crypto/mod.rs              AES-256-GCM + Argon2 + master key
-├── gateway/server.rs          AppState + start_gateway (双 listener) + CORS
+├── gateway/server.rs          AppState + start_gateway (单 listener) + CORS
 ├── api/
-│   ├── router.rs              axum 路由表（build_admin_router / build_public_router）
+│   ├── router.rs              axum 路由表（build_router）
 │   ├── handlers/*             管理 API 处理器（按实体分文件；install.rs 托管 /install 页面；data.rs 数据导出/导入/重置）
 │   └── proxy/*                LLM 代理核心
 │       ├── handler.rs         薄入口层：认证 + 请求体准备，委托 stream::proxy_stream()
@@ -42,6 +42,7 @@ src-tauri/src/                 后端 Rust
 ├── keys/pool/*                KeyPool（mod.rs + types/rotation/health/persistence）
 ├── models/mod.rs              ModelRegistry
 ├── middleware/rate_limit.rs   令牌桶限流
+├── middleware/admin_guard.rs  IP 限制中间件（/api/* 仅 loopback）
 ├── search/bing.rs             Bing 搜索（WebSearch 劫持用）
 
 > **HTTP 客户端**：所有出站 HTTP 请求**必须**使用 `http::build_http_client()` 或 `http::http_client()`，**不要**直接 `reqwest::Client::new()` 或 `reqwest::Client::builder()`。统一工厂自动继承系统代理（环境变量 → Windows 注册表），`localhost`/`127.0.0.1` 自动豁免直连。
@@ -58,7 +59,7 @@ src/                           前端 Vue 3
 ├── components/*               AppShell / ConnectionStatus / PluginRegisterDialog
 └── stores/*                   4 个 Pinia stores（providers/keys/models/dashboard）
 
-> **Claude FM**：所有播放逻辑（歌单、墙钟时间轴、音源解析、预加载、切歌）在 Rust 后端 `FmEngine`（`api/handlers/fm.rs`）完成。引擎以 `tokio::spawn` 后台任务运行，通过 `broadcast::channel` 推送音频字节给所有 `/api/fm/live` 订阅者。前端 `src/fm/player.ts`（~40 行）只有一个模块级单例 `<audio>` 收听直播流 + 监听 `fm-meta` 事件更新曲目元数据。托盘勾选经 `fm_set_playing` / `fm_ready` Tauri command 同步（见 `lib.rs`）。改 FM 逻辑改 `api/handlers/fm.rs`，改播放器 UI 改 `ClaudeFmView.vue`。
+> **Claude FM**：所有播放逻辑（歌单、墙钟时间轴、音源解析、预加载、切歌）在 Rust 后端 `FmEngine`（`api/handlers/fm.rs`）完成。引擎以 `tokio::spawn` 后台任务运行，通过 `broadcast::channel` 推送音频字节给所有 `/fm/live` 订阅者。前端 `src/fm/player.ts`（~40 行）只有一个模块级单例 `<audio>` 收听直播流 + 监听 `fm-meta` 事件更新曲目元数据。托盘勾选经 `fm_set_playing` / `fm_ready` Tauri command 同步（见 `lib.rs`）。改 FM 逻辑改 `api/handlers/fm.rs`，改播放器 UI 改 `ClaudeFmView.vue`。
 
 src-tauri/assets/install.html   局域网 install 静态页（include_str! 编译进二进制）
 
@@ -108,13 +109,14 @@ docs/                          文档（本目录）
 - **轮询指针**持久化到 `settings` 表（键名 `keypool_index_{provider_id}`）
 - 锁序生死攸关：`keys/pool/mod.rs` 注释里有详细规则，违反会跟插件的 `keys_update` 形成 ABBA 死锁
 
-### 双 listener 分离监听（双端口架构）
+### 单 listener + 路径级 IP 限制（单端口架构）
 
-- **admin**（`127.0.0.1:19068`，`Config.host/port`）：全部 `/api/*` 管理 + `/health` + `/ws` + `/ws/plugin` + `/v1/*` 代理。CORS 用 origin 白名单
-- **public**（`0.0.0.0:19069`，`Config.public_host/public_port`）：`/install` 静态页 + `/v1/*` 代理。CORS 全开。`enable_public` 为 false 时不启动
-- `/v1/*` 由 `router.rs` 的共享 `proxy_routes(state)` 构建（套 `rate_limit_middleware`），admin 与 public 各自 merge —— 返回未 with_state 的 `Router<AppState>`，由调用方 `.with_state` 统一收敛
-- **admin 必须保留 `/v1/*`**：拆双端口前 `/v1/*` 就在 19068 上，本机既有客户端（CC Switch 等直连 19068）取模型列表/余额，拆走会 404 而坏。新增 `/v1/*` 端点时两个 router 都要挂
-- **新增公共端点**：只有「局域网设备该访问」的路由才挂 public router；任何管理/密钥读写端点严禁上 public
+- **单 listener** 绑 `0.0.0.0:19068`（`Config.host/port`），承载全部路由
+- **`/api/*` 管理端点**：仅 loopback IP（`127.0.0.1` / `::1`）可访问，由 `admin_ip_guard` 中间件拦截非本机请求返回 403
+- **公开端点**：`/health`、`/ws`、`/ws/plugin`、`/install`、`/v1/*` 代理（套 `rate_limit_middleware`）——不限 IP
+- **CORS**：统一使用 origin 白名单（`Config.cors_origins`）
+- **`/v1/*` 端点**：由 `router.rs` 的 `proxy_routes(state)` 构建，返回未 with_state 的 `Router<AppState>`，由调用方 `.with_state` 统一收敛
+- **新增端点**：管理/密钥读写端点挂 `/api/*` 子路由（自动受 IP 限制）；局域网设备该访问的路由挂公开区
 - **install 页面**：静态 HTML 放 `src-tauri/assets/install.html`，用 `include_str!` 编译进二进制（零运行时文件依赖），`handlers/install.rs` 的 `serve_install_page` 返回。页面契约（`?t=` 明文 key、生成命令的引号约定等）见 `docs/specs/spec-lan-deploy.md`，改页面必须同步该 spec
 
 ### 前端
@@ -142,7 +144,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**，即使用户描述�
 - ❌ **不做 Docker 容器化**。Tauri 是桌面框架，容器化没意义
 - ❌ **不做 CLI 模式（无 GUI）**。Tauri 的 setup 流程依赖 app handle，拆出来工程量大
 - ❌ **不做横向扩展 / 负载均衡**。单实例足够本地场景
-- ❌ **不做远程管理界面**。绑定 `127.0.0.1` 是设计选择，不是待修复的 bug。public listener（`0.0.0.0:19069`）只暴露需 key 的 `/v1/*` 代理与无敏感信息的 `/install` 分发页，**管理端点永不对外开放**
+- ❌ **不做远程管理界面**。`/api/*` 管理端点受 `admin_ip_guard` IP 中间件限制，仅 loopback 可访问，这是设计选择而非待修复的 bug。公开路径只暴露需 key 的 `/v1/*` 代理与无敏感信息的 `/install` 分发页，**管理端点永不对外开放**
 - ❌ **不做公网部署 / 穿透 / TLS**。局域网分发是边界，暴露到公网（内网穿透、云服务器等）不在设计内
 
 ### 功能层面
@@ -158,7 +160,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**，即使用户描述�
 
 ### 安全层面
 
-- ❌ **不加管理 API 认证**。`127.0.0.1` 绑定 + CORS 白名单是当前的安全模型，本机其他进程访问是接受的代价
+- ❌ **不加管理 API 认证**。IP 限制（`admin_ip_guard`，loopback only）+ CORS 白名单是当前的安全模型，本机其他进程访问是接受的代价
 - ❌ **不做 TLS / HTTPS**。localhost 流量不需要加密
 - ❌ **不做 OAuth / WebAuthn / 多用户登录**。单用户桌面应用
 - ❌ **不做 VPC / 网络隔离**。桌面应用不在网络环境里跑
@@ -187,9 +189,9 @@ Agent 倾向于扩展。以下功能**不要主动实现**，即使用户描述�
 
 | 改动类型 | 必读文件 |
 |---------|---------|
-| 新增 API 端点 | `api/router.rs`（admin/public 两个 router 都挂）、`api/handlers/` 任一文件看模式 |
+| 新增 API 端点 | `api/router.rs`（区分 `/api/*` 管理路由与公开路由）、`api/handlers/` 任一文件看模式 |
 | 修改 install 页面 | `src-tauri/assets/install.html`（include_str! 编译进二进制）+ `docs/specs/spec-lan-deploy.md` 契约 |
-| 修改网关启动/监听 | `gateway/server.rs`（双 listener）+ `config.rs` |
+| 修改网关启动/监听 | `gateway/server.rs`（单 listener + ConnectInfo）+ `config.rs` + `middleware/admin_guard.rs` |
 | 新增 DB 表/列 | `db/schema.rs`（追加迁移）、`db/mod.rs`（UPSERT 测试） |
 | 修改代理逻辑 | `api/proxy/stream.rs`（流式引擎核心）、`api/proxy/handler.rs`（薄入口）、`api/proxy/translate/`、`http.rs`（代理配置） |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |

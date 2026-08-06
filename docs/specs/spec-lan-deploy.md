@@ -10,47 +10,48 @@
 浏览器沙箱无法直接安装 CLI、无法改写客户端 `~/.claude/settings.json`。最接近"自动"的形态
 是 install 页面生成单行安装命令，用户复制粘贴到终端执行一次（装 CLI + 写 settings.json）。
 
-## 架构：双 listener 分离监听
+## 架构：单 listener + 路径级 IP 限制
 
 ```
 ┌──────────────────── xrl-router (axum) ────────────────────┐
-│  admin listener  127.0.0.1:19068                           │
-│    /api/*  /health  /ws  /ws/plugin  /v1/*  /install/local-ip │  ← Tauri UI + 本机既有客户端
-│  public listener 0.0.0.0:19069                             │
-│    /v1/*（代理，套 rate_limit）  /install（静态页）         │  ← 局域网设备访问
+│  单 listener  0.0.0.0:19068                                │
+│  公开路径（不限 IP）：                                       │
+│    /health  /ws  /ws/plugin  /install  /v1/*                │
+│  管理路径（admin_ip_guard 限 loopback）：                    │
+│    /api/*  /api/install/local-ip  /api/data/*               │
 └────────────────────────────────────────────────────────────┘
 ```
 
 **职责分工**:
-- **admin**：管理/密钥 CRUD + `/v1/*` 代理（**必须保留**——拆双端口前 `/v1/*` 就在
-  19068 上，本机既有客户端如 CC Switch 直连 19068 取模型列表/余额，拆走会 404 而坏）。
-- **public**：`/v1/*` 代理（需 service key 鉴权）+ `/install` 静态页（无 key 也可访问，
-  但无 key 时只显示"请获取链接"提示）。CORS 全开（CLI 无 origin 约束、install 同源）。
+- **公开路径**：`/health`、`/ws`、`/ws/plugin`、`/install` 静态页、`/v1/*` 代理（需 service key 鉴权）。局域网设备可访问。
+- **管理路径**：`/api/*` CRUD + `/api/install/local-ip` + `/api/data/*`。仅 loopback IP（`127.0.0.1` / `::1`）可访问，非本机返回 403。
 
-`/v1/*` 由共享 `proxy_routes(state)` 构建（套 `rate_limit_middleware`），admin 与 public
-各自 merge——注意返回 `Router<AppState>`（未 with_state），由调用方 `.with_state` 收敛。
+`/v1/*` 由 `proxy_routes(state)` 构建（套 `rate_limit_middleware` + 64MiB body limit）。
+`admin_ip_guard` 中间件用 `ConnectInfo<SocketAddr>` 提取客户端 IP，`server.rs` 使用
+`into_make_service_with_connect_info::<SocketAddr>()` 启用 IP 提取。
 
 ## 配置
 
-`Config`（`src-tauri/src/config.rs`）新增字段，环境变量覆盖：
+`Config`（`src-tauri/src/config.rs`）字段，环境变量覆盖：
 
 | 字段 | 默认值 | 环境变量 |
 |---|---|---|
-| `public_host` | `0.0.0.0` | `PUBLIC_HOST` |
-| `public_port` | `19069` | `PUBLIC_PORT` |
-| `enable_public` | `true` | `ENABLE_PUBLIC`（1/true） |
+| `host` | `0.0.0.0` | `HOST` |
+| `port` | `19068` | `PORT` |
 
-`addr()` → 管理 listener 地址；`public_addr()` → 公共 listener 地址。
+`addr()` → listener 地址。管理端点通过 `admin_ip_guard` 中间件限制 loopback，无需单独端口。
 
 ## 路由
 
-`build_admin_router(state)`（`api/router.rs`）：原 `build_router` 全部 `/api/*` +
-`/health` + `/ws` + `/ws/plugin` + `GET /api/install/local-ip`。
+`build_router(state)`（`api/router.rs`）：统一路由表，公开路径与管理路径共存。
+`/api/*` 子路由挂 `middleware::from_fn(admin_ip_guard)` 层，非 loopback 返回 403。
 
-`build_public_router(state)`：`/v1/chat/completions`、`/v1/messages`、`/v1/models`、
-`/v1/user/balance`（套 `rate_limit_middleware`）+ `GET /install`。
+路由包括：
+- 公开：`/health`、`/ws`、`/ws/plugin`、`/install` 静态页
+- 管理（IP 限制）：`/api/providers`、`/api/keys`、`/api/models`、`/api/stats`、`/api/settings`、`/api/plugins`、`/api/install/local-ip`、`/api/data/*`
+- 代理：`/v1/chat/completions`、`/v1/messages`、`/v1/models`、`/v1/user/balance`（套 `rate_limit_middleware`）
 
-`build_router` 保留为 admin 别名（兼容 `lib.rs` 与冒烟测试）。
+`build_router` 保留为统一入口（兼容 `lib.rs` 与冒烟测试）。
 
 ## install 页面契约 — `src-tauri/assets/install.html`
 
@@ -60,7 +61,7 @@
 
 **语言**：页面内联双语字典（zh/en，纯静态自包含，无构建依赖），标题「客户分发 / Client Deploy」，右上角固定语言切换按钮。语言优先级：URL `?lang=` 参数 > localStorage `install-lang` > `navigator.language`（en 前缀 → English，否则中文）。切换语言时重渲染并重新拉取模型列表。
 
-**拉取模型**：页面打开时用 `t` 调 `GET /v1/models`（`x-api-key: <t>`，同源 19069 无 CORS 问题），
+**拉取模型**：页面打开时用 `t` 调 `GET /v1/models`（`x-api-key: <t>`，同源 19068 无 CORS 问题），
 取可用别名列表（`data[].id` = display_name）。默认选中第一项（后端按 tier 排序，通常为主模型）。
 拉取失败则提示可忽略，但 Claude Code 会用官方模型名请求而 404。
 
@@ -101,7 +102,7 @@
 
 平台可手动切换（防 UA 误判）。复制按钮用 `navigator.clipboard`。
 
-`ANTHROPIC_BASE_URL` 只填到端口（`http://<IP>:19069`），不带 `/v1/messages`（Claude Code 自拼）。
+`ANTHROPIC_BASE_URL` 只填到端口（`http://<IP>:19068`），不带 `/v1/messages`（Claude Code 自拼）。
 
 **为何 `_MODEL` 也用网关别名**：Claude Code 把 `_MODEL` 的值作为 API 请求 model 字段，
 网关 `resolve_route` 按 `models.display_name` 查找。若 `_MODEL` 写官方 ID（如
@@ -115,7 +116,7 @@
 ## 分发链接 — 密钥管理页
 
 `KeysView.vue`「密钥已创建」dialog（创建 key 后弹出，明文仅此一次）:
-- 内容区：明文密钥框 + 分发链接框（`http://<本机IP>:19069/install?t=<明文key>`）。
+- 内容区：明文密钥框 + 分发链接框（`http://<本机IP>:19068/install?t=<明文key>`）。
 - actions：「复制」+「复制分发链接」+「完成」。
 - 本机 IP 由 `GET /api/install/local-ip` 返回（UDP socket 连 8.8.8.8:80 取出口 IP）。
   `deployLink` computed 依赖 `newKeyPlain` + `localIp`，`watch(newKeyPlain)` 异步取 IP。
@@ -125,9 +126,9 @@
 
 ## 安全模型
 
-- 公共端口 `0.0.0.0:19069`：局域网任何人可调 `/v1/*`（需有效 key）、可看 `/install`
+- 单端口 `0.0.0.0:19068`：局域网任何人可调 `/v1/*`（需有效 key）、可看 `/install`
   （无 key 仅显示提示）。
-- 管理 `/api/*` 仍绑 127.0.0.1，局域网无法访问。
+- 管理 `/api/*` 受 `admin_ip_guard` 中间件限制，仅 loopback IP 可访问，局域网返回 403。
 - 明文 key 在 install URL query：局域网嗅探可见，主人复制给特定用户，撤销即删。
 
 ## 鉴权
@@ -139,10 +140,11 @@ Claude Code 用 `ANTHROPIC_AUTH_TOKEN` 走 `Authorization: Bearer`，网关已�
 ## 完成条件
 
 1. `cargo build` 通过；`vue-tsc --noEmit` 通过。
-2. 本机 `curl 127.0.0.1:19068/health` → 200；局域网 `curl <本机IP>:19068/health` → 拒绝。
-3. 局域网浏览器开 `http://<本机IP>:19069/install`（无 t）→ 显示提示页。
-4. 密钥管理页创建密钥 → dialog 显示明文 key + 分发链接 → 复制分发链接。
-5. 局域网设备打开分发链接 → 看到平台命令 → 终端运行 → `settings.json` 含
+2. 本机 `curl 127.0.0.1:19068/health` → 200；局域网 `curl <本机IP>:19068/health` → 200（公开路径不限 IP）。
+3. 局域网 `curl <本机IP>:19068/api/providers` → 403（admin_ip_guard 拦截）。
+4. 局域网浏览器开 `http://<本机IP>:19068/install`（无 t）→ 显示提示页。
+5. 密钥管理页创建密钥 → dialog 显示明文 key + 分发链接 → 复制分发链接。
+6. 局域网设备打开分发链接 → 看到平台命令 → 终端运行 → `settings.json` 含
    `env.ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 且其他字段保留。
-6. 该设备 `claude` 发消息 → 网关统计页见流量（`/v1/messages` 命中、key 鉴权通过）。
-7. 密钥列表删除该 key → 该设备再用同 key → 401。
+7. 该设备 `claude` 发消息 → 网关统计页见流量（`/v1/messages` 命中、key 鉴权通过）。
+8. 密钥列表删除该 key → 该设备再用同 key → 401。

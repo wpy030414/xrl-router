@@ -6,7 +6,7 @@
 
 ## 1. 系统总览
 
-xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`127.0.0.1:19068`），前端 Vue 3 SPA 运行在 Tauri WebView 中喵～
+xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`0.0.0.0:19068`），前端 Vue 3 SPA 运行在 Tauri WebView 中喵～
 
 ```
 ┌─── Tauri 桌面应用 ───────────────────────────────────────────────────────┐
@@ -19,7 +19,7 @@ xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTT
 │  │ SettingsView      │  WebSocket       │ /ws (实时推送)               │ │
 │  │                   │═════════════════▶│ /ws/plugin (插件注册)        │ │
 │  └───────────────────┘                  └──────────────────────────────┘ │
-│                                        (同一进程, admin listener :19068)│
+│                                        (同一进程, 单 listener :19068)   │
 └───────────────────────────────────────────────────────────────────────────┘
 
 外部 LLM 客户端 (Claude Code / 其他)
@@ -28,13 +28,14 @@ xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTT
     │  POST /v1/messages 或 /v1/chat/completions
     ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                  双 listener 分离监听 (axum)                               │
+│               单 listener 绑 0.0.0.0:19068 (axum)                         │
 │                                                                           │
-│  admin 127.0.0.1:19068      public 0.0.0.0:19069                          │
-│  ├─ /api/* 管理 CRUD        ├─ /install 静态页 (局域网设备)               │
-│  ├─ /health  /ws  /ws/plugin├─ /v1/* 代理 (service key 鉴权)              │
-│  ├─ /api/install/local-ip   └─ 同一套 proxy_routes (rate_limit)           │
-│  └─ /v1/* 代理 (本机兼容)                                                 │
+│  公开路径（不限 IP）              /api/* 管理路径（IP 中间件限 loopback）  │
+│  ├─ /install 静态页 (局域网)      ├─ CRUD: providers,keys,models          │
+│  ├─ /v1/* 代理 (service key)     ├─ stats, settings, plugins             │
+│  ├─ /health  /  /ws  /ws/plugin  ├─ install/local-ip                     │
+│  └─ 同一套 proxy_routes           ├─ fm/live, fm/meta                     │
+│    (rate_limit + 64MiB body)      └─ data/export,import,reset             │
 │                                                                           │
 │  请求入口 → 认证 → 路由解析 → 密钥选取 → 协议转换 → 上游转发 → 流式回传    │
 │                                                                           │
@@ -66,9 +67,9 @@ main.rs
        │    ├─ service_keys.rs Service Key CRUD
        │    ├─ usage.rs       usage_log 查询 + 统计聚合 + 请求日志分页
        │    └─ settings.rs    key-value 设置表 + 导出/导入/重置
-       ├─ gateway/server.rs  AppState + start_gateway (双 listener) + CORS
+       ├─ gateway/server.rs  AppState + start_gateway (单 listener) + CORS
        └─ api/
-            ├─ router.rs      axum 路由表 (build_admin_router / build_public_router)
+            ├─ router.rs      axum 路由表 (build_router)
             ├─ handlers/      管理 API
             │    ├─ health.rs, providers.rs, keys.rs, models.rs
             │    ├─ service_keys.rs, stats.rs (含 /api/stats/requests 分页 + failover 开关)
@@ -76,7 +77,7 @@ main.rs
             │    ├─ install.rs  (/install 静态页 + /api/install/local-ip)
             │    ├─ websocket.rs  (/ws 端点)
             │    ├─ plugin.rs     (插件 REST + WS)
-            │    └─ fm.rs         Claude FM 广播电台引擎 (FmEngine + /api/fm/live + /api/fm/meta)
+            │    └─ fm.rs         Claude FM 广播电台引擎 (FmEngine + /fm/live + /fm/meta)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~250 行)
                  ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn 双循环 (~550 行)
@@ -115,7 +116,7 @@ main.rs
   │    ├─ keys.rs         keys_update 同步
   │    ├─ health.rs       check_heartbeats (30s/90s)
   │    └─ types.rs        消息类型定义
-  ├─ middleware/rate_limit.rs  令牌桶 (60 req/min)
+  ├─ middleware/rate_limit.rs  令牌桶 (128 req/min)
   ├─ search/bing.rs           Bing 搜索 (cn.bing.com)
   ├─ assets/install.html      局域网 install 静态页 (include_str! 编译进二进制)
   └─ types/                   数据结构定义
@@ -216,7 +217,7 @@ src/
 ├── theme.ts           主题 light/dark/system (localStorage 持久化, prefers-color-scheme 监听)
 ├── i18n/              自研 i18n: index.ts (t/setLocale/initI18n, localStorage + 后端托盘同步) + zh-CN.ts / en.ts
 ├── fm/                Claude FM 前端（极简 ~40 行：单例 <audio> 收听后端直播流）
-│    └─ player.ts      挂载 /api/fm/live，监听 fm-meta 事件更新曲目元数据
+│    └─ player.ts      挂载 /fm/live，监听 fm-meta 事件更新曲目元数据
 │
 ├── styles/
 │    global.css                全局样式 (MD3 design tokens + [data-theme="dark"])
@@ -293,7 +294,7 @@ src/
             └───────────┼───────────────┘
                         │
               /v1/messages, /v1/chat/completions, /v1/models, /v1/user/balance
-              (令牌桶限流 60 req/min + 5h/7d token 配额)
+              (令牌桶限流 128 req/min + 5h/7d token 配额)
                         │
                         ▼
                     xrl-router
@@ -307,15 +308,16 @@ src/
                     上游 LLM API
 ```
 
-### 6.1 双 listener 分离监听
+### 6.1 单 listener + 路径级 IP 限制
 
-| listener | 绑定 | 路由 | 访问方 | CORS |
+| 路径类型 | 绑定 | 路由 | 访问方 | CORS |
 |----------|------|------|--------|------|
-| admin | `127.0.0.1:19068` (`HOST:PORT`) | `/api/*`、`/health`、`/ws`、`/ws/plugin`、`/api/install/local-ip`、`/v1/*` 代理 | Tauri WebView、本机既有客户端 (CC Switch 等) | origin 白名单（7 个） |
-| public | `0.0.0.0:19069` (`PUBLIC_HOST:PUBLIC_PORT`) | `/install` 静态页、`/v1/*` 代理 | 局域网设备 | 全开 (Any) |
+| 公开 | `0.0.0.0:19068` (`HOST:PORT`) | `/health`、`/ws`、`/ws/plugin`、`/install` 静态页、`/v1/*` 代理 | Tauri WebView、本机客户端、局域网设备 | origin 白名单（7 个） |
+| 管理（IP 限制） | 同上（`admin_ip_guard` 中间件限 loopback） | `/api/*` CRUD、`/api/install/local-ip`、`/api/data/*` | 仅本机（Tauri WebView、CC Switch 等） | origin 白名单（7 个） |
 
-- `/v1/*` 由共享 `proxy_routes()` 构建（套 `rate_limit_middleware`），admin 与 public 各自 merge —— admin 保留 `/v1/*` 是兼容要求：拆双端口前 `/v1/*` 就在 19068 上，本机既有客户端直连 19068 取模型/余额，拆走会 404 而坏
-- public listener 由 `enable_public` 控制（默认开启），`/install` 无 key 时仅显示提示页
+- `/v1/*` 由 `proxy_routes()` 构建（套 `rate_limit_middleware` + 64MiB body limit）
+- `admin_ip_guard` 中间件用 `ConnectInfo<SocketAddr>` 提取客户端 IP，非 loopback 返回 403
+- `server.rs` 使用 `into_make_service_with_connect_info::<SocketAddr>()` 启用 IP 提取
 - **已知问题**: 前端 `api.ts` 定义了 `dashboardApi`（`/api/dashboard/overview`、`/api/dashboard/usage`），`stores/dashboard.ts` 也在使用，但后端 `router.rs` 未注册这两条路由。
 ```
 
@@ -334,7 +336,7 @@ src/
 | 密钥状态纯内存 | 减少 DB 写入开销，启动全 green 可接受 |
 | 轮询指针持久化 | 重启后跳过已失效的 key |
 | usage_log 无 FK | 删除 Provider/Model/Key 不影响历史统计 |
-| 管理 API 无认证 | admin listener 绑 127.0.0.1 是安全模型，本机进程访问是接受的代价；public listener 只暴露需 key 的 `/v1/*` 与无敏感信息的 `/install` |
+| 管理 API 无认证 | `admin_ip_guard` IP 中间件限 loopback 是安全模型，本机进程访问是接受的代价；公开路径只暴露需 key 的 `/v1/*` 与无敏感信息的 `/install` |
 | 协议转换不丢特性 | 不兼容的要显式转换 + warn 日志，不静默丢弃 |
 | failover 冷却纯内存 | 与密钥健康同一哲学，不持久化不广播；开关默认关闭，开启才改变请求行为 |
 | 数据导出用 SQL dump | SQLite 原生语句保真度高，导入即执行，天然支持跨版本迁移 |

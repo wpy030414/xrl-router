@@ -118,7 +118,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-09 | **请求超时保护（自适应头超时 + 120s chunk 间隔）** | `api/proxy/stream.rs` + `api/proxy/forward.rs` + `api/proxy/mod.rs`（`header_timeout_for()` 按估算输入规模放宽） |
 | F-10 | **密钥轮询指针持久化** | `keys/pool/persistence.rs` |
 | F-11 | **AES-256-GCM 加密 Provider Key** | `crypto/mod.rs` |
-| F-12 | **令牌桶限流（60 req/min）** | `middleware/rate_limit.rs` |
+| F-12 | **令牌桶限流（128 req/min）** | `middleware/rate_limit.rs` |
 
 ### 4.2 P1 — 重要功能（已实现 ✅）
 
@@ -152,7 +152,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-33 | **系统代理自动继承（http.rs 统一工厂）** | `http.rs` |
 | F-34 | **ConnectionStatus 绝对路径修复** | `ConnectionStatus.vue` |
 | F-35 | **局域网分发（install 页面 + 分发链接）** | `api/handlers/install.rs` + `assets/install.html` + `KeysView.vue` |
-| F-36 | **双 listener 分离监听（admin/public）** | `gateway/server.rs` + `api/router.rs` + `config.rs` |
+| F-36 | **单 listener + 路径级 IP 限制** | `gateway/server.rs` + `api/router.rs` + `middleware/admin_guard.rs` + `config.rs` |
 | F-37 | **故障转移（Provider Failover）** | `api/proxy/stream.rs`（双循环重试）+ `api/proxy/forward.rs`（流式转发）+ `api/proxy/failover.rs`（冷却表）+ `api/proxy/route.rs`（候选解析） |
 | F-38 | **请求日志分页** | `api/handlers/stats.rs` + `db/usage.rs` + `StatsView.vue` |
 | F-39 | **国际化（zh-CN/en，前端 + 托盘菜单 + install 页）** | `src/i18n/` + `lib.rs` + `assets/install.html` |
@@ -296,14 +296,14 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 
 ---
 
-## 7.1 局域网分发规格（install 页面 + 双 listener）
+## 7.1 局域网分发规格（install 页面 + 单端口）
 
 把本机网关能力延伸到局域网设备：浏览器沙箱无法直接装 CLI、写客户端配置，所以 install 页面生成「一行命令」让用户在终端执行一次（装 Claude Code CLI + 写 `~/.claude/settings.json` 指向本机网关）。详见 [specs/spec-lan-deploy.md](specs/spec-lan-deploy.md)。
 
 | 项 | 规则 |
 |----|------|
-| 双 listener | admin `127.0.0.1:19068`（管理 API + 本机 `/v1/*` 兼容入口）；public `0.0.0.0:19069`（`/install` + `/v1/*` 代理） |
-| 分发链接 | 密钥管理页创建密钥后弹窗展示：`http://<本机IP>:19069/install?t=<明文key>`，可一键复制 |
+| 单 listener + IP 限制 | `0.0.0.0:19068`，`/api/*` 管理端点由 `admin_ip_guard` 中间件限 loopback；`/install`、`/v1/*` 对外开放 |
+| 分发链接 | 密钥管理页创建密钥后弹窗展示：`http://<本机IP>:19068/install?t=<明文key>`，可一键复制 |
 | 本机 IP 来源 | `GET /api/install/local-ip`（UDP socket 连 8.8.8.8:80 取出口 IP，过滤回环） |
 | 页面行为 | 用 `?t=` 里的 key 调 `/v1/models` 取模型别名下拉；按平台（Windows PowerShell / macOS·Linux Bash）生成命令；勾选「已装 CLI」可省略安装段 |
 | 命令内容 | A 段 `npm i -g @anthropic-ai/claude-code`；B 段写 `settings.json`：`env.ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` + 4 模型槽位（`_MODEL`/`_MODEL_NAME` 统一用网关别名）+ `permissions.defaultMode=bypassPermissions`，**保留客户端既有字段** |
@@ -333,10 +333,10 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 |------|------|
 | Service Key 存储 | Argon2 哈希（随机盐 + PHC 格式） |
 | Provider Key 存储 | AES-256-GCM 加密（主密钥 `master.key`，权限 0600） |
-| 管理 API | admin listener 绑定 `127.0.0.1:19068`，仅本机可访问 |
-| 公共暴露面 | public listener 绑定 `0.0.0.0:19069`，只暴露 `/v1/*`（需 key 鉴权）与 `/install`（无 key 仅提示页） |
-| CORS | admin origin 白名单（localhost + 127.0.0.1 的 5173/19068 双端口 + tauri://localhost + https://tauri.localhost + http://tauri.localhost，共 7 个）；public 全开（CLI 无 origin 约束） |
-| 频率限制 | 令牌桶 60 req/min，按 Service Key |
+| 管理 API | `admin_ip_guard` 中间件限 loopback IP，仅本机可访问 `/api/*` 端点 |
+| 公共暴露面 | 单端口 `0.0.0.0:19068`，公开路径只暴露 `/v1/*`（需 key 鉴权）、`/install`（无 key 仅提示页）、`/health`、`/ws` |
+| CORS | 统一 origin 白名单（localhost + 127.0.0.1 的 5173/19068 双端口 + tauri://localhost + https://tauri.localhost + http://tauri.localhost，共 7 个） |
+| 频率限制 | 令牌桶 128 req/min，按 Service Key |
 | 分发密钥 | install URL query 明文嵌入，仅限可信局域网设备，撤销即在密钥列表删除 |
 | 数据文件访问 | 导出/导入文件对话框 + fs 权限白名单（`$HOME`/`$DOWNLOAD`/`$DOCUMENT`/`$DESKTOP`/`$APPDATA`），白名单外路径不可读写 |
 

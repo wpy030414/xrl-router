@@ -155,7 +155,7 @@
 
   var app = document.getElementById('app');
   var key = params.get('t') || '';
-  var base = location.origin; // http://<本机IP>:19069
+  var base = location.origin; // http://<本机IP>:19068
 
   if (!key) {
     app.innerHTML =
@@ -180,7 +180,7 @@
     modelsError: ''
   };
 
-  // 拉取网关可用模型别名（用 URL 里的 key 鉴权，同源 19069 无 CORS 问题）
+  // 拉取网关可用模型别名（用 URL 里的 key 鉴权，同源 19068 无 CORS 问题）
   function fetchModels() {
     state.modelsLoading = true;
     state.modelsError = '';

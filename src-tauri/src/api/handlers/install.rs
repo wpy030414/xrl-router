@@ -1,7 +1,7 @@
 //! install 页面托管 + 本机局域网 IP 查询。
 //!
 //! `serve_install_page` 返回编译进二进制的静态 HTML（含生成安装命令的内联 JS），
-//! 由公共 listener（0.0.0.0:19069）暴露给局域网设备。`get_local_ip` 供主机 Tauri UI
+//! 由单 listener（0.0.0.0:19068）暴露给局域网设备。`get_local_ip` 供主机 Tauri UI
 //! 拼装分发链接，走管理 listener（127.0.0.1:19068）。
 
 use std::sync::Arc;

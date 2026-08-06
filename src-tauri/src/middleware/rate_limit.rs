@@ -10,7 +10,7 @@ use axum::{
 use serde_json::json;
 
 /// Token bucket rate limiter for service keys.
-/// Default: 60 requests per minute per service key.
+/// Default: 128 requests per minute per service key.
 #[derive(Clone)]
 pub struct RateLimiter {
     buckets: Arc<DashMap<String, TokenBucket>>,
@@ -25,11 +25,11 @@ struct TokenBucket {
 }
 
 impl RateLimiter {
-    /// Create a new rate limiter with default settings (60 req/min).
+    /// Create a new rate limiter with default settings (128 req/min).
     pub fn new() -> Self {
         Self {
             buckets: Arc::new(DashMap::new()),
-            max_tokens: 60,
+            max_tokens: 128,
             refill_interval: Duration::from_secs(60),
         }
     }
