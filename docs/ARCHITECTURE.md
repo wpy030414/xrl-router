@@ -75,7 +75,8 @@ main.rs
             │    ├─ data.rs      (/api/data/export|import|reset)
             │    ├─ install.rs  (/install 静态页 + /api/install/local-ip)
             │    ├─ websocket.rs  (/ws 端点)
-            │    └─ plugin.rs     (插件 REST + WS)
+            │    ├─ plugin.rs     (插件 REST + WS)
+            │    └─ fm.rs         Claude FM 广播电台引擎 (FmEngine + /api/fm/live + /api/fm/meta)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备 (~250 行)
                  ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn 双循环 (~550 行)
@@ -214,14 +215,14 @@ src/
 ├── ws.ts              WebSocket 客户端 (自动重连 3s, 事件 pub/sub)
 ├── theme.ts           主题 light/dark/system (localStorage 持久化, prefers-color-scheme 监听)
 ├── i18n/              自研 i18n: index.ts (t/setLocale/initI18n, localStorage + 后端托盘同步) + zh-CN.ts / en.ts
-├── fm/                Claude FM 播放器 (模块级单例 <audio>, 墙钟直播流时间轴)
-│    └─ player.ts      fmState/fmPlayer/currentTrack; 生命周期绑定进程而非视图
+├── fm/                Claude FM 前端（极简 ~40 行：单例 <audio> 收听后端直播流）
+│    └─ player.ts      挂载 /api/fm/live，监听 fm-meta 事件更新曲目元数据
 │
 ├── styles/
 │    global.css                全局样式 (MD3 design tokens + [data-theme="dark"])
 │
 ├── views/
-│    ClaudeFmView.vue   Claude FM 播放器视图 (大圆按钮 + 歌曲信息, 只读共享状态转发交互)
+│    ClaudeFmView.vue   Claude FM 视图（大圆按钮 + 曲目 caption，从 fm-meta 事件读取）
 │    ProvidersView.vue    供应商列表 (网格卡片 + 拖拽排序 + WS 实时 key 统计)
 │    ProviderNewView.vue  供应商创建/编辑 (支持插件模式)
 │    KeysView.vue         Service Key 管理 (表格 + 权限对话框 + 分发链接)

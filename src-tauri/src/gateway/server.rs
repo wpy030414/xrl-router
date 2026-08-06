@@ -5,6 +5,7 @@ use crate::middleware::RateLimiter;
 use crate::models::ModelRegistry;
 use crate::plugin::PluginManager;
 use crate::providers::ProviderRegistry;
+use crate::api::handlers::FmEngine;
 use anyhow::Result;
 use axum::http::HeaderValue;
 use std::sync::Arc;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub plugins: PluginManager,
     /// 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
     pub http_client: reqwest::Client,
+    /// FM 广播电台引擎（单例，进程级广播）。
+    pub fm: FmEngine,
 }
 
 impl AppState {
@@ -77,6 +80,9 @@ impl AppState {
             .build()
             .expect("failed to build shared http client");
 
+        // FM 广播电台引擎：使用共享 http_client 复用连接池。
+        let fm = FmEngine::new(http_client.clone());
+
         Self {
             config,
             database,
@@ -91,6 +97,7 @@ impl AppState {
             provider_cooldowns,
             plugins,
             http_client,
+            fm,
         }
     }
 }
@@ -117,6 +124,10 @@ pub async fn start_gateway(state: Arc<AppState>) -> Result<()> {
             }
         });
     }
+
+    // FM 广播电台引擎：后台持续拉取音源并广播给所有 /api/fm/live 订阅者。
+    // app_handle 用于 emit fm-meta 事件通知前端切歌。
+    // 注意：start_gateway 无法直接拿到 app_handle，由 lib.rs setup 中调用。
 
     // 既有后台 task：每 30s 检查插件心跳，断开 >90s 无心跳的插件
     {

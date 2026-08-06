@@ -10,6 +10,7 @@ pub mod service_keys;
 pub mod stats;
 pub mod websocket;
 pub mod data;
+pub mod fm;
 
 pub(crate) use health::health_check;
 pub(crate) use install::{get_local_ip, serve_install_page};
@@ -21,3 +22,4 @@ pub(crate) use service_keys::{create_service_key, delete_service_key, list_servi
 pub(crate) use stats::{get_settings, get_stats, get_stats_requests, update_settings};
 pub(crate) use websocket::ws_handler;
 pub(crate) use data::{export_data, import_data, reset_data};
+pub(crate) use fm::{fm_live, fm_current_meta, FmEngine};

@@ -2,13 +2,13 @@
   <div class="fm-view">
     <button
       class="fm-toggle"
-      :disabled="!fmState.ready || fmState.loading"
+      :disabled="!fmState.ready"
       :aria-label="fmState.playing ? t('fm.pause') : t('fm.play')"
       @click="fmPlayer.toggle"
     >
       <span
         class="mdi fm-toggle__icon"
-        :class="fmState.loading ? 'mdi-loading mdi-spin' : fmState.playing ? 'mdi-pause' : 'mdi-play'"
+        :class="fmState.playing ? 'mdi-pause' : 'mdi-play'"
       ></span>
     </button>
     <div class="fm-caption">{{ caption }}</div>
@@ -16,18 +16,17 @@
 </template>
 
 <script setup lang="ts">
-// Claude FM — 播放器视图。
+// Claude FM — 播放器视图（极简版）。
 // 播放器本体是模块级单例（src/fm/player.ts），与视图生命周期解耦：
 // 本组件只读共享状态、转发交互；路由切换（组件卸载）不影响播放。
-// 底部等宽字体展示「歌手 - 歌曲名」（电台语义，不显示时间码）。
+// 底部等宽字体展示「歌手 - 歌曲名」（由后端 fm-meta 事件驱动更新）。
 import { computed } from 'vue';
 import { t } from '../i18n';
-import { fmState, fmPlayer, currentTrack } from '../fm/player';
+import { fmState, fmPlayer } from '../fm/player';
 
 const caption = computed(() => {
   if (!fmState.playing) return '';
-  const track = currentTrack();
-  return `${track.title} - ${track.artist}`;
+  return `${fmState.track.title} - ${fmState.track.artist}`;
 });
 </script>
 

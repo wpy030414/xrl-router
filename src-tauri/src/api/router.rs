@@ -89,6 +89,9 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route("/api/plugins/:id/confirm", post(handlers::confirm_plugin))
         // 本机局域网 IP 查询（供 UI 拼分发链接）
         .route("/api/install/local-ip", get(handlers::get_local_ip))
+        // Claude FM 广播电台直播流（永不关闭的 HTTP chunked stream）
+        .route("/api/fm/live", get(handlers::fm_live))
+        .route("/api/fm/meta", get(handlers::fm_current_meta))
         // /v1/* 代理（本机既有客户端直连 19068 的兼容入口）
         .merge(proxy_routes(&state))
         .with_state(state)

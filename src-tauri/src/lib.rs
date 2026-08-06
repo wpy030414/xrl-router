@@ -40,6 +40,15 @@ fn get_autostart_status(app: tauri::AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
+/// 返回本机 gateway 的 admin 地址（前端 Claude FM 音频代理用）。
+/// 端口由环境变量可配，前端无法静态硬编码，故由后端告知。
+#[tauri::command]
+fn get_gateway_base(app: tauri::AppHandle) -> String {
+    let state = app.state::<Arc<AppState>>();
+    let cfg = &state.config;
+    format!("http://{}:{}", cfg.host, cfg.port)
+}
+
 #[tauri::command]
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -135,7 +144,9 @@ fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {
     app.tray_by_id("main-tray")
         .ok_or_else(|| "tray not found".to_string())?
         .set_menu(Some(menu))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    info!("fm_ready: Claude FM menu item added to tray");
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -174,7 +185,8 @@ pub fn run() {
             set_autostart,
             set_locale,
             fm_set_playing,
-            fm_ready
+            fm_ready,
+            get_gateway_base
         ])
         .setup(move |app| {
             // Resolve data directory using Tauri's path API:
@@ -262,6 +274,7 @@ pub fn run() {
                     // 勾选状态由点击事件自行翻转（CheckMenuItem 原生行为），
                     // 播放器随后 emit fm-toggle 事件驱动前端 toggle。
                     "fm" => {
+                        info!("tray: fm clicked");
                         let _ = app.emit("fm-toggle", ());
                     }
                     "quit" => app.exit(0),
@@ -271,7 +284,10 @@ pub fn run() {
 
             // Start gateway server in Tauri's async runtime
             let state = app_state.clone();
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Spawn FM radio engine before starting gateway (engine needs app_handle for fm-meta events)
+                state.fm.clone().spawn(app_handle);
                 if let Err(e) = gateway::server::start_gateway(state).await {
                     error!("Gateway server failed: {}", e);
                 }
