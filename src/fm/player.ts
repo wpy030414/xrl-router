@@ -63,6 +63,32 @@ async function prewarm() {
       invoke('fm_ready').catch(() => {});
     }
   }, { once: true });
+
+  // 流中断恢复：error/stalled/waiting → 指数退避重连 /fm/live。
+  // 后端广播为永不关闭的 chunked 流，上游掉线/网络抖动会让 <audio> 静默挂死，
+  // 这里兜底重挂源续播。
+  let retry = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const reattach = () => {
+    if (retryTimer) clearTimeout(retryTimer);
+    const delay = Math.min(1000 * 2 ** retry, 8000); // 1s→2s→4s→8s 封顶
+    retry += 1;
+    retryTimer = setTimeout(() => {
+      try {
+        radio.src = `${gatewayBase}/fm/live`;
+        radio.load();
+        if (state.playing) radio.play().catch(() => {});
+      } catch { /* 静默，等待下次重试 */ }
+    }, delay);
+  };
+  for (const ev of ['error', 'stalled', 'waiting'] as const) {
+    radio.addEventListener(ev, () => {
+      if (!state.playing) return; // 暂停时不主动重连
+      reattach();
+    });
+  }
+  // 成功恢复播放 → 清零退避计数。
+  radio.addEventListener('playing', () => { retry = 0; });
 }
 
 // ── 播放控制 ──

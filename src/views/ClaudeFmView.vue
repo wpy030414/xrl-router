@@ -25,7 +25,9 @@ import { t } from '../i18n';
 import { fmState, fmPlayer } from '../fm/player';
 
 const caption = computed(() => {
-  if (!fmState.playing) return '';
+  // 始终显示当前曲目（暂停不清空，避免暂停/播放闪烁）。
+  // 元数据未到（title/artist 为空）时返回空串占位。
+  if (!fmState.track.title && !fmState.track.artist) return '';
   return `${fmState.track.title} - ${fmState.track.artist}`;
 });
 </script>
