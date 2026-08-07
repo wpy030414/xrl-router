@@ -18,7 +18,7 @@ pub mod translate;
 pub mod websearch;
 
 pub use handler::{
-    proxy_anthropic_messages, proxy_list_models, proxy_openai_chat, proxy_openai_responses,
+    proxy_chat_completions, proxy_list_models, proxy_messages, proxy_responses,
 };
 pub use quota::user_balance;
 

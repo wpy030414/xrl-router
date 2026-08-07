@@ -374,7 +374,7 @@ mod tests {
             db.save_provider(&crate::types::Provider {
                 id: id.to_string(),
                 name: format!("P-{}", id),
-                kind: crate::types::ProviderKind::Openai,
+                kind: crate::types::ProviderKind::ChatCompletions,
                 base_url: base.to_string(),
                 api_path: "/v1/chat/completions".to_string(),
                 config: serde_json::json!({}),

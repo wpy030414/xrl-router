@@ -180,7 +180,7 @@ pub(crate) async fn proxy_fetch_models(Query(params): Query<FetchModelsParams>) 
     let mut req = client.get(&params.url);
     if let Some(key) = params.key {
         if !key.is_empty() {
-            if params.kind == "anthropic" {
+            if params.kind == "messages" {
                 req = req
                     .header("x-api-key", &key)
                     .header("anthropic-version", "2023-06-01");

@@ -37,8 +37,8 @@ pub type ErrorTuple = (StatusCode, HeaderMap, Json<Value>);
 /// 客户端期望的响应格式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientFormat {
-    Anthropic,
-    Chat,
+    Messages,
+    ChatCompletions,
     Responses,
 }
 
@@ -225,9 +225,9 @@ pub async fn proxy_stream(
 
             // 根据 provider_kind 从 IR 生成上游请求体
             let mut attempt_body = match cand.provider_kind.as_str() {
-                "anthropic" => ir::to_anthropic::ir_req_to_anthropic(&ir_request),
+                "messages" => ir::to_messages::ir_req_to_messages(&ir_request),
                 "responses" => ir::to_responses::ir_req_to_responses(&ir_request),
-                _ => ir::to_chat::ir_req_to_chat(&ir_request),
+                _ => ir::to_chat_completions::ir_req_to_chat_completions(&ir_request),
             };
 
             // 注入真实 model ID + stream 选项
@@ -235,7 +235,7 @@ pub async fn proxy_stream(
                 obj.insert("model".to_string(), json!(cand.real_model_id));
                 obj.insert("stream".to_string(), json!(true));
                 // Chat Completions 需要 stream_options 才能拿到 usage
-                if cand.provider_kind != "anthropic" && cand.provider_kind != "responses" {
+                if cand.provider_kind != "messages" && cand.provider_kind != "responses" {
                     obj.insert(
                         "stream_options".to_string(),
                         json!({"include_usage": true}),
@@ -271,7 +271,7 @@ pub async fn proxy_stream(
                 let key_masked = picked.key_masked.clone();
 
                 let mut req_builder = client.post(&cand.upstream_url);
-                if cand.provider_kind == "anthropic" {
+                if cand.provider_kind == "messages" {
                     req_builder = req_builder
                         .header("x-api-key", &picked.key_hash)
                         .header("anthropic-version", "2023-06-01");
@@ -518,7 +518,7 @@ pub(super) fn send_error_event(
     message: &str,
 ) {
     let bytes = match client_format {
-        ClientFormat::Anthropic => {
+        ClientFormat::Messages => {
             let payload = serde_json::to_string(&json!({
                 "type": "error",
                 "error": { "type": error_type, "message": message }
@@ -526,7 +526,7 @@ pub(super) fn send_error_event(
             .unwrap_or_default();
             Bytes::from(format!("event: error\ndata: {}\n\n", payload))
         }
-        ClientFormat::Chat => {
+        ClientFormat::ChatCompletions => {
             let payload = serde_json::to_string(&json!({
                 "error": { "message": message, "type": error_type, "code": null }
             }))

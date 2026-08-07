@@ -26,7 +26,7 @@ use super::quota::check_quota;
 use super::stream::{ClientFormat, StreamContext};
 
 /// POST /v1/messages - Anthropic Messages API proxy (streaming only).
-pub async fn proxy_anthropic_messages(
+pub async fn proxy_messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -46,21 +46,21 @@ pub async fn proxy_anthropic_messages(
         })
         .unwrap_or("");
 
-    let ir_request = ir::from_anthropic::anthropic_req_to_ir(&body);
+    let ir_request = ir::from_messages::messages_req_to_ir(&body);
     authenticate_and_stream(
         state,
         api_key,
         ir_request,
         trace_id,
         start_time,
-        ClientFormat::Anthropic,
+        ClientFormat::Messages,
         "/v1/messages",
     )
     .await
 }
 
-/// POST /v1/chat/completions - OpenAI Chat API proxy (streaming only).
-pub async fn proxy_openai_chat(
+/// POST /v1/chat/completions - OpenAI Chat Completions API proxy (streaming only).
+pub async fn proxy_chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -76,21 +76,21 @@ pub async fn proxy_openai_chat(
         .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
         .unwrap_or("");
 
-    let ir_request = ir::from_chat::chat_req_to_ir(&body);
+    let ir_request = ir::from_chat_completions::chat_completions_req_to_ir(&body);
     authenticate_and_stream(
         state,
         api_key,
         ir_request,
         trace_id,
         start_time,
-        ClientFormat::Chat,
+        ClientFormat::ChatCompletions,
         "/v1/chat/completions",
     )
     .await
 }
 
 /// POST /v1/responses - OpenAI Responses API proxy (streaming only).
-pub async fn proxy_openai_responses(
+pub async fn proxy_responses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,

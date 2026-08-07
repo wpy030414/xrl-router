@@ -7,12 +7,12 @@ use serde_json::Value;
 
 use super::types::{IrRequest, IrSystemContent, IrUsage};
 
-/// 从 Anthropic 流式 chunk 提取 usage 增量。
+/// 从 Anthropic Messages 流式 chunk 提取 usage 增量。
 ///
 /// - `message_start`: input_tokens + cache_creation（写缓存并入输入）+ cache_read
 /// - `message_delta`: output_tokens + cache_read
 /// - `content_block_delta`: output_chars（text/thinking 字符数，回退估算用）
-pub fn extract_anthropic_usage(chunk: &Value) -> IrUsage {
+pub fn extract_messages_usage(chunk: &Value) -> IrUsage {
     let event_type = chunk["type"].as_str().unwrap_or("");
     let mut usage = IrUsage::default();
 
@@ -60,7 +60,7 @@ pub fn extract_anthropic_usage(chunk: &Value) -> IrUsage {
 /// - `prompt_cache_hit_tokens`（DeepSeek/Kimi）
 /// - `prompt_tokens_details.cached_tokens`（OpenAI 标准）
 /// - `cache_read_input_tokens`（部分兼容上游）
-pub fn extract_chat_usage(chunk: &Value) -> IrUsage {
+pub fn extract_chat_completions_usage(chunk: &Value) -> IrUsage {
     let mut usage = IrUsage::default();
 
     if let Some(u) = chunk.get("usage") {
@@ -206,7 +206,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_extract_anthropic_usage_message_start() {
+    fn test_extract_messages_usage_message_start() {
         let chunk = json!({
             "type": "message_start",
             "message": {
@@ -218,37 +218,37 @@ mod tests {
                 }
             }
         });
-        let u = extract_anthropic_usage(&chunk);
+        let u = extract_messages_usage(&chunk);
         assert_eq!(u.input_tokens, 1700); // 200 + 1500
         assert_eq!(u.cache_read_input_tokens, 8000);
         assert_eq!(u.cache_creation_input_tokens, 1500);
     }
 
     #[test]
-    fn test_extract_anthropic_usage_message_delta() {
+    fn test_extract_messages_usage_message_delta() {
         let chunk = json!({
             "type": "message_delta",
             "delta": {"stop_reason": "end_turn"},
             "usage": {"output_tokens": 300, "cache_read_input_tokens": 8000}
         });
-        let u = extract_anthropic_usage(&chunk);
+        let u = extract_messages_usage(&chunk);
         assert_eq!(u.output_tokens, 300);
         assert_eq!(u.cache_read_input_tokens, 8000);
     }
 
     #[test]
-    fn test_extract_anthropic_usage_content_block_delta() {
+    fn test_extract_messages_usage_content_block_delta() {
         let chunk = json!({
             "type": "content_block_delta",
             "index": 0,
             "delta": {"type": "text_delta", "text": "Hello world"}
         });
-        let u = extract_anthropic_usage(&chunk);
+        let u = extract_messages_usage(&chunk);
         assert_eq!(u.output_chars, 11);
     }
 
     #[test]
-    fn test_extract_chat_usage_basic() {
+    fn test_extract_chat_completions_usage_basic() {
         let chunk = json!({
             "id": "chatcmpl-1",
             "choices": [],
@@ -258,14 +258,14 @@ mod tests {
                 "prompt_tokens_details": {"cached_tokens": 8000}
             }
         });
-        let u = extract_chat_usage(&chunk);
+        let u = extract_chat_completions_usage(&chunk);
         assert_eq!(u.input_tokens, 1700); // 9700 - 8000
         assert_eq!(u.output_tokens, 300);
         assert_eq!(u.cache_read_input_tokens, 8000);
     }
 
     #[test]
-    fn test_extract_chat_usage_deepseek_cache() {
+    fn test_extract_chat_completions_usage_deepseek_cache() {
         let chunk = json!({
             "id": "chatcmpl-1",
             "choices": [],
@@ -276,13 +276,13 @@ mod tests {
                 "prompt_cache_miss_tokens": 1700
             }
         });
-        let u = extract_chat_usage(&chunk);
+        let u = extract_chat_completions_usage(&chunk);
         assert_eq!(u.input_tokens, 1700);
         assert_eq!(u.cache_read_input_tokens, 8000);
     }
 
     #[test]
-    fn test_extract_chat_usage_no_cache() {
+    fn test_extract_chat_completions_usage_no_cache() {
         let chunk = json!({
             "id": "chatcmpl-1",
             "choices": [],
@@ -291,19 +291,19 @@ mod tests {
                 "completion_tokens": 50
             }
         });
-        let u = extract_chat_usage(&chunk);
+        let u = extract_chat_completions_usage(&chunk);
         assert_eq!(u.input_tokens, 100);
         assert_eq!(u.output_tokens, 50);
         assert_eq!(u.cache_read_input_tokens, 0);
     }
 
     #[test]
-    fn test_extract_chat_usage_char_count() {
+    fn test_extract_chat_completions_usage_char_count() {
         let chunk = json!({
             "id": "chatcmpl-1",
             "choices": [{"index": 0, "delta": {"content": "Hello"}}]
         });
-        let u = extract_chat_usage(&chunk);
+        let u = extract_chat_completions_usage(&chunk);
         assert_eq!(u.output_chars, 5);
     }
 

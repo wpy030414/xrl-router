@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use super::types::*;
 
 /// 将 IR 请求体序列化为 OpenAI Chat Completions 格式。
-pub fn ir_req_to_chat(req: &IrRequest) -> Value {
+pub fn ir_req_to_chat_completions(req: &IrRequest) -> Value {
     let mut out = json!({
         "model": req.model,
         "stream": req.stream,
@@ -210,7 +210,7 @@ pub fn ir_req_to_chat(req: &IrRequest) -> Value {
 /// - delta 中只有变化的字段
 /// - tool_calls 有独立的 index
 /// - finish_reason 在最后一个 chunk
-pub struct ChatRenderState {
+pub struct ChatCompletionsRenderState {
     msg_id: String,
     model: String,
     created: i64,
@@ -220,7 +220,7 @@ pub struct ChatRenderState {
     first_chunk_sent: bool,
 }
 
-impl ChatRenderState {
+impl ChatCompletionsRenderState {
     pub fn new() -> Self {
         Self {
             msg_id: String::new(),
@@ -381,7 +381,7 @@ impl ChatRenderState {
     }
 }
 
-impl Default for ChatRenderState {
+impl Default for ChatCompletionsRenderState {
     fn default() -> Self {
         Self::new()
     }
@@ -392,7 +392,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ir_req_to_chat_basic() {
+    fn test_ir_req_to_chat_completions_basic() {
         let req = IrRequest {
             model: "gpt-4o".to_string(),
             system: Some(IrSystemContent::Text("Be helpful.".to_string())),
@@ -411,7 +411,7 @@ mod tests {
             thinking: None,
             stream: true,
         };
-        let v = ir_req_to_chat(&req);
+        let v = ir_req_to_chat_completions(&req);
         assert_eq!(v["model"], "gpt-4o");
         assert_eq!(v["messages"][0]["role"], "system");
         assert_eq!(v["messages"][0]["content"], "Be helpful.");
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ir_req_to_chat_with_tools() {
+    fn test_ir_req_to_chat_completions_with_tools() {
         let req = IrRequest {
             model: "gpt-4o".to_string(),
             system: None,
@@ -442,7 +442,7 @@ mod tests {
             }),
             stream: true,
         };
-        let v = ir_req_to_chat(&req);
+        let v = ir_req_to_chat_completions(&req);
         assert_eq!(v["tools"][0]["type"], "function");
         assert_eq!(v["tools"][0]["function"]["name"], "search");
         assert_eq!(v["tools"][0]["function"]["description"], "Search the web");
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ir_req_to_chat_tool_use_and_result() {
+    fn test_ir_req_to_chat_completions_tool_use_and_result() {
         let req = IrRequest {
             model: "gpt-4o".to_string(),
             system: None,
@@ -482,7 +482,7 @@ mod tests {
             thinking: None,
             stream: false,
         };
-        let v = ir_req_to_chat(&req);
+        let v = ir_req_to_chat_completions(&req);
         // Assistant message with tool_calls
         assert_eq!(v["messages"][0]["role"], "assistant");
         assert_eq!(v["messages"][0]["tool_calls"][0]["id"], "call_1");
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_render_event_text_delta() {
-        let mut state = ChatRenderState::new();
+        let mut state = ChatCompletionsRenderState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
 
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_render_event_reasoning_delta() {
-        let mut state = ChatRenderState::new();
+        let mut state = ChatCompletionsRenderState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "qwen-max".to_string();
 
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_render_event_message_delta_with_finish() {
-        let mut state = ChatRenderState::new();
+        let mut state = ChatCompletionsRenderState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
 
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_render_event_message_stop() {
-        let mut state = ChatRenderState::new();
+        let mut state = ChatCompletionsRenderState::new();
         let ev = IrStreamEvent::MessageStop;
         let bytes = state.render_event(&ev).unwrap();
         let s = String::from_utf8_lossy(&bytes);
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_render_event_tool_use_start() {
-        let mut state = ChatRenderState::new();
+        let mut state = ChatCompletionsRenderState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
         state.tool_count = 1;

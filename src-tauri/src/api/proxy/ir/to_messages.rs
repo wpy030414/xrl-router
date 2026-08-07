@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::types::*;
 
 /// 将 IR 请求体序列化为 Anthropic Messages 格式。
-pub fn ir_req_to_anthropic(req: &IrRequest) -> Value {
+pub fn ir_req_to_messages(req: &IrRequest) -> Value {
     let mut out = json!({
         "model": req.model,
         "stream": req.stream,
@@ -162,12 +162,12 @@ fn render_anthropic_content(blocks: &[IrContentBlock]) -> Value {
 // 流式事件渲染
 // ═══════════════════════════════════════════════════════════════════
 
-/// Anthropic SSE 渲染状态机。
+/// Messages SSE 渲染状态机。
 ///
 /// IR 事件与 Anthropic SSE 几乎同构，状态主要用于：
 /// - 记录 msg_id / model（message_start 时捕获，后续 chunk 复用）
 /// - 追踪是否已发过 message_start（避免重复）
-pub struct AnthropicRenderState {
+pub struct MessagesRenderState {
     msg_id: String,
     model: String,
     started: bool,
@@ -177,7 +177,7 @@ pub struct AnthropicRenderState {
     last_usage: Option<IrUsage>,
 }
 
-impl AnthropicRenderState {
+impl MessagesRenderState {
     pub fn new() -> Self {
         Self {
             msg_id: String::new(),
@@ -309,7 +309,7 @@ impl AnthropicRenderState {
     }
 }
 
-impl Default for AnthropicRenderState {
+impl Default for MessagesRenderState {
     fn default() -> Self {
         Self::new()
     }
@@ -320,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ir_req_to_anthropic_basic() {
+    fn test_ir_req_to_messages_basic() {
         let req = IrRequest {
             model: "claude-opus-4-8".to_string(),
             system: Some(IrSystemContent::Text("Be helpful.".to_string())),
@@ -339,7 +339,7 @@ mod tests {
             thinking: None,
             stream: true,
         };
-        let v = ir_req_to_anthropic(&req);
+        let v = ir_req_to_messages(&req);
         assert_eq!(v["model"], "claude-opus-4-8");
         assert_eq!(v["system"], "Be helpful.");
         assert_eq!(v["max_tokens"], 4096);
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ir_req_to_anthropic_with_tools() {
+    fn test_ir_req_to_messages_with_tools() {
         let req = IrRequest {
             model: "claude".to_string(),
             system: None,
@@ -368,7 +368,7 @@ mod tests {
             }),
             stream: true,
         };
-        let v = ir_req_to_anthropic(&req);
+        let v = ir_req_to_messages(&req);
         assert_eq!(v["tools"][0]["name"], "search");
         assert_eq!(v["tools"][0]["description"], "Search the web");
         assert_eq!(v["tool_choice"]["type"], "any");
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ir_req_to_anthropic_image() {
+    fn test_ir_req_to_messages_image() {
         let req = IrRequest {
             model: "claude".to_string(),
             system: None,
@@ -405,7 +405,7 @@ mod tests {
             thinking: None,
             stream: false,
         };
-        let v = ir_req_to_anthropic(&req);
+        let v = ir_req_to_messages(&req);
         let content = &v["messages"][0]["content"];
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "image");
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_render_event_message_start() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         let ev = IrStreamEvent::MessageStart {
             id: "msg_123".to_string(),
             model: "claude-opus-4-8".to_string(),
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_render_event_content_block_text() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         let ev = IrStreamEvent::ContentBlockStart {
             index: 0,
             block: IrContentBlockStart::Text,
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_render_event_text_delta() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         let ev = IrStreamEvent::ContentBlockDelta {
             index: 0,
             delta: IrContentDelta::TextDelta("Hello".to_string()),
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_render_event_message_delta_deferred() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         let ev = IrStreamEvent::MessageDelta {
             stop_reason: Some(IrStopReason::EndTurn),
             usage: Some(IrUsage {
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_finalize_emits_message_delta_and_stop() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         state.last_stop_reason = Some(IrStopReason::ToolUse);
 
         let usage = IrUsage {
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_finalize_fallback_chars_to_tokens() {
-        let mut state = AnthropicRenderState::new();
+        let mut state = MessagesRenderState::new();
         let usage = IrUsage {
             output_tokens: 0,
             output_chars: 120, // 120 / 4 = 30

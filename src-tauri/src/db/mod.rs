@@ -179,7 +179,7 @@ mod tests {
         let provider = Provider {
             id: "p1".to_string(),
             name: "P".to_string(),
-            kind: ProviderKind::Openai,
+            kind: ProviderKind::ChatCompletions,
             base_url: "https://example.com".to_string(),
             api_path: "/v1/chat/completions".to_string(),
             config: serde_json::json!({}),

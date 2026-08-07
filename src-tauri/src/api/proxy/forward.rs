@@ -50,13 +50,13 @@ pub(super) async fn forward_stream_ir(
     let mut chunk_count = 0u64;
 
     // 上游解析器状态（按 provider_kind 选择）
-    let mut anthropic_parse = ir::from_anthropic::AnthropicParseState::new();
-    let mut chat_parse = ir::from_chat::ChatParseState::new();
+    let mut anthropic_parse = ir::from_messages::MessagesParseState::new();
+    let mut chat_parse = ir::from_chat_completions::ChatCompletionsParseState::new();
     let mut responses_parse = ir::from_responses::ResponsesParseState::new();
 
     // 客户端渲染器状态（按 client_format 选择）
-    let mut anthropic_render = ir::to_anthropic::AnthropicRenderState::new();
-    let mut chat_render = ir::to_chat::ChatRenderState::new();
+    let mut anthropic_render = ir::to_messages::MessagesRenderState::new();
+    let mut chat_render = ir::to_chat_completions::ChatCompletionsRenderState::new();
     let mut responses_render = ir::to_responses::ResponsesRenderState::new();
 
     // 预填充估算的 input tokens（供 message_start 占位）
@@ -122,23 +122,23 @@ pub(super) async fn forward_stream_ir(
 
                 // 1. 解析上游 chunk → IR 事件
                 let ir_events = match provider_kind {
-                    "anthropic" => {
-                        ir::from_anthropic::anthropic_chunk_to_ir(&chunk_json, &mut anthropic_parse)
+                    "messages" => {
+                        ir::from_messages::messages_chunk_to_ir(&chunk_json, &mut anthropic_parse)
                     }
                     "responses" => {
                         ir::from_responses::responses_chunk_to_ir(&chunk_json, &mut responses_parse)
                     }
                     _ => {
-                        // "openai" / "deap" / "custom" 都当 Chat Completions 处理
-                        ir::from_chat::chat_chunk_to_ir(&chunk_json, &mut chat_parse)
+                        // "chat_completions" / "deap" / "custom" 都当 Chat Completions 处理
+                        ir::from_chat_completions::chat_completions_chunk_to_ir(&chunk_json, &mut chat_parse)
                     }
                 };
 
                 // 2. 渲染 IR 事件 → 客户端 SSE 字节
                 for ev in &ir_events {
                     let bytes = match client_format {
-                        ClientFormat::Anthropic => anthropic_render.render_event(ev),
-                        ClientFormat::Chat => chat_render.render_event(ev),
+                        ClientFormat::Messages => anthropic_render.render_event(ev),
+                        ClientFormat::ChatCompletions => chat_render.render_event(ev),
                         ClientFormat::Responses => responses_render.render_event(ev),
                     };
                     if let Some(b) = bytes {
@@ -153,14 +153,14 @@ pub(super) async fn forward_stream_ir(
 
     // 3. 渲染收尾事件
     let final_usage = match provider_kind {
-        "anthropic" => anthropic_parse.usage.clone(),
+        "messages" => anthropic_parse.usage.clone(),
         "responses" => responses_parse.usage.clone(),
         _ => chat_parse.usage.clone(),
     };
 
     let finalize_bytes = match client_format {
-        ClientFormat::Anthropic => anthropic_render.finalize(&final_usage),
-        ClientFormat::Chat => chat_render.finalize(&final_usage),
+        ClientFormat::Messages => anthropic_render.finalize(&final_usage),
+        ClientFormat::ChatCompletions => chat_render.finalize(&final_usage),
         ClientFormat::Responses => responses_render.finalize(&final_usage),
     };
     for b in finalize_bytes {

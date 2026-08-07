@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::types::*;
 
 /// 将 OpenAI Chat Completions 请求体解析为 IR。
-pub fn chat_req_to_ir(req: &Value) -> IrRequest {
+pub fn chat_completions_req_to_ir(req: &Value) -> IrRequest {
     let model = req["model"].as_str().unwrap_or("").to_string();
     let stream = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -300,13 +300,13 @@ fn parse_chat_tool_choice(tc: &Value) -> IrToolChoice {
 // 流式 chunk 解析
 // ═══════════════════════════════════════════════════════════════════
 
-/// Chat chunk 解析状态。
+/// Chat Completions chunk 解析状态。
 ///
 /// Chat 的流式状态机需要处理：
 /// - reasoning_content 和 content 可能交错（qwen3.7 等）
 /// - tool_calls 的 arguments 分多个 chunk 到达
 /// - 确保 IR 的 content block 顺序正确（thinking → text → tools）
-pub struct ChatParseState {
+pub struct ChatCompletionsParseState {
     /// 已捕获的 usage
     pub usage: IrUsage,
     /// 当前是否已发送 thinking block start
@@ -323,7 +323,7 @@ pub struct ChatParseState {
     model: String,
 }
 
-impl ChatParseState {
+impl ChatCompletionsParseState {
     pub fn new() -> Self {
         Self {
             usage: IrUsage::default(),
@@ -337,7 +337,7 @@ impl ChatParseState {
     }
 }
 
-impl Default for ChatParseState {
+impl Default for ChatCompletionsParseState {
     fn default() -> Self {
         Self::new()
     }
@@ -351,11 +351,11 @@ impl Default for ChatParseState {
 /// - `choices[0].delta.tool_calls[i]` → tool_use start/delta
 /// - `choices[0].finish_reason` → stop reason
 /// - `usage` → token usage（通常在最后一个 chunk）
-pub fn chat_chunk_to_ir(chunk: &Value, state: &mut ChatParseState) -> Vec<IrStreamEvent> {
+pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsParseState) -> Vec<IrStreamEvent> {
     let mut events = vec![];
 
     // 提取 usage（可能在任何 chunk 中）
-    let usage = super::usage::extract_chat_usage(chunk);
+    let usage = super::usage::extract_chat_completions_usage(chunk);
     if usage.input_tokens > 0
         || usage.output_tokens > 0
         || usage.cache_read_input_tokens > 0
@@ -554,7 +554,7 @@ mod tests {
             "max_tokens": 4096,
             "stream": true
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert_eq!(ir.model, "gpt-4o");
         assert_eq!(ir.max_tokens, Some(4096));
         assert!(ir.stream);
@@ -573,7 +573,7 @@ mod tests {
                 {"role": "user", "content": "Hello"}
             ]
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         match ir.system.unwrap() {
             IrSystemContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 2);
@@ -597,7 +597,7 @@ mod tests {
                 ]
             }]
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert_eq!(ir.messages[0].content.len(), 3);
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "What is this?"));
         assert!(matches!(&ir.messages[0].content[1], IrContentBlock::Image { source: IrImageSource::Url { url } } if url == "https://example.com/img.png"));
@@ -637,7 +637,7 @@ mod tests {
             }],
             "tool_choice": "auto"
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         // Tool use in assistant message
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::ToolUse { id, name, .. } if id == "call_1" && name == "search"));
         // Tool result in user message
@@ -653,12 +653,12 @@ mod tests {
     fn test_tool_choice_variants() {
         // "required" string
         let req = json!({"model": "x", "messages": [], "tool_choice": "required"});
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::Any)));
 
         // "none" string
         let req = json!({"model": "x", "messages": [], "tool_choice": "none"});
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::None)));
 
         // Specific tool
@@ -670,7 +670,7 @@ mod tests {
                 "function": {"name": "search"}
             }
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::Tool { ref name }) if name == "search"));
     }
 
@@ -684,7 +684,7 @@ mod tests {
                 "content": "answer"
             }]
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert_eq!(ir.messages[0].content.len(), 2);
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Thinking { thinking, .. } if thinking == "let me think"));
         assert!(matches!(&ir.messages[0].content[1], IrContentBlock::Text { text, .. } if text == "answer"));
@@ -697,7 +697,7 @@ mod tests {
             "messages": [],
             "reasoning_effort": "high"
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         let thinking = ir.thinking.unwrap();
         assert!(thinking.enabled);
         assert_eq!(thinking.budget_tokens, Some(16384));
@@ -710,7 +710,7 @@ mod tests {
             "messages": [],
             "max_completion_tokens": 8192
         });
-        let ir = chat_req_to_ir(&req);
+        let ir = chat_completions_req_to_ir(&req);
         assert_eq!(ir.max_tokens, Some(8192));
     }
 
@@ -718,20 +718,20 @@ mod tests {
 
     #[test]
     fn test_chunk_message_start() {
-        let mut state = ChatParseState::new();
+        let mut state = ChatCompletionsParseState::new();
         let chunk = json!({
             "id": "chatcmpl-123",
             "model": "gpt-4o",
             "choices": []
         });
-        let events = chat_chunk_to_ir(&chunk, &mut state);
+        let events = chat_completions_chunk_to_ir(&chunk, &mut state);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], IrStreamEvent::MessageStart { id, model } if id == "chatcmpl-123" && model == "gpt-4o"));
     }
 
     #[test]
     fn test_chunk_text_delta() {
-        let mut state = ChatParseState::new();
+        let mut state = ChatCompletionsParseState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
 
@@ -744,7 +744,7 @@ mod tests {
                 "finish_reason": null
             }]
         });
-        let events = chat_chunk_to_ir(&chunk, &mut state);
+        let events = chat_completions_chunk_to_ir(&chunk, &mut state);
         // 应该发送 ContentBlockStart + ContentBlockDelta
         assert!(events.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStart { index: 0, block: IrContentBlockStart::Text })));
         assert!(events.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockDelta { index: 0, delta: IrContentDelta::TextDelta(t) } if t == "Hello")));
@@ -752,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_chunk_reasoning_then_text() {
-        let mut state = ChatParseState::new();
+        let mut state = ChatCompletionsParseState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "qwen-max".to_string();
 
@@ -766,7 +766,7 @@ mod tests {
                 "finish_reason": null
             }]
         });
-        let events1 = chat_chunk_to_ir(&chunk1, &mut state);
+        let events1 = chat_completions_chunk_to_ir(&chunk1, &mut state);
         assert!(events1.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStart { index: 0, block: IrContentBlockStart::Thinking })));
         assert!(events1.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockDelta { index: 0, delta: IrContentDelta::ThinkingDelta(t) } if t == "thinking...")));
 
@@ -780,7 +780,7 @@ mod tests {
                 "finish_reason": null
             }]
         });
-        let events2 = chat_chunk_to_ir(&chunk2, &mut state);
+        let events2 = chat_completions_chunk_to_ir(&chunk2, &mut state);
         // 应该先关闭 thinking (index 0)，再开启 text (index 1)
         assert!(events2.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStop { index: 0 })));
         assert!(events2.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStart { index: 1, block: IrContentBlockStart::Text })));
@@ -789,7 +789,7 @@ mod tests {
 
     #[test]
     fn test_chunk_tool_calls() {
-        let mut state = ChatParseState::new();
+        let mut state = ChatCompletionsParseState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
 
@@ -813,7 +813,7 @@ mod tests {
                 "finish_reason": null
             }]
         });
-        let events1 = chat_chunk_to_ir(&chunk1, &mut state);
+        let events1 = chat_completions_chunk_to_ir(&chunk1, &mut state);
         assert!(events1.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStart { index: 0, block: IrContentBlockStart::ToolUse { id, name } } if id == "call_1" && name == "search")));
 
         // tool_calls arguments delta
@@ -833,13 +833,13 @@ mod tests {
                 "finish_reason": null
             }]
         });
-        let events2 = chat_chunk_to_ir(&chunk2, &mut state);
+        let events2 = chat_completions_chunk_to_ir(&chunk2, &mut state);
         assert!(events2.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockDelta { index: 0, delta: IrContentDelta::InputJsonDelta(p) } if p == "{\"q\":")));
     }
 
     #[test]
     fn test_chunk_finish_reason() {
-        let mut state = ChatParseState::new();
+        let mut state = ChatCompletionsParseState::new();
         state.msg_id = "chatcmpl-1".to_string();
         state.model = "gpt-4o".to_string();
         state.text_started = true;
@@ -858,7 +858,7 @@ mod tests {
                 "completion_tokens": 50
             }
         });
-        let events = chat_chunk_to_ir(&chunk, &mut state);
+        let events = chat_completions_chunk_to_ir(&chunk, &mut state);
         // 应该关闭 text block，发送 MessageDelta + MessageStop
         assert!(events.iter().any(|e| matches!(e, IrStreamEvent::ContentBlockStop { index: 0 })));
         assert!(events.iter().any(|e| matches!(e, IrStreamEvent::MessageDelta { stop_reason: Some(IrStopReason::EndTurn), .. })));

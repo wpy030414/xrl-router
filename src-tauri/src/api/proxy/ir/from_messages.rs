@@ -1,14 +1,11 @@
 //! Anthropic Messages → IR 方向的格式翻译：请求体与流式 chunk。
-//!
-//! Anthropic 的 SSE 事件几乎 1:1 映射到 IrStreamEvent，
-//! 主要工作是把 `Value` 解析为强类型 IR。
 
 use serde_json::Value;
 
 use super::types::*;
 
 /// 将 Anthropic Messages 请求体解析为 IR。
-pub fn anthropic_req_to_ir(req: &Value) -> IrRequest {
+pub fn messages_req_to_ir(req: &Value) -> IrRequest {
     let model = req["model"].as_str().unwrap_or("").to_string();
     let stream = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -209,13 +206,13 @@ fn parse_anthropic_tool_choice(tc: &Value) -> IrToolChoice {
 // 流式 chunk 解析
 // ═══════════════════════════════════════════════════════════════════
 
-/// Anthropic chunk 解析状态（Anthropic SSE 几乎 1:1 映射到 IR，状态很轻）。
-pub struct AnthropicParseState {
+/// Messages chunk 解析状态（Anthropic SSE 几乎 1:1 映射到 IR，状态很轻）。
+pub struct MessagesParseState {
     /// 已捕获的 usage（message_start + message_delta 累积）。
     pub usage: IrUsage,
 }
 
-impl AnthropicParseState {
+impl MessagesParseState {
     pub fn new() -> Self {
         Self {
             usage: IrUsage::default(),
@@ -223,22 +220,22 @@ impl AnthropicParseState {
     }
 }
 
-impl Default for AnthropicParseState {
+impl Default for MessagesParseState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// 将 Anthropic 流式 chunk 解析为 IR 事件序列。
+/// 将 Anthropic Messages 流式 chunk 解析为 IR 事件序列。
 ///
 /// Anthropic SSE 事件与 IrStreamEvent 几乎同构，主要做：
 /// - `message_start` → 提取 id/model/usage
 /// - `content_block_start` → 映射块类型
 /// - `content_block_delta` → 映射 delta 类型 + 累积 output_chars
 /// - `message_delta` → 提取 stop_reason + usage
-pub fn anthropic_chunk_to_ir(
+pub fn messages_chunk_to_ir(
     chunk: &Value,
-    state: &mut AnthropicParseState,
+    state: &mut MessagesParseState,
 ) -> Vec<IrStreamEvent> {
     let event_type = chunk["type"].as_str().unwrap_or("");
     let mut events = Vec::new();
@@ -308,7 +305,7 @@ pub fn anthropic_chunk_to_ir(
         "message_delta" => {
             let stop_reason = chunk["delta"]["stop_reason"]
                 .as_str()
-                .map(IrStopReason::from_anthropic);
+                .map(IrStopReason::from_messages);
             let usage_obj = &chunk["usage"];
             if let Some(ot) = usage_obj["output_tokens"].as_u64() {
                 state.usage.output_tokens = ot;
@@ -344,7 +341,7 @@ mod tests {
             "system": "You are helpful.",
             "stream": true
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert_eq!(ir.model, "claude-opus-4-8");
         assert_eq!(ir.max_tokens, Some(4096));
         assert!(ir.stream);
@@ -363,7 +360,7 @@ mod tests {
                 {"type": "text", "text": "Part 2"}
             ]
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         match ir.system.unwrap() {
             IrSystemContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 2);
@@ -389,7 +386,7 @@ mod tests {
                 ]
             }]
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert_eq!(ir.messages[0].content.len(), 3);
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "What is this?"));
         assert!(matches!(&ir.messages[0].content[1], IrContentBlock::Image { source: IrImageSource::Base64 { media_type, .. } } if media_type == "image/png"));
@@ -415,7 +412,7 @@ mod tests {
             }],
             "tool_choice": {"type": "auto"}
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         // Tool use in assistant message
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::ToolUse { id, name, .. } if id == "call_1" && name == "search"));
         // Tool result in user message
@@ -431,17 +428,17 @@ mod tests {
     fn test_tool_choice_variants() {
         // "any" string
         let req = json!({"model": "x", "messages": [], "tool_choice": "any"});
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::Any)));
 
         // "none" string
         let req = json!({"model": "x", "messages": [], "tool_choice": "none"});
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::None)));
 
         // Specific tool
         let req = json!({"model": "x", "messages": [], "tool_choice": {"type": "tool", "name": "search"}});
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert!(matches!(ir.tool_choice, Some(IrToolChoice::Tool { ref name }) if name == "search"));
     }
 
@@ -452,7 +449,7 @@ mod tests {
             "messages": [],
             "thinking": {"type": "enabled", "budget_tokens": 5000}
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         let thinking = ir.thinking.unwrap();
         assert!(thinking.enabled);
         assert_eq!(thinking.budget_tokens, Some(5000));
@@ -470,7 +467,7 @@ mod tests {
                 ]
             }]
         });
-        let ir = anthropic_req_to_ir(&req);
+        let ir = messages_req_to_ir(&req);
         assert_eq!(ir.messages[0].content.len(), 2);
         assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Thinking { thinking, signature } if thinking == "let me think" && signature.as_deref() == Some("sig_abc")));
     }
@@ -479,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_chunk_message_start() {
-        let mut state = AnthropicParseState::new();
+        let mut state = MessagesParseState::new();
         let chunk = json!({
             "type": "message_start",
             "message": {
@@ -495,7 +492,7 @@ mod tests {
                 }
             }
         });
-        let events = anthropic_chunk_to_ir(&chunk, &mut state);
+        let events = messages_chunk_to_ir(&chunk, &mut state);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], IrStreamEvent::MessageStart { id, model } if id == "msg_123" && model == "claude-opus-4-8"));
         // input_tokens = 100 + 50 (cache_creation)
@@ -506,41 +503,41 @@ mod tests {
 
     #[test]
     fn test_chunk_content_block_sequence() {
-        let mut state = AnthropicParseState::new();
+        let mut state = MessagesParseState::new();
 
         // content_block_start (text)
         let start = json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}});
-        let events = anthropic_chunk_to_ir(&start, &mut state);
+        let events = messages_chunk_to_ir(&start, &mut state);
         assert!(matches!(&events[0], IrStreamEvent::ContentBlockStart { index: 0, block: IrContentBlockStart::Text }));
 
         // content_block_delta (text)
         let delta = json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}});
-        let events = anthropic_chunk_to_ir(&delta, &mut state);
+        let events = messages_chunk_to_ir(&delta, &mut state);
         assert!(matches!(&events[0], IrStreamEvent::ContentBlockDelta { index: 0, delta: IrContentDelta::TextDelta(t) } if t == "Hello"));
         assert_eq!(state.usage.output_chars, 5);
 
         // content_block_stop
         let stop = json!({"type": "content_block_stop", "index": 0});
-        let events = anthropic_chunk_to_ir(&stop, &mut state);
+        let events = messages_chunk_to_ir(&stop, &mut state);
         assert!(matches!(&events[0], IrStreamEvent::ContentBlockStop { index: 0 }));
     }
 
     #[test]
     fn test_chunk_tool_use_sequence() {
-        let mut state = AnthropicParseState::new();
+        let mut state = MessagesParseState::new();
 
         let start = json!({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "call_1", "name": "search", "input": {}}});
-        let events = anthropic_chunk_to_ir(&start, &mut state);
+        let events = messages_chunk_to_ir(&start, &mut state);
         assert!(matches!(&events[0], IrStreamEvent::ContentBlockStart { index: 1, block: IrContentBlockStart::ToolUse { id, name } } if id == "call_1" && name == "search"));
 
         let delta = json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"q\":"}});
-        let events = anthropic_chunk_to_ir(&delta, &mut state);
+        let events = messages_chunk_to_ir(&delta, &mut state);
         assert!(matches!(&events[0], IrStreamEvent::ContentBlockDelta { index: 1, delta: IrContentDelta::InputJsonDelta(p) } if p == "{\"q\":"));
     }
 
     #[test]
     fn test_chunk_message_delta_with_usage() {
-        let mut state = AnthropicParseState::new();
+        let mut state = MessagesParseState::new();
         state.usage.input_tokens = 150;
 
         let chunk = json!({
@@ -548,7 +545,7 @@ mod tests {
             "delta": {"stop_reason": "end_turn"},
             "usage": {"output_tokens": 300, "cache_read_input_tokens": 8000}
         });
-        let events = anthropic_chunk_to_ir(&chunk, &mut state);
+        let events = messages_chunk_to_ir(&chunk, &mut state);
         assert_eq!(events.len(), 1);
         match &events[0] {
             IrStreamEvent::MessageDelta { stop_reason, usage } => {
@@ -563,13 +560,13 @@ mod tests {
 
     #[test]
     fn test_chunk_thinking_delta_counts_chars() {
-        let mut state = AnthropicParseState::new();
+        let mut state = MessagesParseState::new();
         let chunk = json!({
             "type": "content_block_delta",
             "index": 0,
             "delta": {"type": "thinking_delta", "thinking": "思考中..."}
         });
-        anthropic_chunk_to_ir(&chunk, &mut state);
+        messages_chunk_to_ir(&chunk, &mut state);
         assert_eq!(state.usage.output_chars, 5); // 5 chars in "思考中..."
     }
 }

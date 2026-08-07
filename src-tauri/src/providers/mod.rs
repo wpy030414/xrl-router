@@ -53,9 +53,9 @@ impl ProviderRegistry {
                 let sort_order: i64 = row.get(9)?;
 
                 let kind = match kind_str.as_str() {
-                    "openai" => ProviderKind::Openai,
-                    "anthropic" => ProviderKind::Anthropic,
-                    _ => ProviderKind::Openai,
+                    "messages" => ProviderKind::Messages,
+                    "chat_completions" => ProviderKind::ChatCompletions,
+                    _ => ProviderKind::ChatCompletions,
                 };
 
                 let config: serde_json::Value = serde_json::from_str(&config_json)
@@ -197,10 +197,10 @@ impl ProviderRegistry {
         let key = api_key.to_string();
 
         let adapter: Box<dyn adapter::Adapter> = match provider.kind {
-            ProviderKind::Openai | ProviderKind::Responses => {
+            ProviderKind::ChatCompletions | ProviderKind::Responses => {
                 Box::new(OpenAIAdapter::new(provider.base_url.clone(), key))
             }
-            ProviderKind::Anthropic => {
+            ProviderKind::Messages => {
                 Box::new(AnthropicAdapter::new(provider.base_url.clone(), key))
             }
         };

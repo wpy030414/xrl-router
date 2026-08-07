@@ -5,7 +5,7 @@ import { providersApi } from '../api';
 export interface Provider {
   id: string;
   name: string;
-  kind: 'openai' | 'anthropic';
+  kind: 'messages' | 'chat_completions' | 'responses';
   base_url: string;
   enabled: boolean;
   created_at: number;

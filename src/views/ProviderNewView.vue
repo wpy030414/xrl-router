@@ -17,10 +17,10 @@
       :label="t('providerNew.kind_label')"
       class="field"
       menu-positioning="fixed"
-      @input="kind = ($event.target as HTMLInputElement).value as 'openai' | 'anthropic' | 'responses'"
+      @input="kind = ($event.target as HTMLInputElement).value as 'messages' | 'chat_completions' | 'responses'"
     >
-      <md-select-option value="anthropic"><span slot="headline">Anthropic Messages</span></md-select-option>
-      <md-select-option value="openai"><span slot="headline">OpenAI Chat Completions</span></md-select-option>
+      <md-select-option value="messages"><span slot="headline">Anthropic Messages</span></md-select-option>
+      <md-select-option value="chat_completions"><span slot="headline">OpenAI Chat Completions</span></md-select-option>
       <md-select-option value="responses"><span slot="headline">OpenAI Responses</span></md-select-option>
     </md-outlined-select>
 
@@ -87,7 +87,7 @@ const isPluginMode = computed(() => !!pluginId.value);
 
 const name = ref('');
 const baseUrl = ref('');
-const kind = ref<'anthropic' | 'openai' | 'responses'>('anthropic');
+const kind = ref<'messages' | 'chat_completions' | 'responses'>('messages');
 const apiKeysText = ref('');
 const modelsText = ref('');
 const saving = ref(false);
@@ -95,7 +95,7 @@ const saving = ref(false);
 // API Path 由 API 格式派生（不在界面显示）
 const apiPathDerived = computed(() => {
   switch (kind.value) {
-    case 'anthropic': return '/v1/messages';
+    case 'messages': return '/v1/messages';
     case 'responses': return '/v1/responses';
     default: return '/v1/chat/completions';
   }
@@ -207,7 +207,7 @@ onMounted(async () => {
         const data = await resp.json();
         pluginInfo.value = data;
         name.value = data.provider?.name || qPluginId;
-        kind.value = (data.provider?.kind as 'anthropic' | 'openai' | 'responses') || 'anthropic';
+        kind.value = (data.provider?.kind as 'messages' | 'chat_completions' | 'responses') || 'messages';
         baseUrl.value = data.provider?.base_url || '';
         modelsText.value = (data.models || [])
           .map((m: any) =>
@@ -230,7 +230,7 @@ onMounted(async () => {
   try {
     const p = await providersApi.get(id);
     name.value = p.name;
-    kind.value = (p.kind as 'anthropic' | 'openai' | 'responses') || 'anthropic';
+    kind.value = (p.kind as 'messages' | 'chat_completions' | 'responses') || 'messages';
     baseUrl.value = p.base_url || '';
 
     // 插件供应商（config_json 含 plugin_id）：同样隐藏连接字段

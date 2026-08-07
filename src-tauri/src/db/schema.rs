@@ -268,4 +268,12 @@ ALTER TABLE providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE service_keys ADD COLUMN quota_5h INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE service_keys ADD COLUMN quota_7d INTEGER NOT NULL DEFAULT 0;
 "#,
+    // V15: 统一 provider kind 命名规范。
+    // openai → chat_completions
+    // anthropic → messages
+    // responses 保持不变
+    r#"
+UPDATE providers SET kind = 'chat_completions' WHERE kind = 'openai';
+UPDATE providers SET kind = 'messages' WHERE kind = 'anthropic';
+"#,
 ];

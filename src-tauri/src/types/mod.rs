@@ -33,18 +33,18 @@ pub struct Provider {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    Openai,
-    Anthropic,
+    Messages,
+    ChatCompletions,
     Responses,
 }
 
 impl std::fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProviderKind::Openai => write!(f, "openai"),
-            ProviderKind::Anthropic => write!(f, "anthropic"),
+            ProviderKind::Messages => write!(f, "messages"),
+            ProviderKind::ChatCompletions => write!(f, "chat_completions"),
             ProviderKind::Responses => write!(f, "responses"),
         }
     }
@@ -53,10 +53,10 @@ impl std::fmt::Display for ProviderKind {
 impl ProviderKind {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "openai" => ProviderKind::Openai,
-            "anthropic" => ProviderKind::Anthropic,
+            "messages" => ProviderKind::Messages,
+            "chat_completions" => ProviderKind::ChatCompletions,
             "responses" => ProviderKind::Responses,
-            _ => ProviderKind::Openai,
+            _ => ProviderKind::ChatCompletions,
         }
     }
 }

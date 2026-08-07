@@ -227,8 +227,8 @@ impl IrStopReason {
         }
     }
 
-    /// 从 Anthropic stop_reason 解析。
-    pub fn from_anthropic(s: &str) -> Self {
+    /// 从 Anthropic Messages stop_reason 解析。
+    pub fn from_messages(s: &str) -> Self {
         match s {
             "tool_use" => Self::ToolUse,
             "max_tokens" => Self::MaxTokens,
@@ -236,8 +236,8 @@ impl IrStopReason {
         }
     }
 
-    /// 从 OpenAI Chat finish_reason 解析。
-    pub fn from_chat(s: &str) -> Self {
+    /// 从 OpenAI Chat Completions finish_reason 解析。
+    pub fn from_chat_completions(s: &str) -> Self {
         match s {
             "tool_calls" => Self::ToolUse,
             "length" => Self::MaxTokens,
@@ -281,17 +281,17 @@ mod tests {
 
     #[test]
     fn test_ir_stop_reason_roundtrip_anthropic() {
-        assert_eq!(IrStopReason::from_anthropic("end_turn"), IrStopReason::EndTurn);
-        assert_eq!(IrStopReason::from_anthropic("tool_use"), IrStopReason::ToolUse);
-        assert_eq!(IrStopReason::from_anthropic("max_tokens"), IrStopReason::MaxTokens);
+        assert_eq!(IrStopReason::from_messages("end_turn"), IrStopReason::EndTurn);
+        assert_eq!(IrStopReason::from_messages("tool_use"), IrStopReason::ToolUse);
+        assert_eq!(IrStopReason::from_messages("max_tokens"), IrStopReason::MaxTokens);
         assert_eq!(IrStopReason::EndTurn.as_anthropic_str(), "end_turn");
     }
 
     #[test]
     fn test_ir_stop_reason_roundtrip_chat() {
-        assert_eq!(IrStopReason::from_chat("stop"), IrStopReason::EndTurn);
-        assert_eq!(IrStopReason::from_chat("tool_calls"), IrStopReason::ToolUse);
-        assert_eq!(IrStopReason::from_chat("length"), IrStopReason::MaxTokens);
+        assert_eq!(IrStopReason::from_chat_completions("stop"), IrStopReason::EndTurn);
+        assert_eq!(IrStopReason::from_chat_completions("tool_calls"), IrStopReason::ToolUse);
+        assert_eq!(IrStopReason::from_chat_completions("length"), IrStopReason::MaxTokens);
         assert_eq!(IrStopReason::EndTurn.as_chat_finish_reason(), "stop");
     }
 

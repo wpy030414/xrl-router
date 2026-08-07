@@ -227,7 +227,7 @@ mod tests {
         db.save_provider(&Provider {
             id: id.to_string(),
             name: format!("P-{}", id),
-            kind: ProviderKind::Openai,
+            kind: ProviderKind::ChatCompletions,
             base_url: format!("https://{}.example.com", id),
             api_path: "/v1/chat/completions".to_string(),
             config,

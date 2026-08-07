@@ -34,7 +34,7 @@ pub struct SniffStream<S> {
     inner: S,
     buffer: String,
     usage: SniffedUsage,
-    provider_kind: String, // "anthropic" or "openai"
+    provider_kind: String, // "messages" or "chat_completions"
 }
 
 impl<S> SniffStream<S>
@@ -77,7 +77,7 @@ where
 
     fn extract_usage(&mut self, json: &Value) {
         match self.provider_kind.as_str() {
-            "anthropic" => match json["type"].as_str().unwrap_or("") {
+            "messages" => match json["type"].as_str().unwrap_or("") {
                 "message_start" => {
                     let usage = &json["message"]["usage"];
                     // input_tokens（未缓存）+ cache_creation（首次写缓存）= 全部新输入。

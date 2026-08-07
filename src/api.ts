@@ -55,7 +55,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 export interface Provider {
   id: string;
   name: string;
-  kind: 'openai' | 'anthropic' | 'responses';
+  kind: 'messages' | 'chat_completions' | 'responses';
   base_url: string;
   api_path: string;
   enabled: boolean;

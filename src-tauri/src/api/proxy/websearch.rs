@@ -163,8 +163,8 @@ pub(super) async fn run_websearch_loop(
             service_key.name.as_str(),
             service_key.key_masked.as_str(),
             match client_format {
-                ClientFormat::Anthropic => "/v1/messages",
-                ClientFormat::Chat => "/v1/chat/completions",
+                ClientFormat::Messages => "/v1/messages",
+                ClientFormat::ChatCompletions => "/v1/chat/completions",
                 ClientFormat::Responses => "/v1/responses",
             },
             accum_usage.input_tokens as i64,
@@ -214,14 +214,14 @@ async fn hijack_upstream(
     for _ in 0..5 {
         // 从 IR 生成上游请求体
         let mut req_body = match provider_kind {
-            "anthropic" => ir::to_anthropic::ir_req_to_anthropic(ir_request),
+            "messages" => ir::to_messages::ir_req_to_messages(ir_request),
             "responses" => ir::to_responses::ir_req_to_responses(ir_request),
-            _ => ir::to_chat::ir_req_to_chat(ir_request),
+            _ => ir::to_chat_completions::ir_req_to_chat_completions(ir_request),
         };
 
         // 替换 messages 为当前对话状态
         match provider_kind {
-            "anthropic" => {
+            "messages" => {
                 let msgs: Vec<Value> = messages
                     .iter()
                     .map(|m| {
@@ -229,7 +229,7 @@ async fn hijack_upstream(
                             IrRole::User => "user",
                             IrRole::Assistant => "assistant",
                         };
-                        let content = ir_content_to_anthropic_value(&m.content);
+                        let content = ir_content_to_messages_value(&m.content);
                         json!({"role": role, "content": content})
                     })
                     .collect();
@@ -245,7 +245,7 @@ async fn hijack_upstream(
                 }
             }
             _ => {
-                let msgs: Vec<Value> = ir_messages_to_chat_value(&messages);
+                let msgs: Vec<Value> = ir_messages_to_chat_completions_value(&messages);
                 req_body["messages"] = json!(msgs);
                 req_body["stream"] = json!(false);
                 req_body["max_tokens"] = json!(max_tokens);
@@ -254,7 +254,7 @@ async fn hijack_upstream(
 
         // 发送请求
         let mut req_builder = client.post(upstream_url);
-        if provider_kind == "anthropic" {
+        if provider_kind == "messages" {
             req_builder = req_builder
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01");
@@ -287,7 +287,7 @@ async fn hijack_upstream(
 
         // 解析上游响应为 IR content blocks
         let (content_blocks, stop_reason, usage) = match provider_kind {
-            "anthropic" => parse_anthropic_response(&msg_val),
+            "messages" => parse_anthropic_response(&msg_val),
             "responses" => parse_responses_response(&msg_val),
             _ => parse_chat_response(&msg_val),
         };
@@ -365,7 +365,7 @@ async fn hijack_upstream(
 fn parse_anthropic_response(msg: &Value) -> (Vec<IrContentBlock>, IrStopReason, IrUsage) {
     let stop = msg["stop_reason"]
         .as_str()
-        .map(IrStopReason::from_anthropic)
+        .map(IrStopReason::from_messages)
         .unwrap_or(IrStopReason::EndTurn);
 
     let content = msg["content"]
@@ -414,7 +414,7 @@ fn parse_chat_response(msg: &Value) -> (Vec<IrContentBlock>, IrStopReason, IrUsa
     let choice = &msg["choices"][0];
     let finish = choice["finish_reason"]
         .as_str()
-        .map(IrStopReason::from_chat)
+        .map(IrStopReason::from_chat_completions)
         .unwrap_or(IrStopReason::EndTurn);
 
     let mut content: Vec<IrContentBlock> = Vec::new();
@@ -528,7 +528,7 @@ fn parse_responses_response(msg: &Value) -> (Vec<IrContentBlock>, IrStopReason, 
 }
 
 /// 将 IR content blocks 渲染为 Anthropic content Value。
-fn ir_content_to_anthropic_value(blocks: &[IrContentBlock]) -> Value {
+fn ir_content_to_messages_value(blocks: &[IrContentBlock]) -> Value {
     let arr: Vec<Value> = blocks
         .iter()
         .filter_map(|block| match block {
@@ -552,7 +552,7 @@ fn ir_content_to_anthropic_value(blocks: &[IrContentBlock]) -> Value {
             } => {
                 let c = match content {
                     IrToolResultContent::Text(t) => json!(t),
-                    IrToolResultContent::Blocks(blocks) => ir_content_to_anthropic_value(blocks),
+                    IrToolResultContent::Blocks(blocks) => ir_content_to_messages_value(blocks),
                 };
                 let mut obj = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": c});
                 if *is_error {
@@ -575,7 +575,7 @@ fn ir_content_to_anthropic_value(blocks: &[IrContentBlock]) -> Value {
 }
 
 /// 将 IR messages 渲染为 Chat Completions messages Value。
-fn ir_messages_to_chat_value(messages: &[IrMessage]) -> Vec<Value> {
+fn ir_messages_to_chat_completions_value(messages: &[IrMessage]) -> Vec<Value> {
     let mut result = Vec::new();
 
     for msg in messages {
@@ -673,10 +673,10 @@ fn render_accumulated_ir(
     let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
 
     match client_format {
-        ClientFormat::Anthropic => {
+        ClientFormat::Messages => {
             render_anthropic_sse(&msg_id, content, stop_reason, usage)
         }
-        ClientFormat::Chat => {
+        ClientFormat::ChatCompletions => {
             render_chat_sse(&msg_id, content, stop_reason, usage)
         }
         ClientFormat::Responses => {
@@ -727,7 +727,7 @@ fn render_anthropic_sse(
                 // web_search_tool_result 在 Anthropic 格式中作为特殊块
                 let result_blocks = match tc {
                     IrToolResultContent::Text(t) => json!([{"type": "text", "text": t}]),
-                    IrToolResultContent::Blocks(blocks) => ir_content_to_anthropic_value(blocks),
+                    IrToolResultContent::Blocks(blocks) => ir_content_to_messages_value(blocks),
                 };
                 out.push(mk("content_block_start", json!({"type": "content_block_start", "index": i, "content_block": {"type": "web_search_tool_result", "tool_use_id": tool_use_id, "content": result_blocks}})));
                 out.push(mk("content_block_stop", json!({"type": "content_block_stop", "index": i})));
