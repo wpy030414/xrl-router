@@ -309,14 +309,22 @@ fn parse_chat_tool_choice(tc: &Value) -> IrToolChoice {
 pub struct ChatCompletionsParseState {
     /// 已捕获的 usage
     pub usage: IrUsage,
+    /// 是否已发送 MessageStart（防重复）
+    started: bool,
     /// 当前是否已发送 thinking block start
     thinking_started: bool,
     /// 当前是否已发送 text block start
     text_started: bool,
+    /// 下一个 content block 的 index（单调递增，避免碰撞）
+    next_index: usize,
     /// 当前 text block 的 index
     text_index: usize,
     /// 已发送的 tool_use block 数量
     tool_count: usize,
+    /// OpenAI tool index → IR block index 映射（参数续传路由用）
+    tool_index_map: Vec<usize>,
+    /// body（thinking/text/tool）是否已开始——决定后续 reasoning 是否丢弃
+    body_started: bool,
     /// 消息 ID（从第一个 chunk 捕获）
     msg_id: String,
     /// 模型名（从第一个 chunk 捕获）
@@ -327,13 +335,24 @@ impl ChatCompletionsParseState {
     pub fn new() -> Self {
         Self {
             usage: IrUsage::default(),
+            started: false,
             thinking_started: false,
             text_started: false,
+            next_index: 0,
             text_index: 0,
             tool_count: 0,
+            tool_index_map: vec![],
+            body_started: false,
             msg_id: String::new(),
             model: String::new(),
         }
+    }
+
+    /// 分配下一个 content block index（单调递增）。
+    fn alloc_index(&mut self) -> usize {
+        let i = self.next_index;
+        self.next_index += 1;
+        i
     }
 }
 
@@ -392,20 +411,26 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
         };
 
         // reasoning_content → thinking delta
+        // 注意：一旦 text/tool 已开始（body 已开），后续 reasoning 必须丢弃——
+        // Anthropic 无法表示 body 之后的 thinking。
         if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
             if !reasoning.is_empty() {
-                if !state.thinking_started {
-                    // 发送 thinking block start
-                    events.push(IrStreamEvent::ContentBlockStart {
+                if !state.body_started {
+                    if !state.thinking_started {
+                        // 发送 thinking block start
+                        events.push(IrStreamEvent::ContentBlockStart {
+                            index: 0,
+                            block: IrContentBlockStart::Thinking,
+                        });
+                        state.thinking_started = true;
+                    }
+                    events.push(IrStreamEvent::ContentBlockDelta {
                         index: 0,
-                        block: IrContentBlockStart::Thinking,
+                        delta: IrContentDelta::ThinkingDelta(reasoning.to_string()),
                     });
-                    state.thinking_started = true;
                 }
-                events.push(IrStreamEvent::ContentBlockDelta {
-                    index: 0,
-                    delta: IrContentDelta::ThinkingDelta(reasoning.to_string()),
-                });
+                // 无论是否丢弃，字符数都计入回退估算
+                state.usage.output_chars += reasoning.chars().count() as u64;
             }
         }
 
@@ -415,22 +440,19 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
                 // 如果 thinking 已开启但未关闭，先关闭 thinking
                 if state.thinking_started && !state.text_started {
                     events.push(IrStreamEvent::ContentBlockStop { index: 0 });
-                    state.text_index = 1;
+                    state.thinking_started = false;
                 }
 
                 if !state.text_started {
                     // 发送 text block start
-                    let index = if state.thinking_started {
-                        state.text_index
-                    } else {
-                        0
-                    };
+                    let index = state.alloc_index();
                     events.push(IrStreamEvent::ContentBlockStart {
                         index,
                         block: IrContentBlockStart::Text,
                     });
                     state.text_started = true;
                     state.text_index = index;
+                    state.body_started = true;
                 }
 
                 events.push(IrStreamEvent::ContentBlockDelta {
@@ -442,32 +464,38 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
 
         // tool_calls → tool_use blocks
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            // 如果 thinking 已开启但未关闭，先关闭 thinking
+            if state.thinking_started {
+                events.push(IrStreamEvent::ContentBlockStop { index: 0 });
+                state.thinking_started = false;
+            }
             // 如果 text 已开启但未关闭，先关闭 text
             if state.text_started && state.tool_count == 0 {
                 events.push(IrStreamEvent::ContentBlockStop {
                     index: state.text_index,
                 });
+                state.text_started = false;
             }
 
             for tc in tool_calls {
-                let index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let block_index = if state.thinking_started {
-                    state.text_index + 1 + index
-                } else if state.text_started {
-                    state.text_index + 1 + index
-                } else {
-                    index
-                };
+                let oai_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
                 // 检查是否有 function.name（表示新的 tool_use）
                 if let Some(func) = tc.get("function") {
                     if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                        // 新的 tool_use block
+                        // 新的 tool_use block：分配新 index 并记录映射
                         let id = tc
                             .get("id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+                        let block_index = state.alloc_index();
+                        // 记录 OpenAI tool index → IR block index 映射
+                        if state.tool_index_map.len() <= oai_index {
+                            state.tool_index_map.resize(oai_index + 1, 0);
+                        }
+                        state.tool_index_map[oai_index] = block_index;
+
                         events.push(IrStreamEvent::ContentBlockStart {
                             index: block_index,
                             block: IrContentBlockStart::ToolUse {
@@ -475,15 +503,16 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
                                 name: name.to_string(),
                             },
                         });
-                        state.tool_count = state.tool_count.max(index + 1);
-                    }
-
-                    // arguments delta
-                    if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
-                        events.push(IrStreamEvent::ContentBlockDelta {
-                            index: block_index,
-                            delta: IrContentDelta::InputJsonDelta(args.to_string()),
-                        });
+                        state.tool_count += 1;
+                        state.body_started = true;
+                    } else if let Some(&block_index) = state.tool_index_map.get(oai_index) {
+                        // 参数续传：使用已记录的 index
+                        if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                            events.push(IrStreamEvent::ContentBlockDelta {
+                                index: block_index,
+                                delta: IrContentDelta::InputJsonDelta(args.to_string()),
+                            });
+                        }
                     }
                 }
             }
@@ -491,23 +520,25 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
 
         // finish_reason → stop reason
         if let Some(finish) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-            // 关闭所有未关闭的 block
-            if state.thinking_started && !state.text_started {
+            // 关闭所有未关闭的 block（各自只关一次）
+            if state.thinking_started {
                 events.push(IrStreamEvent::ContentBlockStop { index: 0 });
+                state.thinking_started = false;
             }
-            if state.text_started && state.tool_count == 0 {
+            if state.text_started {
                 events.push(IrStreamEvent::ContentBlockStop {
                     index: state.text_index,
                 });
+                state.text_started = false;
             }
-            for i in 0..state.tool_count {
-                let block_index = if state.thinking_started || state.text_started {
-                    state.text_index + 1 + i
-                } else {
-                    i
-                };
-                events.push(IrStreamEvent::ContentBlockStop { index: block_index });
+            // tool blocks：记录每次 start 的 index，finish 时逐个关闭。
+            // 为简化，tool block 的 index 在 start 时已由 alloc_index 分配，
+            // 用「next_index - tool_count .. next_index」范围推导（本状态机
+            // 中 tool block 总是在最后连续分配，中间不会再插入其他 block）。
+            for i in (state.next_index - state.tool_count)..state.next_index {
+                events.push(IrStreamEvent::ContentBlockStop { index: i });
             }
+            state.tool_count = 0;
 
             let stop_reason = match finish {
                 "stop" => Some(IrStopReason::EndTurn),
@@ -524,8 +555,8 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
         }
     }
 
-    // 第一个 chunk 发送 MessageStart
-    if !state.msg_id.is_empty() && !state.model.is_empty() && events.is_empty() {
+    // 第一个 chunk 发送 MessageStart（仅一次，后续 chunk 不再重复）
+    if !state.started && !state.msg_id.is_empty() && !state.model.is_empty() {
         events.insert(
             0,
             IrStreamEvent::MessageStart {
@@ -533,6 +564,7 @@ pub fn chat_completions_chunk_to_ir(chunk: &Value, state: &mut ChatCompletionsPa
                 model: state.model.clone(),
             },
         );
+        state.started = true;
     }
 
     events

@@ -210,8 +210,20 @@ pub struct ResponsesRenderState {
     content_part_index: usize,
     /// 是否已发送 response.created
     response_created: bool,
-    /// 累积的 output items（用于 response.completed）
-    output_items: Vec<Value>,
+    /// 当前打开的 block 类型（Text / Thinking / ToolUse）
+    current_block: Option<ResponsesBlockKind>,
+    /// 当前 block 累积的文本（text / thinking / tool arguments）
+    current_text: String,
+    /// 当前 block 的 tool_use id/name（仅 ToolUse 时有效）
+    current_tool_id: String,
+    current_tool_name: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResponsesBlockKind {
+    Text,
+    Thinking,
+    ToolUse,
 }
 
 impl ResponsesRenderState {
@@ -223,7 +235,10 @@ impl ResponsesRenderState {
             output_index: 0,
             content_part_index: 0,
             response_created: false,
-            output_items: vec![],
+            current_block: None,
+            current_text: String::new(),
+            current_tool_id: String::new(),
+            current_tool_name: String::new(),
         }
     }
 
@@ -246,18 +261,36 @@ impl ResponsesRenderState {
                         "type": "response.created",
                         "response": {
                             "id": id,
+                            "object": "response",
+                            "created_at": self.created,
                             "model": model,
                             "status": "in_progress",
-                            "output": []
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0
+                            }
                         }
                     }),
                 ))
             }
             IrStreamEvent::ContentBlockStart { index, block } => {
+                // 如果上一个 block 还开着，先关闭（字节暂存，与新增事件合并）
+                let mut prelude: Vec<u8> = Vec::new();
+                if self.current_block.is_some() {
+                    if let Some(b) = self.close_block() {
+                        prelude.extend_from_slice(&b);
+                    }
+                }
+
                 match block {
                     IrContentBlockStart::Text => {
                         self.output_index = *index;
                         self.content_part_index = 0;
+                        self.current_block = Some(ResponsesBlockKind::Text);
+                        self.current_text = String::new();
+                        let item_id = format!("item_{}", uuid::Uuid::new_v4().simple());
 
                         // output_item.added (message type)
                         let item_added = mk(
@@ -266,7 +299,9 @@ impl ResponsesRenderState {
                                 "type": "response.output_item.added",
                                 "output_index": self.output_index,
                                 "item": {
+                                    "id": item_id,
                                     "type": "message",
+                                    "status": "in_progress",
                                     "role": "assistant",
                                     "content": []
                                 }
@@ -282,90 +317,216 @@ impl ResponsesRenderState {
                                 "content_index": self.content_part_index,
                                 "part": {
                                     "type": "output_text",
-                                    "text": ""
+                                    "text": "",
+                                    "annotations": []
                                 }
                             }),
                         );
 
-                        // 合并两个事件
-                        let mut combined = Vec::new();
-                        combined.extend_from_slice(&item_added);
-                        combined.extend_from_slice(&part_added);
-                        Some(Bytes::from(combined))
+                        // 合并 prelude + 两个事件
+                        prelude.extend_from_slice(&item_added);
+                        prelude.extend_from_slice(&part_added);
+                        Some(Bytes::from(prelude))
                     }
                     IrContentBlockStart::Thinking => {
                         self.output_index = *index;
+                        self.current_block = Some(ResponsesBlockKind::Thinking);
+                        self.current_text = String::new();
+                        let item_id = format!("item_{}", uuid::Uuid::new_v4().simple());
 
-                        Some(mk(
+                        let added = mk(
                             "response.output_item.added",
                             json!({
                                 "type": "response.output_item.added",
                                 "output_index": self.output_index,
                                 "item": {
-                                    "type": "reasoning"
+                                    "id": item_id,
+                                    "type": "reasoning",
+                                    "status": "in_progress",
+                                    "summary": []
                                 }
                             }),
-                        ))
+                        );
+                        prelude.extend_from_slice(&added);
+                        Some(Bytes::from(prelude))
                     }
                     IrContentBlockStart::ToolUse { id, name } => {
                         self.output_index = *index;
+                        self.current_block = Some(ResponsesBlockKind::ToolUse);
+                        self.current_text = String::new();
+                        self.current_tool_id = id.clone();
+                        self.current_tool_name = name.clone();
 
-                        Some(mk(
+                        let added = mk(
                             "response.output_item.added",
                             json!({
                                 "type": "response.output_item.added",
                                 "output_index": self.output_index,
                                 "item": {
                                     "type": "function_call",
+                                    "status": "in_progress",
                                     "call_id": id,
                                     "name": name,
                                     "arguments": ""
                                 }
                             }),
-                        ))
+                        );
+                        prelude.extend_from_slice(&added);
+                        Some(Bytes::from(prelude))
                     }
                 }
             }
             IrStreamEvent::ContentBlockDelta { index, delta } => {
+                // 累积文本到当前 block
                 match delta {
-                    IrContentDelta::TextDelta(text) => Some(mk(
-                        "response.output_text.delta",
-                        json!({
-                            "type": "response.output_text.delta",
-                            "output_index": *index,
-                            "content_index": self.content_part_index,
-                            "delta": text
-                        }),
-                    )),
-                    IrContentDelta::ThinkingDelta(thinking) => Some(mk(
-                        "response.reasoning.delta",
-                        json!({
-                            "type": "response.reasoning.delta",
-                            "output_index": *index,
-                            "delta": thinking
-                        }),
-                    )),
-                    IrContentDelta::InputJsonDelta(partial) => Some(mk(
-                        "response.function_call_arguments.delta",
-                        json!({
-                            "type": "response.function_call_arguments.delta",
-                            "output_index": *index,
-                            "delta": partial
-                        }),
-                    )),
+                    IrContentDelta::TextDelta(text) => {
+                        self.current_text.push_str(text);
+                        Some(mk(
+                            "response.output_text.delta",
+                            json!({
+                                "type": "response.output_text.delta",
+                                "output_index": *index,
+                                "content_index": self.content_part_index,
+                                "delta": text
+                            }),
+                        ))
+                    }
+                    IrContentDelta::ThinkingDelta(thinking) => {
+                        self.current_text.push_str(thinking);
+                        Some(mk(
+                            "response.reasoning.delta",
+                            json!({
+                                "type": "response.reasoning.delta",
+                                "output_index": *index,
+                                "delta": thinking
+                            }),
+                        ))
+                    }
+                    IrContentDelta::InputJsonDelta(partial) => {
+                        self.current_text.push_str(partial);
+                        Some(mk(
+                            "response.function_call_arguments.delta",
+                            json!({
+                                "type": "response.function_call_arguments.delta",
+                                "output_index": *index,
+                                "delta": partial
+                            }),
+                        ))
+                    }
                 }
             }
             IrStreamEvent::ContentBlockStop { index } => {
-                // 发送 content_part.done 和 output_item.done
-                // 简化处理：只发 output_item.done
-                Some(mk(
-                    "response.output_item.done",
-                    json!({
-                        "type": "response.output_item.done",
-                        "output_index": *index,
-                        "item": {}
-                    }),
-                ))
+                // 发送完整的事件序列：xxx.done + output_item.done（携带完整 item）
+                let output_index = *index;
+                match self.current_block {
+                    Some(ResponsesBlockKind::Text) => {
+                        let text = self.current_text.clone();
+                        let part_done = mk(
+                            "response.content_part.done",
+                            json!({
+                                "type": "response.content_part.done",
+                                "output_index": output_index,
+                                "content_index": self.content_part_index,
+                                "part": {
+                                    "type": "output_text",
+                                    "text": text,
+                                    "annotations": []
+                                }
+                            }),
+                        );
+                        let item_done = mk(
+                            "response.output_item.done",
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": output_index,
+                                "item": {
+                                    "type": "message",
+                                    "status": "completed",
+                                    "role": "assistant",
+                                    "content": [{
+                                        "type": "output_text",
+                                        "text": text,
+                                        "annotations": []
+                                    }]
+                                }
+                            }),
+                        );
+                        self.current_block = None;
+                        self.current_text.clear();
+                        let joined = part_done.iter().chain(item_done.iter()).copied().collect::<Vec<u8>>();
+                        Some(Bytes::from(joined))
+                    }
+                    Some(ResponsesBlockKind::Thinking) => {
+                        let reasoning_done = mk(
+                            "response.reasoning.done",
+                            json!({
+                                "type": "response.reasoning.done",
+                                "output_index": output_index,
+                                "reasoning": {
+                                    "summary": []
+                                }
+                            }),
+                        );
+                        let item_done = mk(
+                            "response.output_item.done",
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": output_index,
+                                "item": {
+                                    "type": "reasoning",
+                                    "status": "completed",
+                                    "summary": []
+                                }
+                            }),
+                        );
+                        self.current_block = None;
+                        self.current_text.clear();
+                        let joined = reasoning_done.iter().chain(item_done.iter()).copied().collect::<Vec<u8>>();
+                        Some(Bytes::from(joined))
+                    }
+                    Some(ResponsesBlockKind::ToolUse) => {
+                        let args = self.current_text.clone();
+                        let args_done = mk(
+                            "response.function_call_arguments.done",
+                            json!({
+                                "type": "response.function_call_arguments.done",
+                                "output_index": output_index,
+                                "arguments": args
+                            }),
+                        );
+                        let item_done = mk(
+                            "response.output_item.done",
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": output_index,
+                                "item": {
+                                    "type": "function_call",
+                                    "status": "completed",
+                                    "call_id": self.current_tool_id,
+                                    "name": self.current_tool_name,
+                                    "arguments": args
+                                }
+                            }),
+                        );
+                        self.current_block = None;
+                        self.current_text.clear();
+                        let joined = args_done.iter().chain(item_done.iter()).copied().collect::<Vec<u8>>();
+                        Some(Bytes::from(joined))
+                    }
+                    None => {
+                        // 没有打开的 block，直接发 output_item.done
+                        let done = mk(
+                            "response.output_item.done",
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": output_index,
+                                "item": {}
+                            }),
+                        );
+                        self.current_block = None;
+                        Some(done)
+                    }
+                }
             }
             IrStreamEvent::MessageDelta {
                 stop_reason,
@@ -381,6 +542,103 @@ impl ResponsesRenderState {
         }
     }
 
+    /// 关闭当前打开的 block（新 block 开始前的清理）。
+    /// 发出 xxx.done + output_item.done（携带完整 item）。
+    fn close_block(&mut self) -> Option<Bytes> {
+        let mk = |event_type: &str, payload: Value| -> Bytes {
+            let data = serde_json::to_string(&payload).unwrap_or_default();
+            Bytes::from(format!("event: {}\ndata: {}\n\n", event_type, data))
+        };
+
+        let output_index = self.output_index;
+        let mut combined = Vec::new();
+        match self.current_block {
+            Some(ResponsesBlockKind::Text) => {
+                combined.push(mk(
+                    "response.content_part.done",
+                    json!({
+                        "type": "response.content_part.done",
+                        "output_index": output_index,
+                        "content_index": self.content_part_index,
+                        "part": {
+                            "type": "output_text",
+                            "text": self.current_text
+                        }
+                    }),
+                ));
+                combined.push(mk(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{
+                                "type": "output_text",
+                                "text": self.current_text,
+                                "annotations": []
+                            }]
+                        }
+                    }),
+                ));
+            }
+            Some(ResponsesBlockKind::Thinking) => {
+                combined.push(mk(
+                    "response.reasoning.done",
+                    json!({
+                        "type": "response.reasoning.done",
+                        "output_index": output_index,
+                        "reasoning": {
+                            "summary": []
+                        }
+                    }),
+                ));
+                combined.push(mk(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "reasoning",
+                            "summary": []
+                        }
+                    }),
+                ));
+            }
+            Some(ResponsesBlockKind::ToolUse) => {
+                combined.push(mk(
+                    "response.function_call_arguments.done",
+                    json!({
+                        "type": "response.function_call_arguments.done",
+                        "output_index": output_index,
+                        "arguments": self.current_text
+                    }),
+                ));
+                combined.push(mk(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": output_index,
+                        "item": {
+                            "type": "function_call",
+                            "call_id": self.current_tool_id,
+                            "name": self.current_tool_name,
+                            "arguments": self.current_text
+                        }
+                    }),
+                ));
+            }
+            None => return None,
+        }
+
+        self.current_block = None;
+        self.current_text.clear();
+        // 拼接所有事件字节为一个 Bytes
+        let joined = combined.iter().flat_map(|b| b.iter().copied()).collect::<Vec<u8>>();
+        Some(Bytes::from(joined))
+    }
+
     /// 流结束时渲染收尾事件（response.completed）。
     pub fn finalize(&mut self, usage: &IrUsage) -> Vec<Bytes> {
         let mut events = vec![];
@@ -388,6 +646,13 @@ impl ResponsesRenderState {
             let data = serde_json::to_string(&payload).unwrap_or_default();
             Bytes::from(format!("event: {}\ndata: {}\n\n", event_type, data))
         };
+
+        // 关闭任何未完成的 block
+        if self.current_block.is_some() {
+            if let Some(b) = self.close_block() {
+                events.push(b);
+            }
+        }
 
         let output_tokens = if usage.output_tokens > 0 {
             usage.output_tokens
@@ -401,12 +666,15 @@ impl ResponsesRenderState {
                 "type": "response.completed",
                 "response": {
                     "id": self.response_id,
+                    "object": "response",
+                    "created_at": self.created,
                     "model": self.model,
                     "status": "completed",
                     "output": [],
                     "usage": {
                         "input_tokens": usage.input_tokens + usage.cache_read_input_tokens,
                         "output_tokens": output_tokens,
+                        "total_tokens": usage.input_tokens + usage.cache_read_input_tokens + output_tokens,
                         "input_tokens_details": {
                             "cached_tokens": usage.cache_read_input_tokens
                         }

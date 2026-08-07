@@ -433,7 +433,7 @@ pub async fn proxy_stream(
                     let body_str = r.text().await.unwrap_or_default();
                     let msg = extract_error_message(&body_str);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
-                    warn!(trace_id = %trace_id, upstream_status = s, duration_ms, "Upstream error forwarded");
+                    warn!(trace_id = %trace_id, upstream_status = s, duration_ms, upstream_body = %body_str, "Upstream error forwarded");
                     let _ = state.database.insert_usage_log(
                         chrono::Utc::now().timestamp(),
                         &last_candidate.provider_id, last_candidate.provider_name.as_str(),
@@ -536,13 +536,23 @@ pub(super) fn send_error_event(
         ClientFormat::Responses => {
             let payload = serde_json::to_string(&json!({
                 "type": "response.failed",
-                "error": { "type": error_type, "message": message }
+                "response": {
+                    "id": null,
+                    "object": "response",
+                    "status": "failed",
+                    "output": [],
+                    "error": { "type": error_type, "message": message }
+                }
             }))
             .unwrap_or_default();
-            Bytes::from(format!("event: error\ndata: {}\n\n", payload))
+            Bytes::from(format!("event: response.failed\ndata: {}\n\n", payload))
         }
     };
-    let _ = tx.send(Ok(bytes));
+    // 注意：不能用 tx.send()（async）——本函数是同步的，未 await 的 future
+    // 会被丢弃，错误事件永远发不出去，客户端只看到 keepalive 后 EOF
+    // （表现为 "stream closed before response.completed"）。
+    // 用 try_send（同步）：channel 容量 100，错误场景下不可能满。
+    let _ = tx.try_send(Ok(bytes));
 }
 
 /// 从上游错误 body 中提取可读错误信息。
