@@ -101,6 +101,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Claude FM 广播电台直播流（公开路径，局域网设备可访问）
         .route("/fm/live", get(handlers::fm_live))
         .route("/fm/meta", get(handlers::fm_current_meta))
+        .route("/fm/schedule", get(handlers::fm_schedule))
         // /api/* 管理路由（IP 限制）
         .merge(api_routes)
         // /v1/* 代理（套 rate_limit，128 req/min）

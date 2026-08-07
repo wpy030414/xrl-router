@@ -22,4 +22,4 @@ pub(crate) use service_keys::{create_service_key, delete_service_key, list_servi
 pub(crate) use stats::{get_settings, get_stats, get_stats_requests, update_settings};
 pub(crate) use websocket::ws_handler;
 pub(crate) use data::{export_data, import_data, reset_data};
-pub(crate) use fm::{fm_live, fm_current_meta, FmEngine};
+pub(crate) use fm::{fm_live, fm_current_meta, fm_schedule, FmEngine};
