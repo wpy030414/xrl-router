@@ -17,10 +17,11 @@
       :label="t('providerNew.kind_label')"
       class="field"
       menu-positioning="fixed"
-      @input="kind = ($event.target as HTMLInputElement).value as 'openai' | 'anthropic'"
+      @input="kind = ($event.target as HTMLInputElement).value as 'openai' | 'anthropic' | 'responses'"
     >
       <md-select-option value="anthropic"><span slot="headline">Anthropic Messages</span></md-select-option>
       <md-select-option value="openai"><span slot="headline">OpenAI Chat Completions</span></md-select-option>
+      <md-select-option value="responses"><span slot="headline">OpenAI Responses</span></md-select-option>
     </md-outlined-select>
 
     <md-outlined-text-field
@@ -86,15 +87,19 @@ const isPluginMode = computed(() => !!pluginId.value);
 
 const name = ref('');
 const baseUrl = ref('');
-const kind = ref<'anthropic' | 'openai'>('anthropic');
+const kind = ref<'anthropic' | 'openai' | 'responses'>('anthropic');
 const apiKeysText = ref('');
 const modelsText = ref('');
 const saving = ref(false);
 
 // API Path 由 API 格式派生（不在界面显示）
-const apiPathDerived = computed(() =>
-  kind.value === 'anthropic' ? '/v1/messages' : '/v1/chat/completions',
-);
+const apiPathDerived = computed(() => {
+  switch (kind.value) {
+    case 'anthropic': return '/v1/messages';
+    case 'responses': return '/v1/responses';
+    default: return '/v1/chat/completions';
+  }
+});
 
 const canSave = computed(() => name.value.trim() && baseUrl.value.trim());
 
@@ -202,7 +207,7 @@ onMounted(async () => {
         const data = await resp.json();
         pluginInfo.value = data;
         name.value = data.provider?.name || qPluginId;
-        kind.value = (data.provider?.kind as 'anthropic' | 'openai') || 'anthropic';
+        kind.value = (data.provider?.kind as 'anthropic' | 'openai' | 'responses') || 'anthropic';
         baseUrl.value = data.provider?.base_url || '';
         modelsText.value = (data.models || [])
           .map((m: any) =>
@@ -225,7 +230,7 @@ onMounted(async () => {
   try {
     const p = await providersApi.get(id);
     name.value = p.name;
-    kind.value = (p.kind as 'anthropic' | 'openai') || 'anthropic';
+    kind.value = (p.kind as 'anthropic' | 'openai' | 'responses') || 'anthropic';
     baseUrl.value = p.base_url || '';
 
     // 插件供应商（config_json 含 plugin_id）：同样隐藏连接字段

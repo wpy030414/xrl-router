@@ -1,6 +1,6 @@
-//! 流式代理引擎：上游连接 + 双循环重试 + 4 种流式分支。
+//! 流式代理引擎：上游连接 + 双循环重试 + 统一 IR 转发。
 //!
-//! `proxy_stream()` 是两个 handler（Anthropic / OpenAI）共享的核心逻辑。
+//! `proxy_stream()` 是三个 handler（Anthropic / Chat / Responses）共享的核心逻辑。
 //! handler 负责认证 + 请求体准备，本模块负责路由解析、上游连接、密钥轮换、
 //! 故障转移、流式转发。
 //!
@@ -25,22 +25,21 @@ use tracing::{error, info, warn};
 use crate::gateway::server::AppState;
 
 use super::auth::ServiceKeyInfo;
-use super::forward::{
-    forward_stream_anthropic_to_openai, forward_stream_openai_to_anthropic,
-    forward_stream_passthrough,
-};
+use super::ir;
+use super::ir::types::IrRequest;
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::{resolve_route, ResolvedRoute};
-use super::websearch::{has_websearch_tool, run_websearch_loop};
+use super::websearch::{has_websearch_tool_ir, run_websearch_loop};
 
 /// HTTP error tuple returned by proxy handlers.
 pub type ErrorTuple = (StatusCode, HeaderMap, Json<Value>);
 
 /// 客户端期望的响应格式。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientFormat {
     Anthropic,
-    Openai,
+    Chat,
+    Responses,
 }
 
 /// 已认证的流式请求上下文（handler 构建后传入 `proxy_stream`）。
@@ -50,16 +49,12 @@ pub struct StreamContext {
     pub(super) service_key: ServiceKeyInfo,
     pub(super) model_name: String,
     pub(super) endpoint: &'static str,
-    /// Anthropic 格式请求体（stream=true 已设置）。
-    pub(super) body_anthropic: Value,
-    /// OpenAI 格式请求体（stream=true + stream_options 已设置）。
-    pub(super) body_openai: Value,
+    /// IR 格式请求体（stream=true 已设置）。
+    pub(super) ir_request: IrRequest,
     pub(super) client_format: ClientFormat,
     /// 输入 token 估算（translation 路径 message_start 占位用）。
     pub(super) est_input: u64,
     /// 按输入规模放宽后的「等待上游响应头」超时（秒），handler 预计算。
-    /// 路由器的头超时比客户端 SSE 空闲看门狗（90s）大得多，但网关每 15s
-    /// 发一次 keepalive 注释，足以维持客户端连接存活。
     pub(super) header_timeout_secs: u64,
 }
 
@@ -138,30 +133,24 @@ pub async fn proxy_stream(
 
     // ── 2. WebSearch 劫持（同步段，纯内存判断） ─────────────────────
     let resolved = candidates[0].clone();
-    let provider_is_anthropic = resolved.provider_kind == "anthropic";
-
-    let client_body = match ctx.client_format {
-        ClientFormat::Anthropic => &ctx.body_anthropic,
-        ClientFormat::Openai => &ctx.body_openai,
-    };
 
     if state.websearch_hijack.load(std::sync::atomic::Ordering::Relaxed)
-        && has_websearch_tool(client_body)
+        && has_websearch_tool_ir(&ctx.ir_request)
     {
-        info!(trace_id = %trace_id, anthropic_upstream = provider_is_anthropic, "web_search hijacked → local Bing loop");
-        return super::websearch::run_websearch_loop(
+        info!(trace_id = %trace_id, provider_kind = %resolved.provider_kind, "web_search hijacked → local Bing loop");
+        return run_websearch_loop(
             state.clone(),
-            client_body.clone(),
+            ctx.ir_request.clone(),
             resolved.clone(),
-            provider_is_anthropic,
+            ctx.client_format,
             trace_id.clone(),
             ctx.service_key,
-        ).await;
+        )
+        .await;
     }
 
     // ── 3. 预构造请求体（同步段，纯内存操作） ───────────────────────
-    let body_anthropic = ctx.body_anthropic.clone();
-    let body_openai = ctx.body_openai.clone();
+    let ir_request = ctx.ir_request.clone();
     let client = state.http_client.clone();
     let client_format = ctx.client_format;
     let est_input = ctx.est_input;
@@ -173,10 +162,6 @@ pub async fn proxy_stream(
     );
 
     // ── 4. 立即返回 Response + 后台 spawn ──────────────────────────
-    //
-    // 客户端在毫秒级内收到 HTTP 200 + `:keepalive` 首字节。
-    // 上游连接 + 密钥轮换 + 故障转移 + 流式转发全部在后台完成。
-    // 上游错误通过 SSE error event 传达（不再返回 HTTP 4xx/5xx status code）。
     let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(100);
 
     // 初始 keepalive：客户端立即知道连接存活
@@ -194,14 +179,6 @@ pub async fn proxy_stream(
         let model_name = &model_name_owned;
 
         // ── keepalive 心跳 + 取消信号 ─────────────────────────────
-        // 心跳在后台单独 spawn：上游等待期间（可能数秒）每 15s 发一次
-        // `:keepalive` 注释，防止客户端超时断开。
-        //
-        // 关键：`tx` 必须唯一属于主任务。keepalive 任务只持有取消信号
-        // （oneshot）而不持有 tx clone —— 否则 mpsc 的 rx 侧永远等不到
-        // channel 关闭，HTTP 响应永不结束，客户端会一直 pending。
-        // 主任务任何路径结束时 Drop guard 触发 cancel，keepalive 随之
-        // 退出，rx 收到 channel 关闭信号 → 流干净收尾。
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         let keepalive_tx = tx.clone();
         let keepalive_handle = tokio::spawn(async move {
@@ -229,8 +206,7 @@ pub async fn proxy_stream(
         let _keepalive_handle = keepalive_handle;
 
         // ── 双循环：外层 provider 候选，内层 key 轮换 ─────────────
-        let mut body_anthropic = body_anthropic;
-        let mut body_openai = body_openai;
+        let ir_request = ir_request;
         let mut last_resp: Option<reqwest::Response> = None;
         let mut last_key_id: Option<String> = None;
         let mut last_key_name: Option<String> = None;
@@ -246,14 +222,27 @@ pub async fn proxy_stream(
                 continue;
             }
             last_candidate = cand.clone();
-            let attempt_body = if cand.provider_kind == "anthropic" {
-                &mut body_anthropic
-            } else {
-                &mut body_openai
+
+            // 根据 provider_kind 从 IR 生成上游请求体
+            let mut attempt_body = match cand.provider_kind.as_str() {
+                "anthropic" => ir::to_anthropic::ir_req_to_anthropic(&ir_request),
+                "responses" => ir::to_responses::ir_req_to_responses(&ir_request),
+                _ => ir::to_chat::ir_req_to_chat(&ir_request),
             };
+
+            // 注入真实 model ID + stream 选项
             if let Some(obj) = attempt_body.as_object_mut() {
                 obj.insert("model".to_string(), json!(cand.real_model_id));
+                obj.insert("stream".to_string(), json!(true));
+                // Chat Completions 需要 stream_options 才能拿到 usage
+                if cand.provider_kind != "anthropic" && cand.provider_kind != "responses" {
+                    obj.insert(
+                        "stream_options".to_string(),
+                        json!({"include_usage": true}),
+                    );
+                }
             }
+
             let max_attempts = state.keys.get_stats(&cand.provider_id).map(|s| s.total as u32).unwrap_or(1);
             let mut attempts: u32 = 0;
             loop {
@@ -466,7 +455,6 @@ pub async fn proxy_stream(
 
         // ── 重绑定 winner 的 provider 信息 ───────────────────────
         let provider_id = resolved.provider_id.clone();
-        let provider_is_anthropic = resolved.provider_kind == "anthropic";
 
         if upstream_status >= 400 {
             let body_str = response.text().await.unwrap_or_default();
@@ -492,34 +480,13 @@ pub async fn proxy_stream(
             "Upstream response received, starting stream"
         );
 
-        // ── 流式转发（4 种分支，委托 forward 模块） ────────────────
-        let needs_translation = matches!(
-            (client_format, provider_is_anthropic),
-            (ClientFormat::Anthropic, false) | (ClientFormat::Openai, true)
-        );
-
-        if needs_translation {
-            if provider_is_anthropic {
-                forward_stream_anthropic_to_openai(
-                    response, &tx, &state, trace_id, start_time,
-                    &provider_id, &resolved, model_name, &service_key,
-                    &last_key_id, &last_key_name, &last_key_masked, endpoint,
-                ).await;
-            } else {
-                forward_stream_openai_to_anthropic(
-                    response, &tx, &state, trace_id, start_time,
-                    &provider_id, &resolved, model_name, &service_key,
-                    &last_key_id, &last_key_name, &last_key_masked, endpoint,
-                    est_input,
-                ).await;
-            }
-        } else {
-            forward_stream_passthrough(
-                response, &tx, &state, trace_id, start_time,
-                &provider_id, &resolved, model_name, &service_key,
-                &last_key_id, &last_key_name, &last_key_masked, endpoint,
-            ).await;
-        }
+        // ── 统一 IR 流式转发 ──────────────────────────────────────
+        super::forward::forward_stream_ir(
+            response, &tx, &state, trace_id, start_time,
+            &provider_id, &resolved, model_name, &service_key,
+            &last_key_id, &last_key_name, &last_key_masked, endpoint,
+            &resolved.provider_kind, client_format, est_input,
+        ).await;
     });
 
     // ── 立即返回 Response（客户端毫秒级收到首字节） ────────────────
@@ -559,12 +526,20 @@ pub(super) fn send_error_event(
             .unwrap_or_default();
             Bytes::from(format!("event: error\ndata: {}\n\n", payload))
         }
-        ClientFormat::Openai => {
+        ClientFormat::Chat => {
             let payload = serde_json::to_string(&json!({
                 "error": { "message": message, "type": error_type, "code": null }
             }))
             .unwrap_or_default();
             Bytes::from(format!("data: {}\n\ndata: [DONE]\n\n", payload))
+        }
+        ClientFormat::Responses => {
+            let payload = serde_json::to_string(&json!({
+                "type": "response.failed",
+                "error": { "type": error_type, "message": message }
+            }))
+            .unwrap_or_default();
+            Bytes::from(format!("event: error\ndata: {}\n\n", payload))
         }
     };
     let _ = tx.send(Ok(bytes));

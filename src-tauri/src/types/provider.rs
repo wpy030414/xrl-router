@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Provider type (OpenAI, Anthropic, Deap, Custom)
+/// Provider type (OpenAI Chat Completions, Anthropic Messages, OpenAI Responses)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Openai,
     Anthropic,
-    Deap,
-    Custom,
+    Responses,
 }
 
 impl std::fmt::Display for ProviderKind {
@@ -15,8 +14,7 @@ impl std::fmt::Display for ProviderKind {
         match self {
             ProviderKind::Openai => write!(f, "openai"),
             ProviderKind::Anthropic => write!(f, "anthropic"),
-            ProviderKind::Deap => write!(f, "deap"),
-            ProviderKind::Custom => write!(f, "custom"),
+            ProviderKind::Responses => write!(f, "responses"),
         }
     }
 }

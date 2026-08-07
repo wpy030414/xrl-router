@@ -27,6 +27,7 @@ fn proxy_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/chat/completions", post(proxy::proxy_openai_chat))
         .route("/v1/messages", post(proxy::proxy_anthropic_messages))
+        .route("/v1/responses", post(proxy::proxy_openai_responses))
         .route("/v1/models", get(proxy::proxy_list_models))
         .route("/v1/user/balance", get(proxy::user_balance))
         .layer(middleware::from_fn_with_state(

@@ -197,7 +197,9 @@ impl ProviderRegistry {
         let key = api_key.to_string();
 
         let adapter: Box<dyn adapter::Adapter> = match provider.kind {
-            ProviderKind::Openai => Box::new(OpenAIAdapter::new(provider.base_url.clone(), key)),
+            ProviderKind::Openai | ProviderKind::Responses => {
+                Box::new(OpenAIAdapter::new(provider.base_url.clone(), key))
+            }
             ProviderKind::Anthropic => {
                 Box::new(AnthropicAdapter::new(provider.base_url.clone(), key))
             }

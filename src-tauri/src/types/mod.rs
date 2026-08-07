@@ -37,6 +37,7 @@ pub struct Provider {
 pub enum ProviderKind {
     Openai,
     Anthropic,
+    Responses,
 }
 
 impl std::fmt::Display for ProviderKind {
@@ -44,6 +45,7 @@ impl std::fmt::Display for ProviderKind {
         match self {
             ProviderKind::Openai => write!(f, "openai"),
             ProviderKind::Anthropic => write!(f, "anthropic"),
+            ProviderKind::Responses => write!(f, "responses"),
         }
     }
 }
@@ -53,6 +55,7 @@ impl ProviderKind {
         match s.to_lowercase().as_str() {
             "openai" => ProviderKind::Openai,
             "anthropic" => ProviderKind::Anthropic,
+            "responses" => ProviderKind::Responses,
             _ => ProviderKind::Openai,
         }
     }

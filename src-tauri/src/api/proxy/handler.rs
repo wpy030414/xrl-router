@@ -1,11 +1,11 @@
-//! 三个代理入口 handler：Anthropic / OpenAI Chat 流式代理 + 模型列表。
+//! 三个代理入口 handler：Anthropic / OpenAI Chat / OpenAI Responses 流式代理 + 模型列表。
 //!
 //! handler 是薄入口层：提取 API key → authenticate_and_stream() → 委托给
 //! `stream::proxy_stream()` 完成路由解析、上游连接、密钥轮换、流式转发。
 //!
 //! 认证 / 路由 / 密钥轮换 / WebSearch 劫持分别下沉到
 //! `auth` / `route` / `key_rotation` / `websearch`。
-//! `translate` / `sniff` / `stream` 为既有子模块。
+//! `ir` / `stream` / `forward` 为既有子模块。
 
 use std::sync::Arc;
 
@@ -20,9 +20,10 @@ use uuid::Uuid;
 use crate::gateway::server::AppState;
 
 use super::auth::{verify_service_key, ServiceKeyInfo};
+use super::ir;
+use super::ir::types::IrRequest;
 use super::quota::check_quota;
 use super::stream::{ClientFormat, StreamContext};
-use super::translate;
 
 /// POST /v1/messages - Anthropic Messages API proxy (streaming only).
 pub async fn proxy_anthropic_messages(
@@ -45,7 +46,17 @@ pub async fn proxy_anthropic_messages(
         })
         .unwrap_or("");
 
-    authenticate_and_stream(state, api_key, body, trace_id, start_time, ClientFormat::Anthropic, "/v1/messages").await
+    let ir_request = ir::from_anthropic::anthropic_req_to_ir(&body);
+    authenticate_and_stream(
+        state,
+        api_key,
+        ir_request,
+        trace_id,
+        start_time,
+        ClientFormat::Anthropic,
+        "/v1/messages",
+    )
+    .await
 }
 
 /// POST /v1/chat/completions - OpenAI Chat API proxy (streaming only).
@@ -65,23 +76,66 @@ pub async fn proxy_openai_chat(
         .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
         .unwrap_or("");
 
-    authenticate_and_stream(state, api_key, body, trace_id, start_time, ClientFormat::Openai, "/v1/chat/completions").await
+    let ir_request = ir::from_chat::chat_req_to_ir(&body);
+    authenticate_and_stream(
+        state,
+        api_key,
+        ir_request,
+        trace_id,
+        start_time,
+        ClientFormat::Chat,
+        "/v1/chat/completions",
+    )
+    .await
+}
+
+/// POST /v1/responses - OpenAI Responses API proxy (streaming only).
+pub async fn proxy_openai_responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response, (StatusCode, HeaderMap, AxumJson<Value>)> {
+    let trace_id = Uuid::new_v4().to_string();
+    let start_time = std::time::Instant::now();
+
+    // OpenAI 协议：Authorization Bearer 优先，x-api-key 备选
+    let api_key = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
+        .unwrap_or("");
+
+    let ir_request = ir::from_responses::responses_req_to_ir(&body);
+    authenticate_and_stream(
+        state,
+        api_key,
+        ir_request,
+        trace_id,
+        start_time,
+        ClientFormat::Responses,
+        "/v1/responses",
+    )
+    .await
 }
 
 /// 认证 + 请求体准备 + 委托 stream::proxy_stream()。
 ///
-/// 两个 handler 共享此流程，唯一差异是 `client_format`（决定 API key 提取
-/// 优先级由调用方处理，此处统一）。
+/// 三个 handler 共享此流程：
+/// 1. 验证 service key
+/// 2. 检查配额
+/// 3. 检查模型白名单
+/// 4. 委托流式引擎
 async fn authenticate_and_stream(
     state: Arc<AppState>,
     api_key: &str,
-    body: Value,
+    mut ir_request: IrRequest,
     trace_id: String,
     start_time: std::time::Instant,
     client_format: ClientFormat,
     endpoint: &'static str,
 ) -> Result<Response, (StatusCode, HeaderMap, AxumJson<Value>)> {
-    let model_name = body["model"].as_str().unwrap_or("").to_owned();
+    let model_name = ir_request.model.clone();
 
     info!(
         trace_id = %trace_id,
@@ -124,26 +178,11 @@ async fn authenticate_and_stream(
         ));
     }
 
-    // ── 预构造两种格式请求体（translate 是纯函数） ──────────────
-    let mut body_anthropic = match client_format {
-        ClientFormat::Anthropic => body.clone(),
-        ClientFormat::Openai => translate::openai_req_to_anthropic(&body),
-    };
-    if let Some(obj) = body_anthropic.as_object_mut() {
-        obj.insert("stream".to_string(), json!(true));
-    }
-
-    let mut body_openai = match client_format {
-        ClientFormat::Openai => body.clone(),
-        ClientFormat::Anthropic => translate::anthropic_req_to_openai(&body),
-    };
-    if let Some(obj) = body_openai.as_object_mut() {
-        obj.insert("stream".to_string(), json!(true));
-        obj.insert("stream_options".to_string(), json!({"include_usage": true}));
-    }
+    // ── 强制 stream=true ────────────────────────────────────────
+    ir_request.stream = true;
 
     // ── 输入 token 估算（translation 路径 message_start 占位用） ─
-    let est_input = translate::estimate_input_tokens(&body);
+    let est_input = ir::usage::estimate_input_tokens(&ir_request);
     // 大上下文（缓存恢复）首字节延迟高，按输入规模放宽响应头超时
     let header_timeout_secs = super::header_timeout_for(est_input);
 
@@ -156,8 +195,7 @@ async fn authenticate_and_stream(
             service_key,
             model_name,
             endpoint,
-            body_anthropic,
-            body_openai,
+            ir_request,
             client_format,
             est_input,
             header_timeout_secs,
