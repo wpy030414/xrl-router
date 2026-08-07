@@ -57,7 +57,7 @@ src/                           前端 Vue 3
 ├── fm/                        Claude FM 播放器（极简前端：单例 <audio> 收听后端直播流，~40 行）
 ├── views/*                    6 个页面（ClaudeFm/Providers/ProviderNew/Keys/Stats/Settings）
 ├── components/*               AppShell / ConnectionStatus / PluginRegisterDialog
-└── stores/*                   4 个 Pinia stores（providers/keys/models/dashboard）
+└── stores/*                   3 个 Pinia stores（providers/keys/models）
 
 > **Claude FM**：所有播放逻辑（歌单、墙钟时间轴、音源解析、预加载、切歌）在 Rust 后端 `FmEngine`（`api/handlers/fm.rs`）完成。引擎以 `tokio::spawn` 后台任务运行，通过 `broadcast::channel` 推送音频字节给所有 `/fm/live` 订阅者。前端 `src/fm/player.ts`（~40 行）只有一个模块级单例 `<audio>` 收听直播流 + 监听 `fm-meta` 事件更新曲目元数据。托盘勾选经 `fm_set_playing` / `fm_ready` Tauri command 同步（见 `lib.rs`）。改 FM 逻辑改 `api/handlers/fm.rs`，改播放器 UI 改 `ClaudeFmView.vue`。
 

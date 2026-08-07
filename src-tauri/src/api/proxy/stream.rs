@@ -91,7 +91,7 @@ enum ProviderFailure {
 
 /// SSE keepalive 心跳间隔（秒）。上游等待期间（~8s）保持连接存活，
 /// 防止客户端因无数据传输而超时断开。
-const SSE_KEEPALIVE_SECS: u64 = 15;
+pub(super) const SSE_KEEPALIVE_SECS: u64 = 15;
 
 /// 流式代理引擎：路由解析 → 立即返回 Response → 后台 spawn 上游连接 + 流式转发。
 ///
@@ -149,8 +149,14 @@ pub async fn proxy_stream(
         && has_websearch_tool(client_body)
     {
         info!(trace_id = %trace_id, anthropic_upstream = provider_is_anthropic, "web_search hijacked → local Bing loop");
-        // TODO: websearch_loop 也有上游阻塞，后续可改为同样的 spawn 模式
-        return run_websearch_loop(&state, client_body, &resolved, provider_is_anthropic, trace_id, &ctx.service_key).await;
+        return super::websearch::run_websearch_loop(
+            state.clone(),
+            client_body.clone(),
+            resolved.clone(),
+            provider_is_anthropic,
+            trace_id.clone(),
+            ctx.service_key,
+        ).await;
     }
 
     // ── 3. 预构造请求体（同步段，纯内存操作） ───────────────────────
@@ -517,14 +523,20 @@ pub async fn proxy_stream(
     });
 
     // ── 立即返回 Response（客户端毫秒级收到首字节） ────────────────
-    Ok(Response::builder()
+    Ok(sse_response(rx))
+}
+
+/// 用 mpsc rx 构造标准 SSE Response（含 keepalive 用的响应头集合）。
+/// proxy_stream 与 websearch_loop 共用，确保两条路径响应头一致。
+pub(super) fn sse_response(rx: mpsc::Receiver<Result<Bytes, Infallible>>) -> Response {
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive")
         .header("x-accel-buffering", "no")
         .body(axum::body::Body::from_stream(ReceiverStream::new(rx)))
-        .unwrap())
+        .unwrap()
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -532,7 +544,7 @@ pub async fn proxy_stream(
 // ═══════════════════════════════════════════════════════════════════
 
 /// 向客户端发送 SSE error event（根据客户端格式构造）。
-fn send_error_event(
+pub(super) fn send_error_event(
     tx: &mpsc::Sender<Result<Bytes, Infallible>>,
     client_format: ClientFormat,
     error_type: &str,

@@ -3,19 +3,23 @@
 //! 支持 Anthropic 与 OpenAI 兼容两种上游格式。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
+use bytes::Bytes;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use crate::gateway::server::AppState;
 
 use super::auth::ServiceKeyInfo;
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::ResolvedRoute;
+use super::stream::{send_error_event, ClientFormat};
 use super::translate;
 
 /// 请求 body 的 tools 里是否含 server-side web_search 工具。
@@ -51,14 +55,13 @@ fn search_result_blocks(results: &[crate::search::SearchResult]) -> Vec<Value> {
         .collect()
 }
 
-/// 把最终累积的 content blocks + stop_reason + usage 转成 Anthropic SSE 事件序列。
-fn build_sse_events(msg_id: &str, model: &str, content: &[Value], stop_reason: &str, usage: &Value) -> Vec<Event> {
-    let mk = |event_type: &str, payload: Value| {
-        Event::default()
-            .event(event_type)
-            .data(serde_json::to_string(&payload).unwrap_or_default())
+/// 把最终累积的 content blocks + stop_reason + usage 渲染成 Anthropic SSE 字节段序列。
+fn build_sse_bytes(msg_id: &str, model: &str, content: &[Value], stop_reason: &str, usage: &Value) -> Vec<Bytes> {
+    let mk = |event_type: &str, payload: Value| -> Bytes {
+        let data = serde_json::to_string(&payload).unwrap_or_default();
+        Bytes::from(format!("event: {}\ndata: {}\n\n", event_type, data))
     };
-    let mut events = vec![mk(
+    let mut out = vec![mk(
         "message_start",
         json!({
             "type": "message_start",
@@ -77,22 +80,22 @@ fn build_sse_events(msg_id: &str, model: &str, content: &[Value], stop_reason: &
             "tool_use" => json!({"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}),
             _ => block.clone(),
         };
-        events.push(mk("content_block_start", json!({"type": "content_block_start", "index": i, "content_block": start_block})));
+        out.push(mk("content_block_start", json!({"type": "content_block_start", "index": i, "content_block": start_block})));
         match bt {
             "text" => {
                 let text = block["text"].as_str().unwrap_or("");
-                events.push(mk("content_block_delta", json!({"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": text}})));
+                out.push(mk("content_block_delta", json!({"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": text}})));
             }
             "tool_use" => {
                 let input_json = serde_json::to_string(&block["input"]).unwrap_or_default();
-                events.push(mk("content_block_delta", json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": input_json}})));
+                out.push(mk("content_block_delta", json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": input_json}})));
             }
             _ => {} // web_search_tool_result: 无 delta
         }
-        events.push(mk("content_block_stop", json!({"type": "content_block_stop", "index": i})));
+        out.push(mk("content_block_stop", json!({"type": "content_block_stop", "index": i})));
     }
 
-    events.push(mk(
+    out.push(mk(
         "message_delta",
         json!({
             "type": "message_delta",
@@ -100,98 +103,149 @@ fn build_sse_events(msg_id: &str, model: &str, content: &[Value], stop_reason: &
             "usage": {"output_tokens": usage["output_tokens"]}
         }),
     ));
-    events.push(mk("message_stop", json!({"type": "message_stop"})));
-    events
+    out.push(mk("message_stop", json!({"type": "message_stop"})));
+    out
 }
 
 /// WebSearch 劫持 loop 入口：根据上游类型走 Anthropic 或 OpenAI 格式，
 /// 在代理内跑 tool-calling loop（本地 Bing 搜索），累积内容转 SSE 返回客户端。
+///
+/// 与主代理路径一致：立即返回 Response（含 `:keepalive` 首字节），hijack loop
+/// 在后台 spawn 完成，避免多轮 tool-calling 期间客户端因长时间无字节而超时。
+/// 上游错误通过 SSE error event 传达（不再返回 HTTP 4xx/5xx）。
 pub(super) async fn run_websearch_loop(
-    state: &Arc<AppState>,
-    body: &Value,
-    resolved: &ResolvedRoute,
+    state: Arc<AppState>,
+    body: Value,
+    resolved: ResolvedRoute,
     provider_is_anthropic: bool,
-    _trace_id: &str,
-    service_key: &ServiceKeyInfo,
+    trace_id: String,
+    service_key: ServiceKeyInfo,
 ) -> Result<Response, (StatusCode, HeaderMap, Json<Value>)> {
-    let picked = pick_key_for(state, &resolved.provider_id).ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            HeaderMap::new(),
-            Json(json!({"error": {"type": "api_error", "message": "No available upstream keys"}})),
-        )
-    })?;
+    use std::convert::Infallible;
 
-    let client = crate::http::build_http_client()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap();
+    let client_format = ClientFormat::Anthropic; // websearch 仅经 /v1/messages 入口
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(100);
 
-    let upstream_url = &resolved.upstream_url;
-    let model = &resolved.real_model_id;
-    let max_tokens = body["max_tokens"].as_u64().unwrap_or(4096);
-    let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    // 初始 keepalive：客户端立即知道连接存活
+    let _ = tx.send(Ok(Bytes::from(":keepalive\n\n"))).await;
 
-    let mut accumulated: Vec<Value> = Vec::new();
-    let mut final_stop = "end_turn".to_string();
-    // Accumulate usage across all tool-calling loop rounds.
-    let mut accum_input: i64 = 0;
-    let mut accum_output: i64 = 0;
-    let mut accum_cache_read: i64 = 0;
+    tokio::spawn(async move {
+        let trace_id = &trace_id;
 
-    // Some(Response) = 上游错误，直接返客户端；None = loop 正常结束
-    let model_display_name = body["model"].as_str().unwrap_or("");
-    let early: Option<Response> = if provider_is_anthropic {
-        hijack_anthropic(
-            &client, upstream_url, model, &picked.key_hash, body, max_tokens,
-            &state.keys, &resolved.provider_id,
-            &mut accumulated, &mut final_stop,
-            &mut accum_input, &mut accum_output,
-            &mut accum_cache_read,
-        )
-        .await?
-    } else {
-        hijack_openai(
-            &client, upstream_url, model, &picked.key_hash, body, max_tokens,
-            &state.keys, &resolved.provider_id,
-            &mut accumulated, &mut final_stop,
-            &mut accum_input, &mut accum_output,
-        )
-        .await?
-    };
-    if let Some(resp) = early {
-        return Ok(resp);
-    }
+        // ── keepalive 心跳 + 取消信号（与 stream.rs 主路径同构）────────
+        // 主任务任何路径结束 → Drop guard 触发 cancel → keepalive 退出 →
+        // channel 关闭 → 流干净收尾。tx 唯一属于主任务，keepalive 只持取消信号。
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let keepalive_tx = tx.clone();
+        let keepalive_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(super::stream::SSE_KEEPALIVE_SECS));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if keepalive_tx.send(Ok(Bytes::from(":keepalive\n\n"))).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = &mut cancel_rx => break,
+                }
+            }
+        });
+        struct CancelOnDrop(Option<oneshot::Sender<()>>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let _cancel_guard = CancelOnDrop(Some(cancel_tx));
+        let _keepalive_handle = keepalive_handle;
 
-    let _ = state.database.insert_usage_log(
-        chrono::Utc::now().timestamp(),
-        &resolved.provider_id,
-        resolved.provider_name.as_str(),
-        &resolved.model_row_id,
-        model_display_name,
-        Some(&picked.id),
-        picked.name.as_str(),
-        picked.key_masked.as_str(),
-        Some(service_key.id.as_str()),
-        service_key.name.as_str(),
-        service_key.key_masked.as_str(),
-        "/v1/messages",
-        accum_input,
-        accum_output,
-        0,
-        true,
-        None,
-        accum_cache_read,
-    );
+        let picked = match pick_key_for(&state, &resolved.provider_id) {
+            Some(p) => p,
+            None => {
+                send_error_event(&tx, client_format, "api_error", "No available upstream keys");
+                return;
+            }
+        };
 
-    let final_usage = json!({
-        "input_tokens": accum_input,
-        "output_tokens": accum_output,
-        "cache_read_input_tokens": accum_cache_read,
+        let client = crate::http::build_http_client()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let upstream_url = resolved.upstream_url.clone();
+        let model = resolved.real_model_id.clone();
+        let max_tokens = body["max_tokens"].as_u64().unwrap_or(4096);
+        let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+
+        let mut accumulated: Vec<Value> = Vec::new();
+        let mut final_stop = "end_turn".to_string();
+        let mut accum_input: i64 = 0;
+        let mut accum_output: i64 = 0;
+        let mut accum_cache_read: i64 = 0;
+
+        let model_display_name = body["model"].as_str().unwrap_or("").to_string();
+        let outcome: Result<(), (String, String)> = if provider_is_anthropic {
+            hijack_anthropic(
+                &client, &upstream_url, &model, &picked.key_hash, &body, max_tokens,
+                &state.keys, &resolved.provider_id,
+                &mut accumulated, &mut final_stop,
+                &mut accum_input, &mut accum_output,
+                &mut accum_cache_read,
+            )
+            .await
+        } else {
+            hijack_openai(
+                &client, &upstream_url, &model, &picked.key_hash, &body, max_tokens,
+                &state.keys, &resolved.provider_id,
+                &mut accumulated, &mut final_stop,
+                &mut accum_input, &mut accum_output,
+            )
+            .await
+        };
+
+        if let Err((err_type, msg)) = outcome {
+            send_error_event(&tx, client_format, &err_type, &msg);
+            return;
+        }
+
+        let _ = state.database.insert_usage_log(
+            chrono::Utc::now().timestamp(),
+            &resolved.provider_id,
+            resolved.provider_name.as_str(),
+            &resolved.model_row_id,
+            &model_display_name,
+            Some(&picked.id),
+            picked.name.as_str(),
+            picked.key_masked.as_str(),
+            Some(service_key.id.as_str()),
+            service_key.name.as_str(),
+            service_key.key_masked.as_str(),
+            "/v1/messages",
+            accum_input,
+            accum_output,
+            0,
+            true,
+            None,
+            accum_cache_read,
+        );
+
+        let final_usage = json!({
+            "input_tokens": accum_input,
+            "output_tokens": accum_output,
+            "cache_read_input_tokens": accum_cache_read,
+        });
+        let segments = build_sse_bytes(&msg_id, &model, &accumulated, &final_stop, &final_usage);
+        for seg in segments {
+            if tx.send(Ok(seg)).await.is_err() {
+                break;
+            }
+        }
+        // tx drop → channel 关闭 → rx 流收尾
     });
-    let events = build_sse_events(&msg_id, model, &accumulated, &final_stop, &final_usage);
-    let stream = futures::stream::iter(events.into_iter().map(Ok::<_, std::io::Error>));
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
+
+    Ok(super::stream::sse_response(rx))
 }
 
 /// Anthropic 上游的劫持 loop。
@@ -209,7 +263,7 @@ async fn hijack_anthropic(
     accum_input: &mut i64,
     accum_output: &mut i64,
     accum_cache_read: &mut i64,
-) -> Result<Option<Response>, (StatusCode, HeaderMap, Json<Value>)> {
+) -> Result<(), (String, String)> {
     let custom_tool = json!({
         "name": "web_search",
         "description": "Search the web (Bing) for up-to-date information.",
@@ -242,14 +296,16 @@ async fn hijack_anthropic(
             .json(&Value::Object(req))
             .send()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, HeaderMap::new(), Json(json!({"error": {"type": "api_error", "message": e.to_string()}}))))?;
+            .map_err(|e| ("api_error".to_string(), e.to_string()))?;
         let status = resp.status().as_u16();
         let msg_val: Value = resp.json().await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, HeaderMap::new(), Json(json!({"error": {"type": "api_error", "message": e.to_string()}}))))?;
+            .map_err(|e| ("api_error".to_string(), e.to_string()))?;
         if status >= 400 {
             update_key_health(pool, provider_id, api_key, status);
-            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            return Ok(Some((code, Json(msg_val)).into_response()));
+            let msg = msg_val["error"]["message"].as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("upstream error {}", status));
+            return Err(("api_error".to_string(), msg));
         }
         update_key_health(pool, provider_id, api_key, status);
 
@@ -285,7 +341,7 @@ async fn hijack_anthropic(
         }
         messages.push(json!({"role": "user", "content": results}));
     }
-    Ok(None)
+    Ok(())
 }
 
 /// OpenAI 兼容上游（如 qwen / 钉钉 DEAP）的劫持 loop。
@@ -302,7 +358,7 @@ async fn hijack_openai(
     final_stop: &mut String,
     accum_input: &mut i64,
     accum_output: &mut i64,
-) -> Result<Option<Response>, (StatusCode, HeaderMap, Json<Value>)> {
+) -> Result<(), (String, String)> {
     let custom_fn = json!({
         "type": "function",
         "function": {
@@ -331,14 +387,16 @@ async fn hijack_openai(
             .json(&req)
             .send()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, HeaderMap::new(), Json(json!({"error": {"type": "api_error", "message": e.to_string()}}))))?;
+            .map_err(|e| ("api_error".to_string(), e.to_string()))?;
         let status = resp.status().as_u16();
         let msg_val: Value = resp.json().await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, HeaderMap::new(), Json(json!({"error": {"type": "api_error", "message": e.to_string()}}))))?;
+            .map_err(|e| ("api_error".to_string(), e.to_string()))?;
         if status >= 400 {
             update_key_health(pool, provider_id, api_key, status);
-            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            return Ok(Some((code, Json(msg_val)).into_response()));
+            let msg = msg_val["error"]["message"].as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("upstream error {}", status));
+            return Err(("api_error".to_string(), msg));
         }
         update_key_health(pool, provider_id, api_key, status);
 
@@ -382,5 +440,5 @@ async fn hijack_openai(
             messages.push(json!({"role": "tool", "tool_call_id": tc["id"], "content": format_search_text(&bing)}));
         }
     }
-    Ok(None)
+    Ok(())
 }

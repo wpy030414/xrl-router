@@ -164,13 +164,6 @@ export const modelsApi = {
     request<{ ok: boolean }>(`/api/models/${modelId}`, { method: 'DELETE' }),
 };
 
-// --- Dashboard ---
-export const dashboardApi = {
-  overview: () => request<any>('/api/dashboard/overview'),
-  usage: (params: { from?: number; to?: number }) =>
-    request<any>(`/api/dashboard/usage?from=${params.from || ''}&to=${params.to || ''}`),
-};
-
 // --- Stats ---
 export interface StatsRow {
   key_id: string;

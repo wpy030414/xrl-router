@@ -964,3 +964,101 @@ fn proxy_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .layer(DefaultBodyLimit::max(super::proxy::MAX_REQUEST_BODY_BYTES))
 }
 ```
+
+---
+
+## ADR-023: WebSearch 劫持路径统一为 SSE 即时响应 + oneshot 取消信号
+
+**日期**: 2026-08-07  
+**状态**: 已接受  
+**延伸**: ADR-020（SSE 即时响应）、ADR-021（keepalive oneshot 取消信号）
+
+### 背景
+
+ADR-020/021 把主代理路径（`proxy_stream`）改造为「路由解析后立即返回 Response（含 `:keepalive` 首字节）+ 后台 spawn 处理上游连接与流式转发」，并用 oneshot 取消信号驱动 15s keepalive 心跳。但 WebSearch 劫持路径（`run_websearch_loop`）仍是同步阻塞：跑完多轮 tool-calling loop（本地 Bing 搜索，最多 5 轮上游往返）后才用 `Sse::new(stream).keep_alive(KeepAlive::default())` 返回响应。`stream.rs` 里还留着 `// TODO: websearch_loop 也有上游阻塞，后续可改为同样的 spawn 模式`。
+
+问题：多轮 tool-calling 期间客户端收不到任何字节，与主路径修复前的 subagent 超时是同一类隐患。上游错误则返回 `(StatusCode, Json)` HTTP 4xx/5xx，与主路径「上游错误通过 SSE error event 传达」的契约不一致。
+
+### 决策
+
+1. **WebSearch 路径与主路径同构**：`run_websearch_loop` 立即创建 mpsc channel + 发 `:keepalive` 首字节 + 返回 `stream::sse_response(rx)`，hijack loop 在 `tokio::spawn` 内完成
+2. **复用主路径的取消信号模式**：`oneshot::channel::<()>()` + `CancelOnDrop` guard + keepalive 任务 `select!`（tick 发心跳 / cancel 即 break），与 ADR-021 实现完全对称
+3. **上游错误改走 SSE error event**：`hijack_anthropic` / `hijack_openai` 的错误返回类型从 `Result<Option<Response>, (StatusCode, HeaderMap, Json<Value>)>` 改为 `Result<(), (String, String)>`（error_type + message），由 `stream::send_error_event` 发送给客户端，不再返回 HTTP 4xx/5xx
+4. **响应头集合抽取共用**：`stream::sse_response(rx)` 与 `stream::send_error_event` / `SSE_KEEPALIVE_SECS` 提为 `pub(super)`，两条路径响应头永远一致
+5. **`client_format` 硬编码为 `ClientFormat::Anthropic`**：WebSearch 劫持实质只经 `/v1/messages` 入口触发
+
+### 原因
+
+1. **兑现 ADR-020 的 TODO**：主路径已验证的「立即响应 + 后台 spawn」模式搬到 websearch，消除多轮 loop 期间的客户端超时隐患，行为可预期
+2. **错误传达契约统一**：主路径上游错误走 SSE error event，websearch 跟进一致，避免「一条路径返回 HTTP 4xx、另一条返回 SSE error」的分叉
+3. **`has_websearch_tool` 只匹配 Anthropic 风格**：检测 `tools[].type` 以 `web_search` 开头；OpenAI 客户端的 `tools` 是 `{"type":"function","function":{...}}`，不会命中，故 WebSearch 劫持实质只经 Anthropic 入口（`/v1/messages`）触发。`build_sse_bytes` 只产 Anthropic SSE 事件序列与之一致——这是基线既有行为，非本次引入
+4. **取消信号复用**：oneshot + `CancelOnDrop` 的兜底语义（panic / 提前 return 都触发取消）对 websearch 多轮 loop 同样必要
+
+### 代价
+
+- websearch 多一个 mpsc channel + `CancelOnDrop` guard 的样板代码（与主路径重复）
+- `hijack_anthropic` / `hijack_openai` 错误返回从带 `StatusCode` 的 Response 收窄为 `(error_type, message)`，丢失了上游原始 JSON body 的透传——但主路径本就不透传上游错误 body（走 SSE error event），一致性优先
+
+### 实现
+
+```rust
+// api/proxy/websearch.rs
+pub(super) async fn run_websearch_loop(
+    state: Arc<AppState>, body: Value, resolved: ResolvedRoute,
+    provider_is_anthropic: bool, trace_id: String, service_key: ServiceKeyInfo,
+) -> Result<Response, (StatusCode, HeaderMap, Json<Value>)> {
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(100);
+    let _ = tx.send(Ok(Bytes::from(":keepalive\n\n"))).await;
+    tokio::spawn(async move {
+        // oneshot 取消信号 + CancelOnDrop（与 stream.rs 主路径同构）
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let keepalive_handle = tokio::spawn(async move { /* select! tick / cancel */ });
+        let _cancel_guard = CancelOnDrop(Some(cancel_tx));
+        // ... hijack loop，错误走 send_error_event，正常走 build_sse_bytes
+    });
+    Ok(super::stream::sse_response(rx))
+}
+```
+
+---
+
+## ADR-024: 密钥解密失败不再回退密文，改为告警并跳过
+
+**日期**: 2026-08-07  
+**状态**: 已接受  
+**关联**: ADR-008（AES-256-GCM 加密 Provider Key）、ADR-003（健康状态纯内存）
+
+### 背景
+
+`keys/pool/persistence.rs` 的 `load_provider_keys` / `load_all_keys_from_db` 在解密 `api_keys.key_hash` 失败时用 `crypto::decrypt(&cipher, master_key).unwrap_or_else(|_| cipher.clone())` 回退——把**数据库密文当作明文 key** 装进 KeyPool。这是与 ADR-008 加密哲学直接矛盾的安全 bug：解密失败的 key 会被 round-robin 选中，以密文字符串作为 API key 发给上游。
+
+回退注释写「legacy plaintext」但 V9 之后所有 key 一律 AES-256-GCM 加密入库，legacy 明文已不可能存在，回退路径无正当用例。
+
+### 决策
+
+解密失败时 `tracing::warn!` 告警并 `skip`（不加入 KeyPool），不再回退到密文。SQL 同步移除对 `status` / `last_error_time` 两列的 SELECT（AGENTS.md 已注明这两列「保留但不再读写」，原代码读后立刻用 `KeyStatus::Green` 覆盖，是死读）。
+
+### 原因
+
+1. **加密必须能解密，否则跳过**：把密文当明文 key 发给上游是安全 bug，跳过该 key 才符合 ADR-008
+2. **与 ADR-003 自洽**：跳过的 key 不入池，不会被轮到；启动时其余 key 全 green，行为与「健康状态纯内存、启动全 green」一致
+3. **死读清理**：`status` / `last_error_time` 既不再读写，SELECT 它们是纯噪音；列保留仅为不触发 schema 迁移
+4. **锁序不变**：闭包内只取原始字段、conn 锁在块内释放后再解密，ABBA 死锁规避规则未被破坏
+
+### 代价
+
+- 若 `master.key` 丢失或损坏，所有 key 解密失败 → KeyPool 为空 → 代理返回 503（No available upstream keys）。这是正确行为：主密钥丢失本就不可恢复（ADR-008 已注明），回退密文只会让上游用错误 key 报 401，制造假象
+- 用户需在日志里观察 `decrypt failed, skipping key` 警告，主动检查 master.key 完整性
+
+### 实现
+
+```rust
+// keys/pool/persistence.rs
+let keys: Vec<KeyEntry> = raw.into_iter().filter_map(|(.., cipher, ..)| {
+    let plain = match crypto::decrypt(&cipher, master_key) {
+        Ok(p) => p,
+        Err(e) => { tracing::warn!(key_id = %id, error = %e, "decrypt failed, skipping key"); return None; }
+    };
+    Some(KeyEntry { key_hash: plain, status: KeyStatus::Green, .. })
+}).collect();
+```

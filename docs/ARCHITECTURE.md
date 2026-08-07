@@ -239,7 +239,6 @@ src/
      providers.ts    Provider 列表
      keys.ts         API Key 列表 (按 provider 分组)
      models.ts       Model 列表 (按 provider 分组)
-     dashboard.ts    仪表盘数据 (后端路由未注册, 见已知问题)
 ```
 
 前端通过 HTTP 访问管理 API（无认证），通过 WebSocket 接收实时推送。语言切换经 `set_locale` Tauri command 同步到后端（托盘菜单文本），开机启动经 `@tauri-apps/plugin-autostart`，外链打开经 `@tauri-apps/plugin-shell`，数据文件读写经 `plugin-dialog` + `plugin-fs`（路径白名单见安全边界）。Claude FM 播放状态经 `fm_set_playing` / `fm_ready` Tauri command 同步到托盘菜单勾选。
@@ -318,7 +317,6 @@ src/
 - `/v1/*` 由 `proxy_routes()` 构建（套 `rate_limit_middleware` + 64MiB body limit）
 - `admin_ip_guard` 中间件用 `ConnectInfo<SocketAddr>` 提取客户端 IP，非 loopback 返回 403
 - `server.rs` 使用 `into_make_service_with_connect_info::<SocketAddr>()` 启用 IP 提取
-- **已知问题**: 前端 `api.ts` 定义了 `dashboardApi`（`/api/dashboard/overview`、`/api/dashboard/usage`），`stores/dashboard.ts` 也在使用，但后端 `router.rs` 未注册这两条路由。
 ```
 
 ### 6.2 文件系统权限（capabilities）

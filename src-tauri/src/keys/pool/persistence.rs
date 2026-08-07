@@ -23,36 +23,55 @@ impl super::KeyPool {
         // 注意：conn 锁必须在块内释放（Mutex 不可重入 + 锁序一致性），
         // 否则下方 add_provider_keys 会在持有 DB 锁时拿 KeyPool 锁，
         // 与代理请求路径形成 ABBA 死锁（插件 keys_update 并发时触发）。
-        let keys: Vec<KeyEntry> = {
+        // 闭包只取原始字段；解密在外层 filter_map 做，失败即告警并跳过
+        // （不再回退到密文当明文用，那会把数据库密文当 key 发给上游）。
+        let raw: Vec<(String, String, String, String, String, u64, u64)> = {
             let conn = db.conn();
             let mut stmt = conn.prepare(
-                "SELECT id, provider_id, name, key_hash, key_masked, status, last_error_time, total_requests, total_tokens
+                "SELECT id, provider_id, name, key_hash, key_masked, total_requests, total_tokens
                  FROM api_keys WHERE provider_id = ?1"
             ).map_err(|e| e.to_string())?;
-
-            let rows: Vec<KeyEntry> = stmt
+            let rows = stmt
                 .query_map(rusqlite::params![provider_id], |row| {
-                    let cipher: String = row.get(3)?;
-                    // Decrypt; on failure (e.g. legacy plaintext) fall back to raw value
-                    let plain = crypto::decrypt(&cipher, master_key)
-                        .unwrap_or_else(|_| cipher.clone());
-                    Ok(KeyEntry {
-                        id: row.get(0)?,
-                        provider_id: row.get(1)?,
-                        name: row.get(2)?,
-                        key_hash: plain,
-                        key_masked: row.get(4)?,
-                        status: KeyStatus::Green,
-                        last_error_time: None,
-                        total_requests: row.get::<_, i64>(7)? as u64,
-                        total_tokens: row.get::<_, i64>(8)? as u64,
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)? as u64,
+                        row.get::<_, i64>(6)? as u64,
+                    ))
                 })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
             rows
         }; // conn 锁在此释放
+
+        let keys: Vec<KeyEntry> = raw
+            .into_iter()
+            .filter_map(|(id, provider_id, name, cipher, key_masked, req, tokens)| {
+                let plain = match crypto::decrypt(&cipher, master_key) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(key_id = %id, error = %e, "decrypt failed, skipping key");
+                        return None;
+                    }
+                };
+                Some(KeyEntry {
+                    id,
+                    provider_id,
+                    name,
+                    key_hash: plain,
+                    key_masked,
+                    status: KeyStatus::Green,
+                    last_error_time: None,
+                    total_requests: req,
+                    total_tokens: tokens,
+                })
+            })
+            .collect();
 
         if !keys.is_empty() {
             self.add_provider_keys(provider_id, keys);
@@ -66,10 +85,12 @@ impl super::KeyPool {
     pub fn load_all_keys_from_db(&self, db: &Database, master_key: &crypto::MasterKey) {
         // 注意：conn 锁必须在块内释放（Mutex 不可重入），否则下方
         // load_persisted_index → db.get_setting() 会对同一把锁二次加锁而死锁。
-        let rows: Vec<KeyEntry> = {
+        // 闭包只取原始字段；解密在外层 filter_map 做，失败即告警并跳过
+        // （不再回退到密文当明文用，那会把数据库密文当 key 发给上游）。
+        let raw: Vec<(String, String, String, String, String, u64, u64)> = {
             let conn = db.conn();
             let mut stmt = match conn.prepare(
-                "SELECT id, provider_id, name, key_hash, key_masked, status, last_error_time, total_requests, total_tokens
+                "SELECT id, provider_id, name, key_hash, key_masked, total_requests, total_tokens
                  FROM api_keys",
             ) {
                 Ok(s) => s,
@@ -78,29 +99,48 @@ impl super::KeyPool {
                     return;
                 }
             };
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)? as u64,
+                        row.get::<_, i64>(6)? as u64,
+                    ))
+                })
+                .ok()
+                .map(|iter| iter.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+            rows
+        }; // conn 锁在此释放
 
-            stmt.query_map([], |row| {
-                let cipher: String = row.get(3)?;
-                // Decrypt; on failure (e.g. legacy plaintext) fall back to raw value
-                // so old keys still work until rotated.
-                let plain = crypto::decrypt(&cipher, master_key).unwrap_or_else(|_| cipher.clone());
-                Ok(KeyEntry {
-                    id: row.get(0)?,
-                    provider_id: row.get(1)?,
-                    name: row.get(2)?,
+        let rows: Vec<KeyEntry> = raw
+            .into_iter()
+            .filter_map(|(id, provider_id, name, cipher, key_masked, req, tokens)| {
+                let plain = match crypto::decrypt(&cipher, master_key) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(key_id = %id, error = %e, "decrypt failed, skipping key");
+                        return None;
+                    }
+                };
+                Some(KeyEntry {
+                    id,
+                    provider_id,
+                    name,
                     key_hash: plain,
-                    key_masked: row.get(4)?,
+                    key_masked,
                     // 可用性纯内存：启动一律视为可用，运行时按请求结果探测。
                     status: KeyStatus::Green,
                     last_error_time: None,
-                    total_requests: row.get::<_, i64>(7)? as u64,
-                    total_tokens: row.get::<_, i64>(8)? as u64,
+                    total_requests: req,
+                    total_tokens: tokens,
                 })
             })
-            .ok()
-            .map(|iter| iter.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default()
-        }; // conn 锁在此释放
+            .collect();
 
         let mut grouped: HashMap<String, Vec<KeyEntry>> = HashMap::new();
         for k in rows {

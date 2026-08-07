@@ -173,9 +173,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 
 ### 4.5 已知断裂（待修复）
 
-| 问题 | 说明 |
-|------|------|
-| Dashboard API 前后端断裂 | 前端 `api.ts` 定义了 `dashboardApi`（调用 `/api/dashboard/overview` 和 `/api/dashboard/usage`），`stores/dashboard.ts` 也在使用，但后端 `router.rs` 未注册这两条路由 |
+_无。前端 `dashboardApi` / `stores/dashboard.ts` 此前指向未注册的后端路由，已作为死代码清理。_
 
 ### 4.6 基础设施模块（未在功能需求中单列）
 
