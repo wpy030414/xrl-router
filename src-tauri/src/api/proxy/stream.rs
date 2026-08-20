@@ -357,15 +357,34 @@ pub async fn proxy_stream(
                 };
 
                 let status = resp.status().as_u16();
-                update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, status);
 
-                // 400：透传给客户端（以 SSE error event 表达）
+                // 400 + 配额耗尽：视为密钥级错误，轮换到下一把密钥重试。
+                // 某些上游（如 OpenAI）在密钥配额耗尽时返回 400 而非 402/429，
+                // 例如 {"error":{"code":"quotaExceeded","message":"Insufficient quota"}}。
+                // 这类错误不应透传给客户端，应换密钥重试，除非所有密钥都失败。
                 if status == 400 {
                     let body_str = resp.text().await.unwrap_or_default();
+                    if is_key_quota_error(&body_str) {
+                        warn!(
+                            trace_id = %trace_id,
+                            status,
+                            key_id = %picked.id,
+                            upstream_body = %body_str,
+                            "upstream 400 with quota error, rotating key"
+                        );
+                        update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, 402);
+                        last_resp_body = Some(body_str);
+                        last_resp = None;
+                        continue;
+                    }
+                    // 普通 400：透传给客户端（以 SSE error event 表达）
+                    update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, status);
                     warn!(trace_id = %trace_id, status, upstream_body = %body_str, "upstream 400");
                     last_resp_body = Some(body_str);
                     break;
                 }
+
+                update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, status);
 
                 if matches!(status, 401 | 402 | 403 | 429) {
                     warn!(trace_id = %trace_id, status, key_id = %picked.id, "upstream rejected key, rotating");
@@ -608,6 +627,54 @@ pub(super) fn send_error_event(
     let _ = tx.try_send(Ok(bytes));
 }
 
+/// 检测上游 400 响应体是否为密钥配额耗尽错误。
+///
+/// 某些上游（如 OpenAI）在密钥配额耗尽时返回 HTTP 400 而非 402/429：
+/// ```json
+/// {"error": {"code": "quotaExceeded", "message": "Insufficient quota"}}
+/// ```
+///
+/// 检测策略（任一命中即视为密钥级配额错误）：
+/// 1. `error.code` 包含 "quota"（不区分大小写）
+/// 2. `error.type` 包含 "quota" 或 "insufficient_quota"
+/// 3. `error.message` 包含 "quota" 或 "insufficient"
+fn is_key_quota_error(body: &str) -> bool {
+    let v = match serde_json::from_str::<Value>(body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let err = &v["error"];
+    if err.is_null() {
+        return false;
+    }
+
+    // 检查 error.code
+    if let Some(code) = err["code"].as_str() {
+        let lower = code.to_lowercase();
+        if lower.contains("quota") || lower.contains("insufficient") {
+            return true;
+        }
+    }
+
+    // 检查 error.type
+    if let Some(ty) = err["type"].as_str() {
+        let lower = ty.to_lowercase();
+        if lower.contains("quota") || lower.contains("insufficient") {
+            return true;
+        }
+    }
+
+    // 检查 error.message
+    if let Some(msg) = err["message"].as_str() {
+        let lower = msg.to_lowercase();
+        if lower.contains("quota") || lower.contains("insufficient") {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// 从上游错误 body 中提取可读错误信息。
 fn extract_error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
@@ -625,4 +692,67 @@ fn extract_error_message(body: &str) -> String {
                 body.to_string()
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_key_quota_error_quota_exceeded_code() {
+        // OpenAI 风格：error.code = "quotaExceeded"
+        let body = r#"{"error":{"code":"quotaExceeded","message":"Insufficient quota"}}"#;
+        assert!(is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_insufficient_quota_type() {
+        // error.type = "insufficient_quota"
+        let body = r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#;
+        assert!(is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_quota_in_message() {
+        // error.message 包含 "quota"
+        let body = r#"{"error":{"message":"Rate limit reached for requests, quota exceeded"}}"#;
+        assert!(is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_insufficient_in_message() {
+        // error.message 包含 "insufficient"
+        let body = r#"{"error":{"message":"Insufficient funds"}}"#;
+        assert!(is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_not_quota_400() {
+        // 普通 400 错误（如参数错误）不应被误判
+        let body = r#"{"error":{"type":"invalid_request_error","message":"model is required"}}"#;
+        assert!(!is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_empty_body() {
+        assert!(!is_key_quota_error(""));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_non_json() {
+        assert!(!is_key_quota_error("<html>502 Bad Gateway</html>"));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_no_error_field() {
+        let body = r#"{"message":"some other error"}"#;
+        assert!(!is_key_quota_error(body));
+    }
+
+    #[test]
+    fn test_is_key_quota_error_case_insensitive() {
+        // 大小写不敏感
+        let body = r#"{"error":{"code":"QUOTA_EXCEEDED","message":"INSUFFICIENT QUOTA"}}"#;
+        assert!(is_key_quota_error(body));
+    }
 }
