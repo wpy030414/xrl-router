@@ -24,6 +24,7 @@ use tokio::sync::mpsc;
 use super::ir::types::*;
 use super::ir::to_messages::MessagesRenderState;
 use super::route::ResolvedRoute;
+use super::forward::ForwardOutcome;
 use super::stream::{send_error_event, ClientFormat};
 use crate::gateway::server::AppState;
 
@@ -188,7 +189,7 @@ pub(super) async fn execute_websearch_tool_loop(
     model_name: &str,
     service_key: &super::auth::ServiceKeyInfo,
     endpoint: &'static str,
-) {
+) -> ForwardOutcome {
     let mut final_rendered_bytes: Vec<Bytes> = Vec::new();
     // 无进展检测：记录每轮查询词，检测连续重复（模型反复搜同一关键词）。
     let mut query_history: Vec<String> = Vec::new();
@@ -210,12 +211,12 @@ pub(super) async fn execute_websearch_tool_loop(
             Ok(r) => r,
             Err(err_msg) => {
                 send_error_event(tx, client_format, "api_error", &err_msg);
-                return;
+                return ForwardOutcome::ErrorDelivered;
             }
         };
 
         // 2. 缓冲完整响应
-        let (ir_events, usage, rendered_bytes) = super::forward::forward_stream_ir_to_buffer(
+        let (ir_events, usage, rendered_bytes, stream_err) = super::forward::forward_stream_ir_to_buffer(
             resp,
             trace_id,
             &resolved.provider_kind,
@@ -223,6 +224,19 @@ pub(super) async fn execute_websearch_tool_loop(
             est_input,
         )
         .await;
+
+        // 2.1 流内错误（HTTP 200 + SSE error event / 非 SSE JSON 错误体）。
+        // round 0 时尚未向客户端发送任何内容（brand/progress 在第 5.5 步，
+        // 位于缓冲之后）：密钥级错误 → 返回给双循环换密钥重试；
+        // 非密钥级 → 透传。后续轮次已发过 brand/进度 → 只能透传。
+        if let Some((status, msg)) = stream_err {
+            if round == 0 && !brand_sent && matches!(status, 401 | 402 | 403 | 429) {
+                return ForwardOutcome::UpstreamKeyError { status, message: msg };
+            }
+            warn!(trace_id, round, status, upstream_error = %msg, "websearch: upstream streamed error, forwarding");
+            send_error_event(tx, client_format, "api_error", &msg);
+            return ForwardOutcome::ErrorDelivered;
+        }
 
         // 累积本轮 usage（最终写一条汇总记录）
         total_usage.input_tokens += usage.input_tokens;
@@ -401,7 +415,7 @@ pub(super) async fn execute_websearch_tool_loop(
         // 追加一轮无工具调用
         match send_upstream_request(client, resolved, picked, &ir_request, trace_id, MAX_TOOL_ROUNDS).await {
             Ok(resp) => {
-                let (ir_events, usage, rendered_bytes) = super::forward::forward_stream_ir_to_buffer(
+                let (ir_events, usage, rendered_bytes, stream_err) = super::forward::forward_stream_ir_to_buffer(
                     resp,
                     trace_id,
                     &resolved.provider_kind,
@@ -409,6 +423,12 @@ pub(super) async fn execute_websearch_tool_loop(
                     est_input,
                 )
                 .await;
+                if let Some((status, msg)) = stream_err {
+                    // 强制轮之前已发送过 brand/进度 → 只能透传
+                    warn!(trace_id, round = MAX_TOOL_ROUNDS, status, upstream_error = %msg, "websearch: forced final round streamed error, forwarding");
+                    send_error_event(tx, client_format, "api_error", &msg);
+                    return ForwardOutcome::ErrorDelivered;
+                }
                 // 累积最终轮 usage
                 total_usage.input_tokens += usage.input_tokens;
                 total_usage.output_tokens += usage.output_tokens;
@@ -429,7 +449,7 @@ pub(super) async fn execute_websearch_tool_loop(
             Err(err_msg) => {
                 warn!("websearch: forced final round failed: {}", err_msg);
                 send_error_event(tx, client_format, "api_error", &err_msg);
-                return;
+                return ForwardOutcome::ErrorDelivered;
             }
         }
     }
@@ -486,7 +506,7 @@ pub(super) async fn execute_websearch_tool_loop(
                     brand_sent,
                 )
                 .await;
-                return;
+                return ForwardOutcome::Completed;
             }
         }
     }
@@ -495,9 +515,11 @@ pub(super) async fn execute_websearch_tool_loop(
     info!("websearch: streaming final answer to client");
     for b in final_rendered_bytes {
         if tx.send(Ok(b)).await.is_err() {
-            return; // 客户端断开
+            return ForwardOutcome::Completed; // 客户端断开
         }
     }
+
+    ForwardOutcome::Completed
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────

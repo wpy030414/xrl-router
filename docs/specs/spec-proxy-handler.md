@@ -133,7 +133,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 1. **强制 stream=true**: 即使客户端发送 `stream=false`，也会被静默覆写为 `true` 后继续处理（不返回 400）
 2. **模型替换**: 将 `display_name` 替换为上游的 `model_id`
 3. **配额检查**: 认证后先查 5h/7d 滚动窗口配额（`quota.rs::check_quota`），任一窗口触顶返回 429（`quota_error` + `retry-after`，message 含重置时间）
-4. **密钥轮换**: 401/403 标红，402/429 标黄，自动切换下一个 key
+4. **密钥轮换**: 401/403 标红，402/429 标黄，自动切换下一个 key。**200 + 流内密钥级错误同样轮换**——上游以 HTTP 200 + SSE error event（或非 SSE JSON 错误体）表达欠费/限流/认证失败时，`forward.rs::extract_stream_error` 检测并按关键词推断 401/402/403/429，未向客户端发送任何内容前返回 `ForwardOutcome::UpstreamKeyError` 换 key 重试（详见 ADR-034）
 5. **超时控制**: 连接 10s，响应头自适应（`header_timeout_for()`：≥100k token → 600s、≥50k → 480s、基准 300s），流间隔 120s。请求体上限 64MiB（`MAX_REQUEST_BODY_BYTES`）。
 6. **重试边界**: 内层最多重试当前 provider 的 `key_count` 次；外层候选数由 `resolve_route_candidates` 决定，开关关闭时仅 1 个候选
 
@@ -147,6 +147,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 | 上游 401/403 | 标红当前 key，切换下一个（内层），重试 |
 | 上游 402/429 | 标黄当前 key，切换下一个（内层），重试 |
 | 上游 5xx | 有后续候选 → 标记 provider 冷却（60s）+ 切 provider（外层）重试；无后续候选 → 透传上游失败响应 |
+| 上游 200 + 流内密钥级错误 | 未发内容 → 按推断状态标健康度，换下一个 key（内层）重试；已发内容或全部 key 耗尽 → 透传 SSE error event |
 | 网络错误 | 有后续候选 → 切 provider；无后续候选 → 返回 502 |
 | 响应头超时 | 有后续候选 → 切 provider；无后续候选 → 返回 504 |
 | 全部 key 4xx 耗尽 | 透传最后一次上游失败响应 |

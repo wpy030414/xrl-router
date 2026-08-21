@@ -25,6 +25,7 @@ use tracing::{error, info, warn};
 use crate::gateway::server::AppState;
 
 use super::auth::ServiceKeyInfo;
+use super::forward::ForwardOutcome;
 use super::ir;
 use super::ir::types::IrRequest;
 use super::key_rotation::{pick_key_for, update_key_health};
@@ -81,6 +82,16 @@ enum ProviderFailure {
         key_name: String,
         key_masked: String,
         body: String,
+    },
+    /// HTTP 200 但流内错误事件（SSE error / 非 SSE JSON 错误体），
+    /// 密钥级（欠费/限流/认证）轮换耗尽后透传。
+    StreamError {
+        cand: ResolvedRoute,
+        key_id: String,
+        key_name: String,
+        key_masked: String,
+        status: u16,
+        message: String,
     },
 }
 
@@ -223,10 +234,8 @@ pub async fn proxy_stream(
         let mut last_key_id: Option<String> = None;
         let mut last_key_name: Option<String> = None;
         let mut last_key_masked: Option<String> = None;
-        let mut last_picked: Option<super::route::PickedKey> = None;
         let mut last_candidate: ResolvedRoute = candidates[0].clone();
         let mut provider_failure: Option<ProviderFailure> = None;
-        let mut response: Option<reqwest::Response> = None;
         let mut winner: Option<(ResolvedRoute, super::route::PickedKey)> = None;
 
         'provider: for (ci, cand) in candidates.iter().enumerate() {
@@ -260,7 +269,6 @@ pub async fn proxy_stream(
                 last_key_id = Some(picked.id.clone());
                 last_key_name = Some(picked.name.clone());
                 last_key_masked = Some(picked.key_masked.clone());
-                last_picked = Some(picked.clone());
                 let key_name = picked.name.clone();
                 let key_masked = picked.key_masked.clone();
 
@@ -407,158 +415,177 @@ pub async fn proxy_stream(
                     last_resp = Some(resp);
                     break;
                 }
-                // 2xx：选中
+                // 2xx：选中 → 立即转发（或 WebSearch 工具循环）
                 super::failover::mark_provider_ok(&state, &cand.provider_id);
-                winner = Some((cand.clone(), picked));
-                response = Some(resp);
-                break;
+                info!(
+                    trace_id = %trace_id,
+                    status = status,
+                    duration_ms = start_time.elapsed().as_millis(),
+                    "Upstream response received, starting stream"
+                );
+                let outcome = if websearch_enabled {
+                    // ir_request 按值传入会被工具循环变异，clone 一份保证
+                    // 密钥级流内错误重试时用的是原始请求体
+                    execute_websearch_tool_loop(
+                        &state, ir_request.clone(), &tx, cand, &picked,
+                        client_format, &client, trace_id, start_time, est_input,
+                        model_name, &service_key, endpoint,
+                    ).await
+                } else {
+                    super::forward::forward_stream_ir(
+                        resp, &tx, &state, trace_id, start_time,
+                        &cand.provider_id, cand, model_name, &service_key,
+                        &last_key_id, &last_key_name, &last_key_masked, endpoint,
+                        &cand.provider_kind, client_format, est_input,
+                    ).await
+                };
+                match outcome {
+                    // 流内密钥级错误（200 + SSE error event / 非 SSE JSON 错误体）：
+                    // 视为欠费/限流/认证失败，换下一把密钥重试。
+                    ForwardOutcome::UpstreamKeyError { status: key_status, message } => {
+                        warn!(
+                            trace_id = %trace_id,
+                            status = key_status,
+                            key_id = %picked.id,
+                            upstream_message = %message,
+                            "upstream 200 with SSE key error, rotating key"
+                        );
+                        update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, key_status);
+                        provider_failure = Some(ProviderFailure::StreamError {
+                            cand: cand.clone(),
+                            key_id: picked.id.clone(),
+                            key_name: picked.name.clone(),
+                            key_masked: picked.key_masked.clone(),
+                            status: key_status,
+                            message,
+                        });
+                        // 清掉更早 attempt 的陈旧错误体，避免全部耗尽后透传错内容
+                        last_resp = None;
+                        last_resp_body = None;
+                        continue;
+                    }
+                    // Completed / ErrorDelivered：流已结束（正常完成或错误已透传）
+                    _ => {
+                        winner = Some((cand.clone(), picked));
+                        break 'provider;
+                    }
+                }
             }
         }
 
         // ── 错误处理：通过 SSE error event 告知客户端 ─────────────
-        let (resolved, _winner_key) = match winner {
-            Some((r, k)) => (r, k),
-            None => {
-                match provider_failure {
-                    Some(ProviderFailure::Network { cand, key_id, key_name, key_masked, msg }) => {
-                        let duration_ms = start_time.elapsed().as_millis() as i64;
-                        error!(trace_id = %trace_id, duration_ms, error = %msg, "Upstream call failed");
-                        let _ = state.database.insert_usage_log(
-                            chrono::Utc::now().timestamp(),
-                            &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
-                            Some(&key_id), key_name.as_str(), key_masked.as_str(),
-                            Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
-                            endpoint,
-                            0, 0, duration_ms, false, Some(&msg), 0,
-                        );
-                        send_error_event(&tx, client_format, "api_error", &msg);
-                        return;
-                    }
-                    Some(ProviderFailure::HeaderTimeout { cand, key_id, key_name, key_masked, secs }) => {
-                        let duration_ms = start_time.elapsed().as_millis() as i64;
-                        let msg = format!("upstream timed out after {}s waiting for response headers", secs);
-                        warn!(trace_id = %trace_id, duration_ms, key_id = %key_id, "{}", msg);
-                        let _ = state.database.insert_usage_log(
-                            chrono::Utc::now().timestamp(),
-                            &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
-                            Some(&key_id), key_name.as_str(), key_masked.as_str(),
-                            Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
-                            endpoint,
-                            0, 0, duration_ms, false, Some(&msg), 0,
-                        );
-                        send_error_event(&tx, client_format, "api_error", &msg);
-                        return;
-                    }
-                    Some(ProviderFailure::Upstream5xx { cand, key_id, key_name, key_masked, body }) => {
-                        let duration_ms = start_time.elapsed().as_millis() as i64;
-                        let msg = extract_error_message(&body);
-                        warn!(trace_id = %trace_id, duration_ms, key_id = %key_id, "Upstream 5xx: {}", msg);
-                        let _ = state.database.insert_usage_log(
-                            chrono::Utc::now().timestamp(),
-                            &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
-                            Some(&key_id), key_name.as_str(), key_masked.as_str(),
-                            Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
-                            endpoint,
-                            0, 0, duration_ms, false,
-                            Some(&format!("upstream 5xx: {} | body: {}", msg, body.chars().take(200).collect::<String>())),
-                            0,
-                        );
-                        send_error_event(&tx, client_format, "api_error", &msg);
-                        return;
-                    }
-                    None => {}
-                }
-                if let Some(r) = last_resp {
-                    let s = r.status().as_u16();
-                    let body_str = r.text().await.unwrap_or_default();
-                    let msg = extract_error_message(&body_str);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    warn!(trace_id = %trace_id, upstream_status = s, duration_ms, upstream_body = %body_str, "Upstream error forwarded");
-                    let _ = state.database.insert_usage_log(
-                        chrono::Utc::now().timestamp(),
-                        &last_candidate.provider_id, last_candidate.provider_name.as_str(),
-                        &last_candidate.model_row_id, model_name.as_str(),
-                        last_key_id.as_deref(), last_key_name.as_deref().unwrap_or(""), last_key_masked.as_deref().unwrap_or(""),
-                        Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
-                        endpoint,
-                        0, 0, duration_ms, false,
-                        Some(&format!("upstream status {}: {}", s, body_str.chars().take(200).collect::<String>())),
-                        0,
-                    );
-                    send_error_event(&tx, client_format, "api_error", &msg);
-                    return;
-                }
-                if let Some(body_str) = last_resp_body {
-                    let msg = extract_error_message(&body_str);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    warn!(trace_id = %trace_id, duration_ms, upstream_body = %body_str, "Upstream 400 forwarded (body-only)");
-                    let _ = state.database.insert_usage_log(
-                        chrono::Utc::now().timestamp(),
-                        &last_candidate.provider_id, last_candidate.provider_name.as_str(),
-                        &last_candidate.model_row_id, model_name.as_str(),
-                        last_key_id.as_deref(), last_key_name.as_deref().unwrap_or(""), last_key_masked.as_deref().unwrap_or(""),
-                        Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
-                        endpoint,
-                        0, 0, duration_ms, false,
-                        Some(&format!("upstream status 400: {}", body_str.chars().take(200).collect::<String>())),
-                        0,
-                    );
-                    send_error_event(&tx, client_format, "api_error", &msg);
-                    return;
-                }
-                send_error_event(&tx, client_format, "api_error", "No available upstream keys");
+        // 正常完成（Completed / ErrorDelivered）时 winner 已设置——流已在
+        // 双循环内转发完毕，直接结束 spawn。
+        if let Some((_r, _k)) = winner {
+            return;
+        }
+        match provider_failure {
+            Some(ProviderFailure::Network { cand, key_id, key_name, key_masked, msg }) => {
+                let duration_ms = start_time.elapsed().as_millis() as i64;
+                error!(trace_id = %trace_id, duration_ms, error = %msg, "Upstream call failed");
+                let _ = state.database.insert_usage_log(
+                    chrono::Utc::now().timestamp(),
+                    &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
+                    Some(&key_id), key_name.as_str(), key_masked.as_str(),
+                    Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
+                    endpoint,
+                    0, 0, duration_ms, false, Some(&msg), 0,
+                );
+                send_error_event(&tx, client_format, "api_error", &msg);
                 return;
             }
-        };
-        let response = response.unwrap();
-        let upstream_status = response.status().as_u16();
-
-        // ── 重绑定 winner 的 provider 信息 ───────────────────────
-        let provider_id = resolved.provider_id.clone();
-
-        if upstream_status >= 400 {
-            let body_str = response.text().await.unwrap_or_default();
+            Some(ProviderFailure::HeaderTimeout { cand, key_id, key_name, key_masked, secs }) => {
+                let duration_ms = start_time.elapsed().as_millis() as i64;
+                let msg = format!("upstream timed out after {}s waiting for response headers", secs);
+                warn!(trace_id = %trace_id, duration_ms, key_id = %key_id, "{}", msg);
+                let _ = state.database.insert_usage_log(
+                    chrono::Utc::now().timestamp(),
+                    &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
+                    Some(&key_id), key_name.as_str(), key_masked.as_str(),
+                    Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
+                    endpoint,
+                    0, 0, duration_ms, false, Some(&msg), 0,
+                );
+                send_error_event(&tx, client_format, "api_error", &msg);
+                return;
+            }
+            Some(ProviderFailure::Upstream5xx { cand, key_id, key_name, key_masked, body }) => {
+                let duration_ms = start_time.elapsed().as_millis() as i64;
+                let msg = extract_error_message(&body);
+                warn!(trace_id = %trace_id, duration_ms, key_id = %key_id, "Upstream 5xx: {}", msg);
+                let _ = state.database.insert_usage_log(
+                    chrono::Utc::now().timestamp(),
+                    &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
+                    Some(&key_id), key_name.as_str(), key_masked.as_str(),
+                    Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
+                    endpoint,
+                    0, 0, duration_ms, false,
+                    Some(&format!("upstream 5xx: {} | body: {}", msg, body.chars().take(200).collect::<String>())),
+                    0,
+                );
+                send_error_event(&tx, client_format, "api_error", &msg);
+                return;
+            }
+            // 200 + 流内密钥级错误在所有密钥上轮换耗尽后的兜底透传
+            Some(ProviderFailure::StreamError { cand, key_id, key_name, key_masked, status, message }) => {
+                let duration_ms = start_time.elapsed().as_millis() as i64;
+                let msg = format!("upstream {}: {}", status, message);
+                warn!(trace_id = %trace_id, duration_ms, key_id = %key_id, "{}", msg);
+                let _ = state.database.insert_usage_log(
+                    chrono::Utc::now().timestamp(),
+                    &cand.provider_id, cand.provider_name.as_str(), &cand.model_row_id, model_name.as_str(),
+                    Some(&key_id), key_name.as_str(), key_masked.as_str(),
+                    Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
+                    endpoint,
+                    0, 0, duration_ms, false,
+                    Some(&format!("upstream stream error {}: {}", status, message)),
+                    0,
+                );
+                send_error_event(&tx, client_format, "api_error", &msg);
+                return;
+            }
+            None => {}
+        }
+        if let Some(r) = last_resp {
+            let s = r.status().as_u16();
+            let body_str = r.text().await.unwrap_or_default();
             let msg = extract_error_message(&body_str);
             let duration_ms = start_time.elapsed().as_millis() as i64;
-            warn!(trace_id = %trace_id, upstream_status, duration_ms, "Upstream error (post-winner)");
+            warn!(trace_id = %trace_id, upstream_status = s, duration_ms, upstream_body = %body_str, "Upstream error forwarded");
             let _ = state.database.insert_usage_log(
                 chrono::Utc::now().timestamp(),
-                &provider_id, resolved.provider_name.as_str(), &resolved.model_row_id, model_name.as_str(),
+                &last_candidate.provider_id, last_candidate.provider_name.as_str(),
+                &last_candidate.model_row_id, model_name.as_str(),
                 last_key_id.as_deref(), last_key_name.as_deref().unwrap_or(""), last_key_masked.as_deref().unwrap_or(""),
                 Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
                 endpoint,
                 0, 0, duration_ms, false,
-                Some(&format!("upstream status {}: {}", upstream_status, body_str.chars().take(200).collect::<String>())),
+                Some(&format!("upstream status {}: {}", s, body_str.chars().take(200).collect::<String>())),
                 0,
             );
             send_error_event(&tx, client_format, "api_error", &msg);
             return;
         }
-
-        info!(
-            trace_id = %trace_id,
-            status = upstream_status,
-            duration_ms = start_time.elapsed().as_millis(),
-            "Upstream response received, starting stream"
-        );
-
-        // ── 统一 IR 流式转发（或 WebSearch 工具调用循环） ──────────────
-        if websearch_enabled {
-            info!(trace_id = %trace_id, "websearch: tool-calling loop");
-            let picked_key = last_picked.take().unwrap();
-            execute_websearch_tool_loop(
-                &state, ir_request, &tx, &resolved, &picked_key,
-                client_format, &client, trace_id, start_time, est_input,
-                model_name, &service_key, endpoint,
-            ).await;
-        } else {
-            super::forward::forward_stream_ir(
-                response, &tx, &state, trace_id, start_time,
-                &provider_id, &resolved, model_name, &service_key,
-                &last_key_id, &last_key_name, &last_key_masked, endpoint,
-                &resolved.provider_kind, client_format, est_input,
-            ).await;
+        if let Some(body_str) = last_resp_body {
+            let msg = extract_error_message(&body_str);
+            let duration_ms = start_time.elapsed().as_millis() as i64;
+            warn!(trace_id = %trace_id, duration_ms, upstream_body = %body_str, "Upstream 400 forwarded (body-only)");
+            let _ = state.database.insert_usage_log(
+                chrono::Utc::now().timestamp(),
+                &last_candidate.provider_id, last_candidate.provider_name.as_str(),
+                &last_candidate.model_row_id, model_name.as_str(),
+                last_key_id.as_deref(), last_key_name.as_deref().unwrap_or(""), last_key_masked.as_deref().unwrap_or(""),
+                Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
+                endpoint,
+                0, 0, duration_ms, false,
+                Some(&format!("upstream status 400: {}", body_str.chars().take(200).collect::<String>())),
+                0,
+            );
+            send_error_event(&tx, client_format, "api_error", &msg);
+            return;
         }
+        send_error_event(&tx, client_format, "api_error", "No available upstream keys");
+        return;
     });
 
     // ── 立即返回 Response（客户端毫秒级收到首字节） ────────────────

@@ -1510,3 +1510,42 @@ fn resolve_macos_proxy() -> Option<String> {
 | `src-tauri/Cargo.toml` | `tower-http` 增加 `fs` feature（`ServeDir` 依赖） |
 
 ---
+
+## ADR-034: 上游 200 + SSE error event 视为密钥级错误换密钥重试
+
+**日期**: 2026-08-21  
+**状态**: 已接受  
+**关联**: ADR-003（密钥健康状态）、ADR-027（IR 中间表示层）、ADR-030（WebSearch 工具调用循环）
+
+### 背景
+
+部分上游（API 中转站/解析器）在密钥欠费/限流时，不返回 400/402/429 等 HTTP 错误码，而是返回 **HTTP 200 + SSE 流，流中只有 error 事件**，例如 Anthropic 格式的 `{"type":"error","error":{"type":"insufficient_quota",...}}`。三个 IR 解析器（`messages_chunk_to_ir` / `chat_completions_chunk_to_ir` / `responses_chunk_to_ir`）都会把这类事件解析为 **0 个 IR 事件**，客户端收到的是空流：
+
+> API Error: API returned an empty or malformed response (HTTP 200) ... 0 stream events received
+
+HTTP 级密钥轮换（400 quota / 401/402/403/429）已在双循环中实现，但 200 + 流内错误完全绕过这些检查，错误直接透传给客户端，密钥不轮换——欠费密钥会持续被打。
+
+### 决策
+
+1. **流内错误检测**：`forward.rs` 新增 `extract_stream_error()`——按 provider_kind 检测三种格式的 error 事件（messages `type=="error"`、responses `response.failed`/`error`、chat 顶层 `error` 对象），`classify_error()` 按关键词推断 HTTP 语义：429（rate_limit 等）、402（quota/insufficient/billing/credit 等）、401（authentication/invalid_api_key 等）、403（permission/forbidden 等），不命中为 400
+2. **转发函数返回 `ForwardOutcome`**：`forward_stream_ir` 返回 `Completed` / `UpstreamKeyError { status, message }`（密钥级错误且未向客户端发送任何内容）/ `ErrorDelivered`（已透传）。密钥级错误由双循环 `continue` 换下一把密钥重试，全部耗尽才透传（新增 `ProviderFailure::StreamError` 兜底）
+3. **200 + 非 SSE 纯 JSON 错误体**（无 `\n\n` 帧）同样检测：仅当「流结束且从未出现任何 SSE 帧（chunk_count==0）+ 原始体含顶层 error 对象」时触发；内容审核空流（`{"choices":[...finish_reason":"content_filter"]}`）无 error 键，不触发，零误伤
+4. **WebSearch 路径同步**：`execute_websearch_tool_loop` 返回 `ForwardOutcome`，round 0 缓冲发现密钥级错误（此时未发送任何内容）→ 返回给双循环换密钥重试；后续轮次（已发 brand/进度）→ 透传
+
+### 原因
+
+1. **欠费/限流的表达方式不可靠**：上游中转站在密钥欠费时可能 200 + error 流、400 + quota body、429 三种形态混用，HTTP 级检测无法覆盖 200 分支
+2. **客户端无法消化空流**：Claude Code 对 200 + 0 事件的响应报 "empty or malformed response"，透传等于把噪声丢给客户端，且不修复密钥健康度
+3. **复用既有语义**：推断的 401/402/403/429 直接喂给 `update_key_health`（红/黄），与 HTTP 级轮换完全一致，无新健康度分支
+4. **顺带修复双循环 last-wins 缺陷**：原 2xx 分支 `break` 只退出内层循环，failover 开启多 provider 候选时会继续向后续 provider 发多余请求（可能覆盖 winner、上游双重计费）。转发移入 2xx 分支后改为 `break 'provider`（first-wins），单候选场景行为无差异
+
+### 代价
+
+- **转发调用移入双循环**：`forward_stream_ir` 的调用点从「循环后统一转发」变为「2xx 分支内转发」，循环后段删除 `response.unwrap()` 等 dead code——代码结构变化较大，但行为对单 provider（默认）场景不变
+- **WebSearch 路径请求体 clone**：`execute_websearch_tool_loop` 按值取走并变异 `ir_request`，重试需要原始体，调用处 `clone()` 一次（每 attempt 一次，成本可忽略）
+- **预存缺口（未修复）**：WebSearch 路径 HTTP 级密钥错误（`send_upstream_request` 非 2xx）仍不轮换；WebSearch 模式下双循环首个请求是纯浪费（循环内部另发请求）——记录为后续项
+
+### 重新考虑的条件
+
+- 上游修复返回正确的 HTTP 状态码后，可收紧检测（但关键词分类在可预见的未来仍然适用）
+- 若出现「200 + error 流但换密钥无济于事」的上游（如账号级限额），可考虑加冷却/熔断，而不是简单轮换
