@@ -203,7 +203,7 @@ pub(super) async fn forward_stream_ir(
     // 非 SSE 纯 JSON 错误体(如 {"error":{...}} 无 \n\n)。内容审核空流
     // ({"choices":[{...finish_reason":"content_filter"}]})无 error 键,不触发。
     if chunk_count == 0 {
-        if let Some(body) = raw_capture {
+        if let Some(ref body) = raw_capture {
             if let Some((status, msg)) = extract_non_sse_error(&body, provider_kind) {
                 if matches!(status, 401 | 402 | 403 | 429) && !sent_any {
                     warn!(trace_id = %trace_id, status, upstream_error = %msg, "upstream 200 non-SSE error body (key-level)");
@@ -213,6 +213,26 @@ pub(super) async fn forward_stream_ir(
                 send_error_event(tx, client_format, "api_error", &msg);
                 return ForwardOutcome::ErrorDelivered;
             }
+        }
+        // 兜底：HTTP 200 + 完全空的流(无 SSE 帧、无可用 JSON 错误体)且未向
+        // 客户端发送过任何内容 → 视为上游瞬态错误，允许双循环换密钥/换
+        // provider 重试。此前此场景会合成 finalize 空壳返回 Completed，
+        // 客户端只收到 ~178 bytes 无真实内容的流，报 "0 stream events received"。
+        if !sent_any {
+            let body_preview = raw_capture.as_deref().unwrap_or("(capture dropped)");
+            warn!(
+                trace_id = %trace_id,
+                body_len = raw_capture.as_ref().map(|b| b.len()).unwrap_or(0),
+                body_preview = %body_preview.chars().take(200).collect::<String>(),
+                "upstream 200 empty stream (0 SSE events, no content sent), treating as retryable error"
+            );
+            return ForwardOutcome::UpstreamKeyError {
+                status: 503,
+                message: format!(
+                    "upstream returned empty stream (0 SSE events, body {}B)",
+                    raw_capture.as_ref().map(|b| b.len()).unwrap_or(0)
+                ),
+            };
         }
     }
 
