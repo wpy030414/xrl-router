@@ -88,3 +88,14 @@ pub struct Model {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// 组合别名：多个模型 display_name 按顺序捆绑成新别名，路由时依次尝试直到可用。
+/// 成员列表存于 combo_members 表（TEXT 软引用），本结构体不含成员。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Combo {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

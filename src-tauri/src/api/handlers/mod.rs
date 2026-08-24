@@ -11,10 +11,12 @@ pub mod stats;
 pub mod websocket;
 pub mod data;
 pub mod fm;
+pub mod combos;
 
 pub(crate) use health::health_check;
 pub(crate) use install::get_local_ip;
 pub(crate) use keys::{create_key, delete_key, get_key, list_keys, update_key};
+pub(crate) use combos::{create_combo, delete_combo, get_combo, list_combos, update_combo};
 pub(crate) use models::{create_model, delete_model, get_model, list_models, proxy_fetch_models, update_model};
 pub(crate) use plugin::{confirm_plugin, delete_plugin, get_plugin, list_plugins, plugin_ws_handler};
 pub(crate) use providers::{create_provider, delete_provider, get_provider, list_providers, reorder_providers, update_provider};

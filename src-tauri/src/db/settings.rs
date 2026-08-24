@@ -25,14 +25,15 @@ impl super::Database {
     }
 
     /// Export all user data as SQL INSERT statements.
-    /// Covers: providers, models, api_keys, service_keys, plugins, usage_log, settings.
+    /// Covers: providers, models, api_keys, service_keys, plugins, usage_log, settings, combos, combo_members.
     pub fn export_sql(&self) -> anyhow::Result<String> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = String::from("-- XRL Router data export\n");
+        let mut sql = String::from("-- XRL Router export\n");
         sql.push_str(&format!("-- Exported at: {}\n\n", chrono::Utc::now().to_rfc3339()));
         sql.push_str("BEGIN TRANSACTION;\n\n");
 
-        let tables = ["providers", "models", "api_keys", "service_keys", "plugins", "usage_log", "settings"];
+        // combos 必须在 combo_members 前导出（FK 顺序）。
+        let tables = ["providers", "models", "api_keys", "service_keys", "plugins", "usage_log", "settings", "combos", "combo_members"];
         for table in &tables {
             let mut stmt = conn.prepare(&format!("SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'", table))?;
             if let Ok(create_sql) = stmt.query_row([], |row| row.get::<_, String>(0)) {
@@ -91,7 +92,8 @@ impl super::Database {
     /// Reset all user data (truncate tables), preserving schema_version and settings.
     pub fn reset_all_data(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        let tables = ["usage_log", "plugins", "service_keys", "api_keys", "models", "providers", "settings"];
+        // 子表先删：combo_members 在 combos 前。
+        let tables = ["usage_log", "plugins", "service_keys", "api_keys", "models", "combo_members", "combos", "providers", "settings"];
         for table in &tables {
             conn.execute(&format!("DELETE FROM {}", table), [])?;
         }

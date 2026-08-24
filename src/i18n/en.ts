@@ -2,6 +2,7 @@ export default {
   // ── Navigation ──
   'nav.fm': 'FM',
   'nav.providers': 'Providers',
+  'nav.combos': 'Combos',
   'nav.keys': 'Keys',
   'nav.stats': 'Stats',
   'nav.settings': 'Settings',
@@ -131,6 +132,34 @@ export default {
   'providerNew.load_failed': 'Failed to load: {msg}',
   'providerNew.key_suffix': ' key',
 
+  // ── Combos ──
+  'combos.title': 'Combos',
+  'combos.add': 'Add Combo',
+  'combos.disabled': 'Disabled',
+  'combos.member_order': 'Member tried #{pos}',
+  'combos.delete_title': 'Delete Combo',
+  'combos.delete_confirm': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
+  'combos.delete_confirm_btn': 'Delete',
+  'combos.delete_failed': 'Delete failed: {msg}',
+
+  // ── Combo edit ──
+  'comboNew.title.create': 'Add Combo',
+  'comboNew.title.edit': 'Maintain Combo',
+  'comboNew.name_label': 'Combo name (clients connect with this alias)',
+  'comboNew.selected_label': 'Selected member sequence',
+  'comboNew.selected_empty': 'Check models below to add them to the combo',
+  'comboNew.move_up': 'Move up',
+  'comboNew.move_down': 'Move down',
+  'comboNew.remove': 'Remove',
+  'comboNew.available_label': 'Available Models',
+  'comboNew.no_models': 'No models yet. Configure model aliases on the Providers page first.',
+  'comboNew.enabled_label': 'Enabled',
+  'comboNew.saving': 'Saving...',
+  'comboNew.save_edit': 'Save Changes',
+  'comboNew.save_create': 'Save Combo',
+  'comboNew.save_failed': 'Save failed: {msg}',
+  'comboNew.load_failed': 'Failed to load: {msg}',
+
   // ── Keys list ──
   'keys.title': 'Keys',
   'keys.create': 'Create Key',
@@ -146,6 +175,7 @@ export default {
   'keys.rename_label': 'Remark Name',
   'keys.perm_title': 'Permissions — {name}',
   'keys.perm_desc': 'Restrict available models per provider. Leaving no model checked allows all.',
+  'keys.perm_group_combos': 'Combos',
   'keys.perm_no_models': 'No provider model data yet. Configure providers first.',
   'keys.quota_title': 'Quota — {name}',
   'keys.quota_desc': 'Token limit within a rolling window. Set 0 for unlimited. Requests return 429 once any window is exhausted, until it rolls over.',

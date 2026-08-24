@@ -179,7 +179,7 @@ import {
   mdiShieldOutline, mdiTuneVariant, mdiDeleteOutline, mdiAlert,
   mdiContentCopy, mdiLinkVariant,
 } from '@mdi/js';
-import { serviceKeysApi, providersApi, modelsApi, installApi, type ServiceKey } from '../api';
+import { serviceKeysApi, providersApi, modelsApi, combosApi, installApi, type ServiceKey } from '../api';
 import { wsClient } from '../ws';
 import { t } from '../i18n';
 import MdiIcon from '../components/MdiIcon.vue';
@@ -376,7 +376,7 @@ function openPerms(k: ServiceKey) {
 async function fetchAvailableModels() {
   modelsLoading.value = true;
   try {
-    const [providers, models] = await Promise.all([providersApi.list(), modelsApi.list()]);
+    const [providers, models, combos] = await Promise.all([providersApi.list(), modelsApi.list(), combosApi.list()]);
     const providerName = new Map(providers.map((p) => [p.id, p.name]));
     const groupsMap = new Map<string, string[]>();
     for (const m of models) {
@@ -386,6 +386,11 @@ async function fetchAvailableModels() {
       if (!groupsMap.get(pname)!.includes(name)) groupsMap.get(pname)!.push(name);
     }
     const groups = Array.from(groupsMap.entries()).map(([name, ms]) => ({ name, models: ms.sort() }));
+    // 组合别名独立分组：授予组合名 = 授予其全部成员；只授予成员名则调用组合会被 403
+    const comboGroup = combos.filter((c) => c.enabled).map((c) => c.name).sort();
+    if (comboGroup.length) {
+      groups.push({ name: t('keys.perm_group_combos'), models: comboGroup });
+    }
     providerModels.value = groups;
     allModels.value = groups.flatMap((g) => g.models);
   } catch {} finally { modelsLoading.value = false; }

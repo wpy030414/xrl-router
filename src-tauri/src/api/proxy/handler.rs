@@ -278,6 +278,48 @@ pub async fn proxy_list_models(
         .filter_map(|r| r.ok())
         .collect();
 
+    // 组合别名（enabled）追加为可用模型条目，客户端可发现并直接使用。
+    // 不校验运行时可解析性（只列 enabled 组合），解析失败时调用方在请求时收到 400。
+    // 注意：必须复用上方同一个 conn 守卫——std::sync::Mutex 不可重入，
+    // 函数末尾才 drop，这里再 conn() 会自死锁（tokio 单线程 runtime 直接冻结）。
+    let combo_rows: Vec<Value> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name, created_at FROM combos WHERE enabled = 1 ORDER BY created_at ASC")
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    AxumJson(json!({"error": {"type": "api_error", "message": e.to_string()}})),
+                )
+            })?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(1)?,
+                    "object": "model",
+                    "created": row.get::<_, i64>(2)?,
+                    "owned_by": "combo",
+                    "display_name": row.get::<_, String>(1)?,
+                    "tier": "combo",
+                    "context_window": 0,
+                    "max_output_tokens": 0,
+                    "capabilities": [],
+                }))
+            })
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    AxumJson(json!({"error": {"type": "api_error", "message": e.to_string()}})),
+                )
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
+    let mut models = models;
+    models.extend(combo_rows);
+
     // Apply allowed_models whitelist (empty = return all)
     let data: Vec<Value> = if service_key.allowed_models.is_empty() {
         models

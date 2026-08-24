@@ -156,6 +156,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/models/:id",
             get(handlers::get_model).put(handlers::update_model).delete(handlers::delete_model),
         )
+        // Combo management（组合别名：多个模型 display_name 按顺序捆绑，路由时依次尝试）
+        .route("/api/combos", get(handlers::list_combos).post(handlers::create_combo))
+        .route(
+            "/api/combos/:id",
+            get(handlers::get_combo).put(handlers::update_combo).delete(handlers::delete_combo),
+        )
         // Fetch upstream models (proxy to avoid CORS and inject API key)
         .route("/api/proxy/models", get(handlers::proxy_fetch_models))
         // Statistics

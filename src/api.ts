@@ -202,6 +202,27 @@ export const modelsApi = {
     request<{ ok: boolean }>(`/api/models/${modelId}`, { method: 'DELETE' }),
 };
 
+// --- Combos（组合别名：多个模型别名按顺序捆绑，路由时依次尝试直到可用）---
+export interface Combo {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** 成员模型别名（按尝试顺序） */
+  members: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export const combosApi = {
+  list: () => request<Combo[]>('/api/combos'),
+  get: (id: string) => request<Combo>(`/api/combos/${id}`),
+  create: (data: { name: string; members: string[]; enabled?: boolean }) =>
+    request<Combo>('/api/combos', { method: 'POST', body: data }),
+  update: (id: string, data: { name?: string; members?: string[]; enabled?: boolean }) =>
+    request<Combo>(`/api/combos/${id}`, { method: 'PUT', body: data }),
+  delete: (id: string) => request<{ status: string }>(`/api/combos/${id}`, { method: 'DELETE' }),
+};
+
 // --- Stats ---
 export interface StatsRow {
   key_id: string;

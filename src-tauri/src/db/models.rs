@@ -68,6 +68,18 @@ impl super::Database {
         Ok(())
     }
 
+    /// 该 display_name 是否已被任意 model 使用（组合名冲突校验用）。
+    /// display_name 在 models 里非唯一，判「至少一行存在」即可。
+    pub fn model_display_name_exists(&self, name: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM models WHERE display_name = ?1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )?;
+        Ok(exists > 0)
+    }
+
     pub fn list_all_models(&self) -> anyhow::Result<Vec<Model>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

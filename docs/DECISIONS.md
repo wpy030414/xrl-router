@@ -1630,7 +1630,7 @@ rmcp（官方 Rust MCP SDK）的 `StreamableHttpService` 示例都基于 axum 0.
 ## ADR-037: WebFetch 复用本机 Chrome/Edge headless 渲染（不自动下载）
 
 **日期**: 2026-08-24  
-**状态**: 已接受  
+**状态**: 已接受（渲染层已被 ADR-038 取代，见下）  
 **关联**: ADR-035、ADR-016（统一 HTTP 客户端工厂）
 
 ### 背景
@@ -1691,3 +1691,67 @@ ADR-037 的「重新考虑条件」被触发：实际目标环境（macOS 开发
 - WebView2 `ExecuteScriptWithResult` 回传结果有体积限制 → JS 侧先截断（~1.5MB）再回传。
 - 导航失败事件无法直接获取（WKWebView 不暴露给 eval）→ 以 readyState 停滞超时兜底，触发静态回退。
 
+---
+
+## ADR-039: 视觉模型经本地 MCP 工具外发（web_vision）
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**关联**: ADR-035（MCP 端点）、ADR-038（WebView 渲染层）
+
+### 背景
+
+对话主模型可能不具备视觉能力（或用户希望集中管理图片理解）。在既有 `/mcp` 端点（web_search / web_fetch）旁新增 `web_vision`：用户把某供应商的一个模型指定为「视觉专用模型」，其他模型经 MCP 传入图片 URL/本地路径，网关取图后调该模型生成描述文本。
+
+### 决策
+
+1. **单个视觉模型全局配置**：settings 键 `mcp_vision`（开关）+ `mcp_vision_provider` / `mcp_vision_model`（存上游真实 `model_id`，V17 迁移插默认行）。调用时实时解析（ProviderRegistry + DB 直读），管理页删改立即生效，不做内存缓存。
+2. **图片由网关获取**（`/mcp` 请求体 2MiB 上限）：http(s) URL 经共享 client 下载（继承系统代理，Content-Length 预检 + 8MiB 上限），本地绝对路径 / `file://` 直接读文件；media_type 按 Content-Type / 扩展名白名单推断（png/jpeg/gif/webp/bmp）。
+3. **统一 base64 上送**：Anthropic 图片 source 只收 base64；OpenAI 系转 `data:{mime};base64,{data}` data URI。按 ProviderKind（Messages / ChatCompletions / Responses）构造非流式请求（`stream: false`），key 池轮换取明文 key。
+4. **不计配额**：与 web_search/web_fetch 一致，不触碰 usage 统计与服务 key 配额；单次调用不重试，上游错误文本透传。
+5. **前端**：设置页路由 Tab 新增开关 + 供应商/模型级联下拉（md-outlined-select），变更即保存；切换供应商先清空模型键，杜绝「新供应商 + 旧模型」不一致。
+
+### 原因
+
+1. **单一配置最简**：需求是「一个视觉专用模型」，不做 per-service-key 绑定与多模型轮换；存上游 `model_id` 而非本地 UUID——模型行被删/重建不影响调用，最健壮。
+2. **图片不进 MCP 帧**：2MiB 限制下 base64 传图不可行；网关出站取图顺带统一了 media_type 推断与大小控制。
+3. **直连上游而非走代理层**：代理层强制 stream=true 且带配额/统计/剔除逻辑，识图调用不需要这些语义；复用 key 池与共享 client 已足够。
+
+### 代价
+
+- SSRF 类暴露：图片 URL 可指向内网地址（本机下载后外发供应商），与 web_fetch 既有边界一致（用户自己的供应商与 key，风险自担），spec 注明。
+- 上游模型可能不支持视觉：400/404 透传并附提示，不硬编码模型能力（capabilities 默认值不可信，不做前端过滤）。
+- Anthropic 上游约 5MB 图片限制：8MiB 白名单留余量，超上游限制时错误透传。
+
+## ADR-040: 组合别名（Combo）——成员按序回退的显式退路链
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**关联**: ADR-019（故障转移：同别名多 Provider 候选 + 60s 冷却）、spec-combos.md（详细契约）
+
+### 背景
+
+用户需要把多个模型别名捆绑成一个新别名：客户端用组合名连接时，路由「不断尝试列表中的所有模型直到找到可用模型」。现有 failover 机制（`stream.rs` 双循环：外层 provider 候选 × 内层 key 轮换）已实现「同别名多 provider 依次尝试」，组合别名本质是把「尝试列表」从「同别名跨 provider」扩展为「显式成员序列」。
+
+### 决策
+
+1. **组合 = 解析层展开，零新增重试逻辑**：`resolve_combo` 把组合按成员 `position` 逐个调 `resolve_route_candidates` 展开成候选列表（跨成员按 `(provider_id, real_model_id)` 去重保序，**不能**按 provider_id 去重——同 provider 的不同成员是不同尝试），交给现有双循环执行。组合不存在/被禁用返回 `None`，调用方回落普通别名解析（向后兼容）。
+2. **组合强制回退**：组合命中后 `failover = global_failover || is_combo`——成员间回退不受全局「故障转移」开关影响。组合本身就是用户显式构建的退路链，开关关掉时组合功能不应失效；普通别名行为不变。
+3. **仅供应商级失败换成员**：网络错误、头超时、5xx、401/402/403/429、配额（400+quota）、空流、流内密钥错误 → 换下一个成员；**普通 400（非配额）立即透传**（`break 'provider`），请求级错误换模型也白搭。400 分支顺带清掉陈旧的 `last_resp`（既有 bug：401/5xx 残留会让兜底链透传错内容）。
+4. **成员只能是叶子模型别名**：不允许嵌套组合 → 天然无环，无需运行时环检测。成员以 `display_name` TEXT 软引用（非唯一，无法建硬 FK）：成员被删/禁用 → 运行时跳过，组合结构不受影响。
+5. **命名双向冲突校验**：组合名不得撞 `models.display_name`（两方向 handler 校验），否则解析歧义；大小写敏感（SQLite BINARY），TOCTOU 由 `combos.name UNIQUE` 兜底（2067 → 400）。
+6. **白名单按组合名授予**：`allowed_models` 纯字符串比对，授予组合名 = 授予全部成员；只授成员名而调组合 → 403（避免「任一成员在白名单即放行」的越权风险）。`/v1/models` 列出 enabled 组合条目（`owned_by:"combo"`）供客户端发现。
+7. **统计归因到实际成员**：`usage_log` 零改动——`model_display_name` = 客户端用的组合名，`model_id` = 实际命中的成员行，top_model 按成员聚合。
+
+### 原因
+
+1. **复用双循环**：组合的全部回退语义（冷却跳过、key 轮换、失败标记）自动继承，改动面最小（解析段 + 一个分支），风险可控。
+2. **叶子成员最简**：嵌套组合需要运行时环检测 + UI 复杂度翻倍，当前需求（「模型别名捆绑」）没有嵌套场景。
+3. **400 透传优于全量尝试**：请求本身非法时换模型是白跑延迟；「可用模型」语义 = 能正常响应，而非能接受请求。
+4. **TEXT 软引用优于硬 FK**：display_name 非唯一无法建 FK；软引用让删除模型不影响组合结构，与 usage_log 自包含快照的设计哲学一致。
+
+### 代价
+
+- 组合解析是 N+1 查询（1 次组合 + 每成员 1 次候选查询），成员数小可接受；未做缓存（保持 ~1ms 级解析延迟）。
+- 同 provider 的后续成员在 provider 级失败后会被 60s 冷却跳过（provider 是失败单元）——期望语义，已写入 spec 防止被当 bug「修复」。
+- `combo_members` 无级联清理孤儿行（成员别名被删后残留），运行时跳过即可，不引入清理任务。

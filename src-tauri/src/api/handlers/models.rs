@@ -52,6 +52,18 @@ pub(crate) async fn create_model(
         ));
     }
 
+    // 别名不得撞组合名（组合名 = 模型名会解析歧义，V18 双向校验）
+    if state
+        .database
+        .combo_name_exists(&req.display_name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string() }))))?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("display_name '{}' conflicts with an existing combo name", req.display_name)})),
+        ));
+    }
+
     let model = Model {
         id: uuid::Uuid::new_v4().to_string(),
         provider_id: req.provider_id,
@@ -125,6 +137,19 @@ pub(crate) async fn update_model(
 
     let mut updated = model.clone();
     if let Some(display_name) = req.display_name {
+        // 别名变更时才做冲突校验（保持不变跳过，组合名 = 模型名会解析歧义）
+        if display_name != updated.display_name {
+            if state
+                .database
+                .combo_name_exists(&display_name)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string() }))))?
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("display_name '{}' conflicts with an existing combo name", display_name)})),
+                ));
+            }
+        }
         updated.display_name = display_name;
     }
     if let Some(tier) = req.tier {

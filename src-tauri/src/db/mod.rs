@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 
 pub mod api_keys;
+pub mod combos;
 pub mod models;
 pub mod providers;
 pub mod schema;

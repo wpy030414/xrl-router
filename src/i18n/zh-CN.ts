@@ -2,6 +2,7 @@ export default {
   // ── 导航 ──
   'nav.fm': 'FM',
   'nav.providers': '供应商',
+  'nav.combos': '组合',
   'nav.keys': '密钥',
   'nav.stats': '统计',
   'nav.settings': '设置',
@@ -131,6 +132,34 @@ export default {
   'providerNew.load_failed': '加载失败：{msg}',
   'providerNew.key_suffix': ' 密钥',
 
+  // ── 组合 ──
+  'combos.title': '组合',
+  'combos.add': '添加组合',
+  'combos.disabled': '已禁用',
+  'combos.member_order': '第 {pos} 个尝试的成员',
+  'combos.delete_title': '删除组合',
+  'combos.delete_confirm': '确定要删除「{name}」吗？此操作不可撤销。',
+  'combos.delete_confirm_btn': '确定删除',
+  'combos.delete_failed': '删除失败：{msg}',
+
+  // ── 组合编辑 ──
+  'comboNew.title.create': '添加组合',
+  'comboNew.title.edit': '维护组合',
+  'comboNew.name_label': '组合名称（客户端用这个别名连接）',
+  'comboNew.selected_label': '已选成员序列',
+  'comboNew.selected_empty': '从下方勾选模型加入组合',
+  'comboNew.move_up': '上移',
+  'comboNew.move_down': '下移',
+  'comboNew.remove': '移除',
+  'comboNew.available_label': '可选模型',
+  'comboNew.no_models': '尚无模型，请先在供应商页面配置模型别名',
+  'comboNew.enabled_label': '启用',
+  'comboNew.saving': '保存中...',
+  'comboNew.save_edit': '保存修改',
+  'comboNew.save_create': '保存组合',
+  'comboNew.save_failed': '保存失败：{msg}',
+  'comboNew.load_failed': '加载失败：{msg}',
+
   // ── 密钥列表 ──
   'keys.title': '密钥',
   'keys.create': '创建密钥',
@@ -146,6 +175,7 @@ export default {
   'keys.rename_label': '备注名',
   'keys.perm_title': '权限管理 — {name}',
   'keys.perm_desc': '按供应商区分可用模型。不勾选任何模型表示允许全部。',
+  'keys.perm_group_combos': '组合',
   'keys.perm_no_models': '尚无供应商模型数据，请先在供应商页面配置。',
   'keys.quota_title': '配置额度 — {name}',
   'keys.quota_desc': '滚动窗口内可用的 tokens 上限。设为 0 表示不设限。任一窗口触顶后请求将返回 429，直到该窗口滚动重置。',

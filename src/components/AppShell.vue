@@ -21,7 +21,7 @@
 
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router';
-import { mdiRadio, mdiCloud, mdiKey, mdiChartBar, mdiCog } from '@mdi/js';
+import { mdiRadio, mdiCloud, mdiSetMerge, mdiKey, mdiChartBar, mdiCog } from '@mdi/js';
 import { t } from '../i18n';
 import MdiIcon from './MdiIcon.vue';
 
@@ -31,6 +31,7 @@ const route = useRoute();
 const navItems: { path: string; labelKey: string; icon: string }[] = [
   { path: '/fm', labelKey: 'nav.fm', icon: mdiRadio },
   { path: '/providers', labelKey: 'nav.providers', icon: mdiCloud },
+  { path: '/combos', labelKey: 'nav.combos', icon: mdiSetMerge },
   { path: '/keys', labelKey: 'nav.keys', icon: mdiKey },
   { path: '/stats', labelKey: 'nav.stats', icon: mdiChartBar },
   { path: '/settings', labelKey: 'nav.settings', icon: mdiCog },

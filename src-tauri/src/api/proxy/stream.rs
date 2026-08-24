@@ -120,9 +120,30 @@ pub async fn proxy_stream(
     let header_timeout_secs = ctx.header_timeout_secs;
 
     // ── 1. 路由解析（同步段，~1ms） ─────────────────────────────────
-    let failover = state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed);
-    let candidates: Vec<ResolvedRoute> = {
-        let cands = if failover {
+    let global_failover = state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed);
+    // 组合别名优先：命中 enabled 组合 → 展开为多候选；组合强制 failover 语义
+    // （成员间回退不受全局开关影响），普通别名保持现有行为。
+    let is_combo = super::route::resolve_combo(&state, model_name).await;
+    // is_combo 会被下方 if let 移动消费，这里先取出「是否组合请求」标记。
+    let is_combo_req = is_combo.is_some();
+    let candidates: Vec<ResolvedRoute> = if let Some(cands) = is_combo {
+        if cands.is_empty() {
+            warn!(trace_id = %trace_id, model = %model_name, "Combo has no resolvable members");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                Json(json!({"error": {"type": "invalid_request_error", "message": "Model not found or not available"}})),
+            ));
+        }
+        info!(
+            trace_id = %trace_id,
+            combo = %model_name,
+            candidates = cands.len(),
+            "Combo resolved"
+        );
+        cands
+    } else {
+        let cands = if global_failover {
             super::route::resolve_route_candidates(&state, model_name).await
         } else {
             resolve_route(&state, model_name).await.map(|r| vec![r])
@@ -148,6 +169,9 @@ pub async fn proxy_stream(
             }
         }
     };
+    // 组合强制 failover：外层循环的冷却跳过/密钥耗尽/网络错误/超时/5xx 换成员门
+    // 全部以 failover 为条件，组合命中后强制为 true（普通别名不受影响）。
+    let failover = global_failover || is_combo_req;
 
     // ── 2. 上下文超限预警（同步段，纯内存判断） ────────────────────
     // 估算输入 token 超过模型 context_window 时仅记 warn，不阻断请求。
@@ -386,7 +410,13 @@ pub async fn proxy_stream(
                     // 普通 400：透传给客户端（以 SSE error event 表达）
                     update_key_health(&state.keys, &cand.provider_id, &picked.key_hash, status);
                     warn!(trace_id = %trace_id, status, upstream_body = %body_str, "upstream 400");
+                    // 清掉更早 attempt 的陈旧 last_resp（401/5xx 残留会让兜底链透传错内容）
+                    last_resp = None;
                     last_resp_body = Some(body_str);
+                    if is_combo_req {
+                        // 组合语义：普通 400 立即透传，不试下一成员（请求级错误换成员也白搭）
+                        break 'provider;
+                    }
                     break;
                 }
 

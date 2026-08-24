@@ -293,4 +293,29 @@ INSERT INTO settings (key, value) VALUES
   ('mcp_vision_model', '')
 ON CONFLICT(key) DO NOTHING;
 "#,
+    // V18: 组合别名（combo）——多个模型 display_name 按顺序捆绑成新别名，
+    // 路由时依次尝试成员直到找到可用模型。
+    // combo_members.member_alias 是 TEXT 软引用（models.display_name 非唯一，
+    // 无法建硬 FK）：删除模型不影响组合结构，运行时跳过不可解析成员。
+    // 名称冲突（combo.name 撞 models.display_name）在 handler 层双向校验。
+    r#"
+CREATE TABLE IF NOT EXISTS combos (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS combo_members (
+    id TEXT PRIMARY KEY,
+    combo_id TEXT NOT NULL,
+    member_alias TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (combo_id) REFERENCES combos(id) ON DELETE CASCADE,
+    UNIQUE(combo_id, member_alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_combo_members_combo ON combo_members(combo_id);
+"#,
 ];

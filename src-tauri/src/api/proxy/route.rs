@@ -215,6 +215,58 @@ pub(super) async fn resolve_route_candidates(
     }
 }
 
+/// 组合别名解析（V18）：把组合按成员 position 展开成候选列表。
+///
+/// 返回语义：
+/// - `None` → 名字不是 **enabled** 组合（不存在或被禁用）→ 调用方回落普通别名解析。
+/// - `Some(vec)` → 是组合，按成员顺序展开全部候选；vec 可能为空
+///   （所有成员均不可解析，如成员别名已被删除/禁用），调用方映射 400。
+///
+/// 展开规则：
+/// - 逐成员调用 `resolve_route_candidates`（成员本身的跨 provider 候选、插件委托覆盖
+///   全部继承），拼接后按 **(provider_id, real_model_id)** 跨成员去重保序。
+///   注意不能按 provider_id 去重——组合 `[opus, sonnet]` 同在一个 provider 时要保留两条。
+/// - 不可解析的成员（无候选）跳过。
+pub(super) async fn resolve_combo(state: &AppState, name: &str) -> Option<Vec<ResolvedRoute>> {
+    // 第一步：只读快照。块结束必须释放 MutexGuard，之后才能 await 其他 DB 查询
+    // （std::sync::Mutex 不可重入，guard 跨 await 再 conn() 会死锁）。
+    let aliases: Vec<String> = {
+        let conn = state.database.conn();
+        let combo_id: String = match conn.query_row(
+            "SELECT id FROM combos WHERE name = ?1 AND enabled = 1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        ) {
+            Ok(id) => id,
+            // 无行（含 QueryReturnedNoRows）或 SQL 错误：不是组合，回落普通解析
+            Err(_) => return None,
+        };
+        let mut stmt = conn
+            .prepare(
+                "SELECT member_alias FROM combo_members WHERE combo_id = ?1 ORDER BY position ASC, rowid ASC",
+            )
+            .ok()?;
+        let rows = stmt
+            .query_map(rusqlite::params![combo_id], |row| row.get::<_, String>(0))
+            .ok()?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // 第二步：逐个成员展开 + 跨成员 (provider_id, real_model_id) 去重，保序。
+    let mut out: Vec<ResolvedRoute> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for alias in aliases {
+        if let Some(cands) = resolve_route_candidates(state, &alias).await {
+            for c in cands {
+                if seen.insert((c.provider_id.clone(), c.real_model_id.clone())) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +381,122 @@ mod tests {
     async fn test_candidates_none_when_no_match() {
         let state = test_state();
         assert!(resolve_route_candidates(&state, "nonexistent").await.is_none());
+    }
+
+    fn add_combo(db: &Database, id: &str, name: &str, enabled: bool, members: &[&str]) {
+        db.save_combo(
+            &crate::types::Combo {
+                id: id.to_string(),
+                name: name.to_string(),
+                enabled,
+                created_at: 1,
+                updated_at: 1,
+            },
+            &members.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+
+    /// 组合按成员 position 顺序展开；跨成员 (provider, real) 去重不误杀。
+    #[tokio::test]
+    async fn test_combo_expand_in_order() {
+        let state = test_state();
+        add_provider(&state.database, "p1", 0, serde_json::json!({}));
+        add_model(&state.database, "m1", "p1", "a1");
+        add_provider(&state.database, "p2", 1, serde_json::json!({}));
+        add_model(&state.database, "m2", "p2", "a2");
+        add_combo(&state.database, "c1", "combo-x", true, &["a1", "a2"]);
+
+        let cands = resolve_combo(&state, "combo-x").await.unwrap();
+        let order: Vec<&str> = cands.iter().map(|c| c.provider_id.as_str()).collect();
+        assert_eq!(order, vec!["p1", "p2"], "组合应按成员顺序展开");
+        assert_eq!(cands[0].real_model_id, "real-m1");
+        assert_eq!(cands[1].real_model_id, "real-m2");
+    }
+
+    /// 同一 provider 上两个不同成员（real id 不同）→ 两条都保留（不能按 provider_id 去重）。
+    #[tokio::test]
+    async fn test_combo_same_provider_keeps_both_members() {
+        let state = test_state();
+        add_provider(&state.database, "p1", 0, serde_json::json!({}));
+        add_model(&state.database, "m-opus", "p1", "opus");
+        add_model(&state.database, "m-sonnet", "p1", "sonnet");
+        add_combo(&state.database, "c1", "claude", true, &["opus", "sonnet"]);
+
+        let cands = resolve_combo(&state, "claude").await.unwrap();
+        assert_eq!(cands.len(), 2, "同 provider 不同成员应保留两条");
+        assert_eq!(cands[0].real_model_id, "real-m-opus");
+        assert_eq!(cands[1].real_model_id, "real-m-sonnet");
+    }
+
+    /// 非组合名字 → None（回落普通解析）。
+    #[tokio::test]
+    async fn test_combo_none_when_not_combo() {
+        let state = test_state();
+        assert!(resolve_combo(&state, "plain-alias").await.is_none());
+    }
+
+    /// 被禁用的组合 → None（调用方回落普通别名解析 → 400 Model not found）。
+    #[tokio::test]
+    async fn test_combo_none_when_disabled() {
+        let state = test_state();
+        add_combo(&state.database, "c1", "combo-x", false, &["a1"]);
+        assert!(resolve_combo(&state, "combo-x").await.is_none());
+    }
+
+    /// 组合存在但所有成员都不可解析 → Some(vec![])（调用方映射 400）。
+    #[tokio::test]
+    async fn test_combo_empty_when_all_members_gone() {
+        let state = test_state();
+        add_combo(&state.database, "c1", "combo-x", true, &["ghost1", "ghost2"]);
+        let cands = resolve_combo(&state, "combo-x").await.unwrap();
+        assert!(cands.is_empty());
+    }
+
+    /// 不可解析的成员跳过，其余保留。
+    #[tokio::test]
+    async fn test_combo_skips_unresolvable_member() {
+        let state = test_state();
+        add_provider(&state.database, "p1", 0, serde_json::json!({}));
+        add_model(&state.database, "m1", "p1", "a1");
+        add_combo(&state.database, "c1", "combo-x", true, &["a1", "ghost"]);
+        let cands = resolve_combo(&state, "combo-x").await.unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].provider_id, "p1");
+    }
+
+    /// 插件离线的委托 provider 成员应被剔除；其余成员正常。
+    #[tokio::test]
+    async fn test_combo_skips_offline_plugin_member() {
+        let state = test_state();
+        add_provider(
+            &state.database,
+            "pp",
+            0,
+            serde_json::json!({"plugin_id": "plug-nonexistent"}),
+        );
+        add_model(&state.database, "m-pp", "pp", "a1");
+        add_provider(&state.database, "p2", 1, serde_json::json!({}));
+        add_model(&state.database, "m2", "p2", "a2");
+        add_combo(&state.database, "c1", "combo-x", true, &["a1", "a2"]);
+
+        let cands = resolve_combo(&state, "combo-x").await.unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].provider_id, "p2");
+    }
+
+    /// 成员别名在多个 provider 各有候选 → 展开全部候选（继承 resolve_route_candidates 语义）。
+    #[tokio::test]
+    async fn test_combo_member_expands_multiple_providers() {
+        let state = test_state();
+        add_provider(&state.database, "p1", 1, serde_json::json!({}));
+        add_model(&state.database, "m1", "p1", "shared");
+        add_provider(&state.database, "p2", 0, serde_json::json!({}));
+        add_model(&state.database, "m2", "p2", "shared");
+        add_combo(&state.database, "c1", "combo-x", true, &["shared"]);
+
+        let cands = resolve_combo(&state, "combo-x").await.unwrap();
+        let order: Vec<&str> = cands.iter().map(|c| c.provider_id.as_str()).collect();
+        assert_eq!(order, vec!["p2", "p1"], "成员内候选继承 sort_order 排序");
     }
 }

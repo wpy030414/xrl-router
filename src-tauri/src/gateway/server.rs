@@ -541,6 +541,242 @@ mod tests {
         assert!(text.contains("error"), "应包含 error event: {}", text);
     }
 
+    /// 组合别名（combo）E2E：全局 failover **关闭**（默认）时组合仍强制成员间回退；
+    /// 普通 400 立即透传不换成员；400+配额属供应商级失败换成员；白名单按组合名授予。
+    #[tokio::test]
+    async fn test_combo_end_to_end() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        use axum::response::sse::{Event, KeepAlive, Sse};
+        use axum::routing::post;
+        use futures::stream;
+        use std::convert::Infallible;
+
+        // 假上游 A：一律 500（供应商级失败）
+        let router_a = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom from A").into_response() }),
+        );
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_a = listener_a.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener_a, router_a).await.unwrap(); });
+
+        // 假上游 B：200 SSE 流（组合回退的终点）
+        let router_b = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let s = stream::iter(vec![
+                    Ok::<_, Infallible>(Event::default().data(r#"{"id":"chatcmpl-b","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello from B"},"finish_reason":null}]}"#)),
+                    Ok::<_, Infallible>(Event::default().data(r#"{"id":"chatcmpl-b","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#)),
+                    Ok::<_, Infallible>(Event::default().data("[DONE]")),
+                ]);
+                Sse::new(s).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(60)))
+            }),
+        );
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_b = listener_b.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener_b, router_b).await.unwrap(); });
+
+        // 假上游 C：普通 400（请求级错误，组合应立即透传）
+        let router_c = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({"error": {"message": "bad request from C"}})),
+                )
+                    .into_response()
+            }),
+        );
+        let listener_c = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_c = listener_c.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener_c, router_c).await.unwrap(); });
+
+        // 假上游 D：400 + 配额耗尽（供应商级失败，应换成员）
+        let router_d = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({"error": {"code": "quotaExceeded", "message": "Insufficient quota"}})),
+                )
+                    .into_response()
+            }),
+        );
+        let listener_d = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_d = listener_d.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener_d, router_d).await.unwrap(); });
+
+        // 网关：四个 provider 各一模型一 key；三个组合（回退语义各不相同）
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let master_key = [7u8; 32];
+        let save_provider = |db: &Database, id: &str, base: &str| {
+            db.save_provider(&crate::types::Provider {
+                id: id.to_string(),
+                name: format!("P-{}", id),
+                kind: crate::types::ProviderKind::ChatCompletions,
+                base_url: base.to_string(),
+                api_path: "/v1/chat/completions".to_string(),
+                config: serde_json::json!({}),
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+                sort_order: 0,
+            })
+            .unwrap();
+        };
+        save_provider(&db, "pa", &format!("http://{}", addr_a));
+        save_provider(&db, "pb", &format!("http://{}", addr_b));
+        save_provider(&db, "pc", &format!("http://{}", addr_c));
+        save_provider(&db, "pd", &format!("http://{}", addr_d));
+        for (pid, real) in [("pa", "real-a"), ("pb", "real-b"), ("pc", "real-c"), ("pd", "real-d")] {
+            db.save_model(&crate::types::Model {
+                id: format!("m-{}", pid),
+                provider_id: pid.to_string(),
+                model_id: real.to_string(),
+                display_name: pid.to_string(), // ma/mb/mc/md 即 display_name
+                tier: "custom".to_string(),
+                context_window: 128000,
+                max_output_tokens: 4096,
+                capabilities: "[\"text\"]".to_string(),
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+            db.save_api_key(&crate::types::ApiKey {
+                id: format!("k-{}", pid),
+                provider_id: pid.to_string(),
+                name: format!("K-{}", pid),
+                key_hash: crate::crypto::encrypt(format!("sk-test-{}", pid).as_str(), &master_key).unwrap(),
+                key_masked: "***x".to_string(),
+                key_plain: None,
+                status: "green".to_string(),
+                last_error: None,
+                last_error_code: None,
+                last_error_time: None,
+                last_used_at: None,
+                balance: None,
+                balance_updated_at: None,
+                total_requests: 0,
+                total_tokens: 0,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        }
+        // 三个组合：c-fail（500 换成员）/ c-400（普通 400 透传）/ c-quota（配额换成员）
+        for (cid, name, members) in [
+            ("c1", "c-fail", vec!["pa".to_string(), "pb".to_string()]),
+            ("c2", "c-400", vec!["pc".to_string(), "pb".to_string()]),
+            ("c3", "c-quota", vec!["pd".to_string(), "pb".to_string()]),
+        ] {
+            db.save_combo(
+                &crate::types::Combo {
+                    id: cid.to_string(),
+                    name: name.to_string(),
+                    enabled: true,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                &members,
+            )
+            .unwrap();
+        }
+        // service key——空 allowed_models = 允许全部
+        let raw_service_key = "xrl-test-combo-key";
+        let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
+        db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key").unwrap();
+        // 不写 failover_enabled setting：保持默认关闭，证明组合强制回退
+        let config = Config {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(config, db.clone(), master_key));
+        assert!(!state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed));
+        let router = crate::api::build_router(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        for _ in 0..50 {
+            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let send = |model: &str| {
+            client
+                .post(format!("http://{}/v1/chat/completions", addr))
+                .header("x-api-key", raw_service_key)
+                .header("Content-Type", "application/json")
+                .body(format!(r#"{{"model":"{}","messages":[{{"role":"user","content":"hi"}}]}}"#, model))
+        };
+
+        // 1. 组合 + 配额 400（供应商级）：pd 失败 → 换 pb → 内容来自 B
+        let resp = send("c-quota").send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("hello from B"), "配额 400 应换成员到 B: {}", text);
+
+        // 2. 组合 + 500（供应商级）：pa 失败 → 换 pb（全局 failover 关闭也强制回退）
+        let resp = send("c-fail").send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("hello from B"), "全局 failover 关闭时组合仍应换成员: {}", text);
+
+        // 3. 组合 + 普通 400（请求级）：立即透传，不换成员
+        let resp = send("c-400").send().await.unwrap();
+        assert_eq!(resp.status(), 200, "400 错误体以 SSE error event 表达（HTTP 200）");
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("bad request from C"), "应透传 400 错误体: {}", text);
+        assert!(!text.contains("hello from B"), "普通 400 不得换成员: {}", text);
+
+        // 4. 白名单：授予组合名 → 放行；只授予成员名 → 403
+        db.update_service_key("sk-combo", None, Some(r#"["c-fail"]"#.into()), None, None).unwrap();
+        let resp = send("c-fail").send().await.unwrap();
+        assert_eq!(resp.status(), 200, "白名单含组合名应放行");
+        db.update_service_key("sk-combo", None, Some(r#"["pa"]"#.into()), None, None).unwrap();
+        let resp = send("c-fail").send().await.unwrap();
+        assert_eq!(resp.status(), 403, "白名单只含成员名时组合应 403");
+        db.update_service_key("sk-combo", None, Some(r#"[]"#.into()), None, None).unwrap();
+
+        // 5. GET /v1/models 应包含 enabled 组合条目
+        let resp = client
+            .get(format!("http://{}/v1/models", addr))
+            .header("x-api-key", raw_service_key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        for combo_name in ["c-fail", "c-400", "c-quota"] {
+            assert!(ids.contains(&combo_name), "模型列表应含组合 {}: {:?}", combo_name, ids);
+        }
+        let combo_entry = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == "c-fail")
+            .unwrap();
+        assert_eq!(combo_entry["owned_by"], "combo");
+    }
 
 
     /// 双栈 listener 应同时接受 IPv4 与 IPv6 连接（v6only=false）。
