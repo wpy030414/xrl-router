@@ -27,10 +27,9 @@ use crate::gateway::server::AppState;
 use super::auth::ServiceKeyInfo;
 use super::forward::ForwardOutcome;
 use super::ir;
-use super::ir::types::IrRequest;
+use super::ir::types::{IrRequest, IrToolChoice};
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::{resolve_route, ResolvedRoute};
-use super::websearch::{ensure_websearch_tool, execute_websearch_tool_loop};
 
 /// HTTP error tuple returned by proxy handlers.
 pub type ErrorTuple = (StatusCode, HeaderMap, Json<Value>);
@@ -108,13 +107,12 @@ pub async fn proxy_stream(
     state: Arc<AppState>,
     mut ctx: StreamContext,
 ) -> Result<Response, ErrorTuple> {
-    // WebSearch 工具模式：功能开启时确保 web_search 工具存在于 IR 请求中，
-    // 模型通过标准 tool-calling 自主决定是否搜索。
-    // 只保留 server-side tool 模式（代理注入 web_search + tool-calling loop）：
-    // 移除客户端自带的内置搜索工具（WebSearch / web_search*），注入代理的 web_search。
-    let websearch_enabled = state.websearch_hijack.load(std::sync::atomic::Ordering::Relaxed);
-    if websearch_enabled {
-        ensure_websearch_tool(&mut ctx.ir_request);
+    // MCP WebSearch 模式：开关开启时剔除请求自带的搜索类工具（客户端内置
+    // `WebSearch` / 上游 server-side `web_search_*`），防止上游官方搜索生效——
+    // 模型需要联网搜索时走客户端注册的本地 MCP（/mcp 的 web_search 工具）。
+    // 开关关闭则完全不碰工具定义。
+    if state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed) {
+        strip_search_tools(&mut ctx.ir_request);
     }
 
     let trace_id = &ctx.trace_id;
@@ -415,7 +413,8 @@ pub async fn proxy_stream(
                     last_resp = Some(resp);
                     break;
                 }
-                // 2xx：选中 → 立即转发（或 WebSearch 工具循环）
+                // 2xx：选中 → 立即流式转发（搜索工具已在入口剔除，模型经客户端
+                // 注册的 MCP 工具完成搜索，代理不再跑 tool-calling 循环）
                 super::failover::mark_provider_ok(&state, &cand.provider_id);
                 info!(
                     trace_id = %trace_id,
@@ -423,22 +422,12 @@ pub async fn proxy_stream(
                     duration_ms = start_time.elapsed().as_millis(),
                     "Upstream response received, starting stream"
                 );
-                let outcome = if websearch_enabled {
-                    // ir_request 按值传入会被工具循环变异，clone 一份保证
-                    // 密钥级流内错误重试时用的是原始请求体
-                    execute_websearch_tool_loop(
-                        &state, ir_request.clone(), &tx, cand, &picked,
-                        client_format, &client, trace_id, start_time, est_input,
-                        model_name, &service_key, endpoint,
-                    ).await
-                } else {
-                    super::forward::forward_stream_ir(
-                        resp, &tx, &state, trace_id, start_time,
-                        &cand.provider_id, cand, model_name, &service_key,
-                        &last_key_id, &last_key_name, &last_key_masked, endpoint,
-                        &cand.provider_kind, client_format, est_input,
-                    ).await
-                };
+                let outcome = super::forward::forward_stream_ir(
+                    resp, &tx, &state, trace_id, start_time,
+                    &cand.provider_id, cand, model_name, &service_key,
+                    &last_key_id, &last_key_name, &last_key_masked, endpoint,
+                    &cand.provider_kind, client_format, est_input,
+                ).await;
                 match outcome {
                     // 流内密钥级错误（200 + SSE error event / 非 SSE JSON 错误体）：
                     // 视为欠费/限流/认证失败，换下一把密钥重试。
@@ -593,7 +582,6 @@ pub async fn proxy_stream(
 }
 
 /// 用 mpsc rx 构造标准 SSE Response（含 keepalive 用的响应头集合）。
-/// proxy_stream 与 websearch_loop 共用，确保两条路径响应头一致。
 pub(super) fn sse_response(rx: mpsc::Receiver<Result<Bytes, Infallible>>) -> Response {
     Response::builder()
         .status(StatusCode::OK)
@@ -603,6 +591,46 @@ pub(super) fn sse_response(rx: mpsc::Receiver<Result<Bytes, Infallible>>) -> Res
         .header("x-accel-buffering", "no")
         .body(axum::body::Body::from_stream(ReceiverStream::new(rx)))
         .unwrap()
+}
+
+/// 判断工具名是否属于搜索类（代理应剔除的范畴）。
+///
+/// 覆盖两种来源：
+/// - Anthropic 服务端内置的 `web_search_*`（IR 层已归一化为 `web_search`）
+/// - Claude Code 客户端的 `WebSearch`（PascalCase）
+fn is_search_tool_name(name: &str) -> bool {
+    name.starts_with("web_search") || name.eq_ignore_ascii_case("WebSearch")
+}
+
+/// MCP WebSearch 模式下的工具剔除。
+///
+/// 移除请求自带的全部搜索类工具（客户端内置 `WebSearch` / 上游 server-side
+/// `web_search_*`），避免上游官方搜索生效——模型需要联网搜索时应走客户端注册的
+/// 本地 MCP（`/mcp` 的 `web_search` 工具）。非搜索类工具不受影响。
+///
+/// `tool_choice` 若强制指向被移除的搜索工具，改写为 `Auto`
+/// （代理不再注入自己的工具，无可改写的目标名）。
+pub(super) fn strip_search_tools(ir_request: &mut IrRequest) {
+    let before = ir_request.tools.len();
+    ir_request.tools.retain(|t| {
+        let dominated = is_search_tool_name(&t.name);
+        if dominated {
+            info!(tool = %t.name, "mcp: removing search tool from proxied request");
+        }
+        !dominated
+    });
+    let removed = before - ir_request.tools.len();
+
+    if let Some(IrToolChoice::Tool { name }) = &ir_request.tool_choice {
+        if is_search_tool_name(name) {
+            info!(from = %name, "mcp: rewriting tool_choice target to auto");
+            ir_request.tool_choice = Some(IrToolChoice::Auto);
+        }
+    }
+
+    if removed > 0 {
+        info!(removed, "mcp: stripped search tools from proxied request");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

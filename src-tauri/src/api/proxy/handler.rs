@@ -3,8 +3,9 @@
 //! handler 是薄入口层：提取 API key → authenticate_and_stream() → 委托给
 //! `stream::proxy_stream()` 完成路由解析、上游连接、密钥轮换、流式转发。
 //!
-//! 认证 / 路由 / 密钥轮换 / WebSearch 劫持分别下沉到
-//! `auth` / `route` / `key_rotation` / `websearch`。
+//! 认证 / 路由 / 密钥轮换分别下沉到 `auth` / `route` / `key_rotation`。
+//! 搜索工具剔除（MCP 模式）在 `stream.rs`；本地搜索/抓取能力由
+//! `src-tauri/src/mcp/`（`/mcp` 端点）提供。
 //! `ir` / `stream` / `forward` 为既有子模块。
 
 use std::sync::Arc;

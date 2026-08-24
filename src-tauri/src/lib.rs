@@ -16,11 +16,12 @@ mod http;
 
 mod api;
 mod keys;
+mod mcp;
 mod middleware;
 mod models;
 mod plugin;
 mod providers;
-// pub：websearch 模块复用 SearchHttp / search()
+// pub：MCP 工具模块复用 SearchHttp / search()
 pub mod search;
 mod types;
 
@@ -286,6 +287,10 @@ pub fn run() {
             // Create shared application state with all registries
             let app_state = Arc::new(AppState::new(config.clone(), database.clone(), master_key));
             app.manage(app_state.clone());
+
+            // MCP 工具模块需要全局 AppState 引用（SearchHttp / 开关 / 渲染层），
+            // ServerHandler 深处拿不到 axum State，启动时注入一次。
+            crate::mcp::init(app_state.clone());
 
             // Pass Tauri AppHandle to PluginManager so it can emit events to frontend
             app_state.plugins.set_app_handle(app.handle().clone());

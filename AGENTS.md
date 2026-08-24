@@ -23,13 +23,13 @@ src-tauri/src/                 后端 Rust
 │   └── proxy/*                LLM 代理核心
 │       ├── handler.rs         薄入口层：认证 + 请求体准备，委托 stream::proxy_stream()
 │       ├── stream.rs          流式引擎核心：路由解析 → 立即返回 Response → 后台 spawn 双循环
+│       │                      （含搜索工具剔除：mcp_websearch 开启时 strip_search_tools 移除请求自带搜索工具）
 │       ├── forward.rs         统一 IR 转发：上游字节 → IR 事件 → 客户端 SSE 字节（~350 行）
-│       ├── auth.rs            Service Key 验证
+│       ├── auth.rs            Service Key 验证（/v1/* 与 /mcp 共用，pub(crate)）
 │       ├── quota.rs           5h/7d token 配额检查
 │       ├── route.rs           模型别名→上游 URL 解析
 │       ├── failover.rs        provider 级冷却表
 │       ├── key_rotation.rs    密钥选取 + 健康反馈
-│       ├── websearch.rs       WebSearch tool-calling loop（最多 10 轮 + 无进展检测，耗尽后清理工具痕迹合并结果为文本指令收尾）
 │       ├── sniff.rs           SniffStream (透传+嗅探，保留但当前未被 forward.rs 引用)
 │       └── ir/                IR 中间表示层（三种协议统一抽象）
 │            ├── types.rs          IrRequest / IrMessage / IrContentBlock / IrStreamEvent / IrUsage
@@ -40,6 +40,10 @@ src-tauri/src/                 后端 Rust
 │            ├── to_chat_completions.rs  IR → OpenAI Chat Completions
 │            ├── to_responses.rs       IR → OpenAI Responses API
 │            └── usage.rs          Token usage 提取（三种格式）
+├── mcp/*                      本地 MCP 工具服务器（/mcp Streamable HTTP 端点，rmcp）
+│    ├── mod.rs                /mcp handler（Service Key 鉴权 + 委托）+ 全局服务单例 + init()
+│    ├── tools.rs              ServerHandler 实现（web_search / web_fetch，tools/list 按开关动态过滤）
+│    └── fetch.rs              WebFetch 渲染层（本机 Chrome/Edge headless + htmd + 静态回退）
 ├── db/*                       SQLite 封装（mod.rs + schema.rs + 按实体分文件）
 ├── types/*                    数据结构定义（Provider/Model/ApiKey/Chat/Route/...）
 ├── providers/                 Provider 适配器（proxy 不经过它）
@@ -104,9 +108,9 @@ docs/                          文档（本目录）
 ### 代理代码组织
 
 - **handler.rs** 是薄入口层（~300 行）：提取 API key → authenticate_and_stream() → 委托 stream.rs
-- **stream.rs** 是流式引擎核心（~630 行）：路由解析 → WebSearch 劫持（ensure_websearch_tool 替换客户端搜索工具）→ 立即返回 Response（含 keepalive）→ 后台 spawn 双循环重试 + 流式转发
+- **stream.rs** 是流式引擎核心（~630 行）：路由解析 → 搜索工具剔除（`mcp_websearch` 开启时 `strip_search_tools` 移除请求自带搜索工具，防止上游官方搜索生效）→ 立即返回 Response（含 keepalive）→ 后台 spawn 双循环重试 + 流式转发
 - **forward.rs** 是统一 IR 转发层（~350 行）：单一 `forward_stream_ir` 函数处理所有格式组合（上游字节 → IR 事件 → 客户端 SSE 字节），不再有 passthrough / O→A / A→O 三路分支
-- **websearch.rs** 是 WebSearch 工具调用循环（~1630 行）：模型自主决定是否搜索 + 搜索什么 + 搜索几次，代理在本地执行 Bing 搜索并将结果回传，最多 10 轮 + 无进展检测（连续 2 轮查询词相似度 ≥ 0.6 提前收尾），耗尽后清理工具痕迹合并结果为文本指令收尾
+- **mcp/** 是本地 MCP 工具服务器（`/mcp` Streamable HTTP 端点）：模型联网搜索与网页抓取不再走代理劫持循环（已删除），而是客户端注册该 MCP 端点后直接调用 `web_search`（复用 `search/bing.rs`）/ `web_fetch`（本机 Chrome/Edge headless 渲染）工具。契约见 `docs/specs/spec-mcp-tools.md`
 - **ir/** 是协议转换核心：三种客户端格式（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）统一转换为 IR 再渲染回目标格式
 - 新增代理逻辑时，应修改 stream.rs（路由/重试）、forward.rs（流转发）或 ir/（协议转换）而非 handler.rs
 - 修改认证/配额/请求体准备时，修改 handler.rs 的 authenticate_and_stream()

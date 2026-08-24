@@ -276,4 +276,12 @@ ALTER TABLE service_keys ADD COLUMN quota_7d INTEGER NOT NULL DEFAULT 0;
 UPDATE providers SET kind = 'chat_completions' WHERE kind = 'openai';
 UPDATE providers SET kind = 'messages' WHERE kind = 'anthropic';
 "#,
+    // V16: WebSearch 劫持开关迁移为 MCP 模式。
+    // 旧 websearch_hijack 的值复制到新键 mcp_websearch（开关语义换成「本地 MCP
+    // 提供 web_search 工具 + 代理剔除请求自带搜索工具」）；旧键保留不删（回滚兼容），
+    // 代码不再读取。mcp_webfetch 默认关，无需迁移。
+    r#"
+INSERT INTO settings (key, value) SELECT 'mcp_websearch', value FROM settings WHERE key = 'websearch_hijack'
+ON CONFLICT(key) DO NOTHING;
+"#,
 ];

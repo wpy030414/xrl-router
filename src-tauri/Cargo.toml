@@ -69,6 +69,15 @@ rodio = "0.20"
 # System media controls (macOS Now Playing / Windows SMTC / Linux MPRIS)
 souvlaki = "0.8"
 
+# MCP 工具服务器（/mcp Streamable HTTP 端点，对外提供 web_search / web_fetch）
+rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server"] }
+
+# WebFetch 页面渲染：复用本机 Chrome/Edge headless（CDP over websocket）
+headless_chrome = "1"
+
+# 渲染后的 HTML → Markdown（喂给模型前压缩体积、保留结构）
+htmd = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

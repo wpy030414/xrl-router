@@ -124,15 +124,51 @@
     <div v-show="activeTab === 1" class="tab-panel">
       <section class="card section">
         <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiMagnify" /></span>
+          <span class="section__icon"><MdiIcon :path="mdiSearchWeb" /></span>
           <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.websearch.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.websearch.desc') }}</p>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_websearch.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_websearch.desc') }}</p>
           </div>
         </div>
         <div class="section__body switch-row">
-          <md-switch :selected="hijack" @change="toggleHijack"></md-switch>
-          <span class="md-typescale-body-medium switch-label">{{ hijack ? t('settings.websearch.on') : t('settings.websearch.off') }}</span>
+          <md-switch :selected="mcpWebsearch" @change="toggleMcpWebsearch"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpWebsearch ? t('settings.mcp_websearch.on') : t('settings.mcp_websearch.off') }}</span>
+        </div>
+      </section>
+
+      <!-- MCP WebFetch -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiWeb" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_webfetch.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_webfetch.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpWebfetch" @change="toggleMcpWebfetch"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpWebfetch ? t('settings.mcp_webfetch.on') : t('settings.mcp_webfetch.off') }}</span>
+        </div>
+      </section>
+
+      <!-- MCP 接入信息 -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiLinkVariant" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_info.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_info.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body mcp-info">
+          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.endpoint') }}</div>
+          <div class="key-box mono md-typescale-body-medium">{{ mcpEndpoint }}</div>
+          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.register') }}</div>
+          <div class="key-box mono md-typescale-body-medium">{{ mcpRegisterCommand }}</div>
+          <md-text-button @click="copyMcpCommand">
+            <MdiIcon :path="mdiContentCopy" slot="icon" />
+            {{ mcpCopied ? t('settings.mcp_info.copied') : t('settings.mcp_info.copy') }}
+          </md-text-button>
         </div>
       </section>
 
@@ -231,11 +267,11 @@ import { useRouter } from 'vue-router';
 import { getVersion } from '@tauri-apps/api/app';
 import {
   mdiCogOutline, mdiDirections, mdiDatabaseOutline, mdiInformationOutline,
-  mdiOpenInNew, mdiTranslate, mdiPalette, mdiPower, mdiMagnify,
+  mdiOpenInNew, mdiTranslate, mdiPalette, mdiPower, mdiSearchWeb, mdiWeb,
   mdiSwapHorizontal, mdiDatabaseSyncOutline, mdiDownload, mdiUpload,
-  mdiDeleteForever,
+  mdiDeleteForever, mdiLinkVariant, mdiContentCopy,
 } from '@mdi/js';
-import { settingsApi, dataApi } from '../api';
+import { settingsApi, dataApi, BASE_URL } from '../api';
 import { getTheme, setTheme, getHue, setHue, type Theme } from '../theme';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { save, open } from '@tauri-apps/plugin-dialog';
@@ -308,16 +344,46 @@ async function toggleAutostart() {
   }
 }
 
-// ── WebSearch 劫持 ──
-const hijack = ref(false);
+// ── MCP WebSearch ──
+const mcpWebsearch = ref(false);
 
-async function toggleHijack() {
-  const next = !hijack.value;
-  hijack.value = next;
+async function toggleMcpWebsearch() {
+  const next = !mcpWebsearch.value;
+  mcpWebsearch.value = next;
   try {
-    await settingsApi.update({ websearch_hijack: next });
+    await settingsApi.update({ mcp_websearch: next });
   } catch {
-    hijack.value = !next;
+    mcpWebsearch.value = !next;
+  }
+}
+
+// ── MCP WebFetch ──
+const mcpWebfetch = ref(false);
+
+async function toggleMcpWebfetch() {
+  const next = !mcpWebfetch.value;
+  mcpWebfetch.value = next;
+  try {
+    await settingsApi.update({ mcp_webfetch: next });
+  } catch {
+    mcpWebfetch.value = !next;
+  }
+}
+
+// ── MCP 接入信息 ──
+const mcpEndpoint = `${BASE_URL}/mcp`;
+const mcpRegisterCommand =
+  `claude mcp add --transport http xrl-tools ${mcpEndpoint} ` +
+  `--header "Authorization: Bearer <SERVICE_KEY>"`;
+const mcpCopied = ref(false);
+
+async function copyMcpCommand() {
+  try {
+    await navigator.clipboard.writeText(mcpRegisterCommand);
+    mcpCopied.value = true;
+    setTimeout(() => { mcpCopied.value = false; }, 2000);
+  } catch {
+    // ignore
   }
 }
 
@@ -401,7 +467,8 @@ onMounted(async () => {
   // 加载设置
   try {
     const s = await settingsApi.get();
-    hijack.value = !!s.websearch_hijack;
+    mcpWebsearch.value = !!s.mcp_websearch;
+    mcpWebfetch.value = !!s.mcp_webfetch;
     failover.value = !!s.failover_enabled;
   } catch {
     // ignore
@@ -474,6 +541,18 @@ md-secondary-tab {
 
 .switch-row { display: flex; align-items: center; gap: 12px; }
 .switch-label { color: var(--md-sys-color-on-surface-variant); }
+
+/* MCP 接入信息 */
+.mcp-info { flex-direction: column; align-items: stretch; }
+.mcp-info__label { color: var(--md-sys-color-on-surface-variant); margin-top: 4px; }
+.mcp-info .key-box { word-break: break-all; user-select: text; }
+
+.key-box {
+  background: var(--md-sys-color-surface-container-high);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 10px 12px;
+}
+.mono { font-family: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .confirm-destroy { color: var(--md-sys-color-error); }
 .dialog-content { min-width: 320px; }

@@ -1,8 +1,9 @@
-//! 代理层入口：三种 LLM 协议格式互转 + 上游转发 + WebSearch 劫持。
+//! 代理层入口：三种 LLM 协议格式互转 + 上游转发 + 搜索工具剔除（MCP 模式）。
 //!
-//! 三个 pub handler 在 `handler`；认证 / 路由解析 / 密钥轮换 /
-//! WebSearch 劫持分别下沉到 `auth` / `route` / `key_rotation` /
-//! `websearch`。`ir` / `stream` / `forward` 为子模块。
+//! 三个 pub handler 在 `handler`；认证 / 路由解析 / 密钥轮换分别下沉到
+//! `auth` / `route` / `key_rotation`。`ir` / `stream` / `forward` 为子模块。
+//! 搜索能力由本地 MCP 端点（`/mcp`，见 `src-tauri/src/mcp/`）提供，
+//! 代理仅在 `mcp_websearch` 开启时剔除请求自带的搜索类工具。
 
 pub mod auth;
 pub mod failover;
@@ -13,7 +14,6 @@ pub mod key_rotation;
 pub mod quota;
 pub mod route;
 pub mod stream;
-pub mod websearch;
 
 pub use handler::{
     proxy_chat_completions, proxy_list_models, proxy_messages, proxy_responses,

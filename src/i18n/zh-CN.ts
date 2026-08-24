@@ -54,10 +54,22 @@ export default {
   'settings.autostart.on': '已开启',
   'settings.autostart.off': '已关闭',
 
-  'settings.websearch.title': '劫持 WebSearch',
-  'settings.websearch.desc': '开启后，带 web_search 工具的请求由本地网页搜索包装处理，不经上游官方搜索',
-  'settings.websearch.on': '已开启',
-  'settings.websearch.off': '已关闭',
+  'settings.mcp_websearch.title': 'MCP WebSearch',
+  'settings.mcp_websearch.desc': '开启后，/mcp 端点提供本地网页搜索工具（web_search），且代理会剔除请求自带的 web_search 工具，防止上游官方搜索生效',
+  'settings.mcp_websearch.on': '已开启',
+  'settings.mcp_websearch.off': '已关闭',
+
+  'settings.mcp_webfetch.title': 'MCP WebFetch',
+  'settings.mcp_webfetch.desc': '开启后，/mcp 端点提供网页抓取工具（web_fetch），用本机 Chrome/Edge 渲染页面（执行 JS）后提取完整正文',
+  'settings.mcp_webfetch.on': '已开启',
+  'settings.mcp_webfetch.off': '已关闭',
+
+  'settings.mcp_info.title': 'MCP 接入信息',
+  'settings.mcp_info.desc': '在客户端（如 Claude Code）注册本地 MCP 端点后，模型即可调用上述工具。鉴权使用 Service Key（Bearer）',
+  'settings.mcp_info.endpoint': '端点',
+  'settings.mcp_info.register': '注册命令（把 <SERVICE_KEY> 替换为你的 Service Key）',
+  'settings.mcp_info.copy': '复制注册命令',
+  'settings.mcp_info.copied': '已复制',
 
   'settings.failover.title': '故障转移',
   'settings.failover.desc': '开启后，同一模型配置多个供应商时，主供应商请求失败（5xx/网络错误/超时）会自动切换下一个供应商重试',

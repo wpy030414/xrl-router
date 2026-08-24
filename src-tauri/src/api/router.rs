@@ -186,6 +186,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // WebSocket endpoints (no rate limiting)
         .route("/ws", get(handlers::ws_handler))
         .route("/ws/plugin", get(handlers::plugin_ws_handler))
+        // MCP 工具端点（Streamable HTTP）：Service Key 鉴权 + 无状态会话。
+        // 请求体上限 2MiB（JSON-RPC 帧很小，防滥用）。
+        .route(
+            "/mcp",
+            axum::routing::any(crate::mcp::handle_mcp_request),
+        )
         // UI settings (theme/hue/locale) — public for LAN install page
         .route("/api/ui-settings", get(handlers::get_ui_settings))
         // /api/* 管理路由（IP 限制）

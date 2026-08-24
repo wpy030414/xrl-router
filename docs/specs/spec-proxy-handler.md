@@ -105,12 +105,12 @@ data: [DONE]
 
 ```
 handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream()
-  → 路由解析 → WebSearch 劫持 → 上下文超限预警 → IR → 上游格式渲染
+  → 路由解析 → 搜索工具剔除（MCP 模式，开关控制）→ 上下文超限预警 → IR → 上游格式渲染
   → failover 双层重试 → 流式转发 → usage_log 记录
 ```
 
 1. **handler.rs**：提取 API key → 认证 → 配额检查 → 客户端格式 → IR 解析
-2. **stream.rs**：路由解析 → WebSearch 劫持（ensure_websearch_tool + execute_websearch_tool_loop）→ 上下文超限预警（warn 日志，不阻断）→ IR → 上游格式渲染 → 立即返回 Response（含 keepalive）→ 后台 spawn 双循环重试 + 流式转发
+2. **stream.rs**：路由解析 → 搜索工具剔除（`mcp_websearch` 开启时 `strip_search_tools` 移除请求自带搜索工具，防止上游官方搜索生效；模型联网搜索走客户端注册的本地 MCP 工具，见 `spec-mcp-tools.md`）→ 上下文超限预警（warn 日志，不阻断）→ IR → 上游格式渲染 → 立即返回 Response（含 keepalive）→ 后台 spawn 双循环重试 + 流式转发
 3. **forward.rs**：统一 IR 转发（forward_stream_ir：上游字节 → IR 事件 → 客户端 SSE 字节）
 
 ## 故障转移（Provider Failover）
@@ -165,7 +165,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 - `src-tauri/src/api/proxy/route.rs` — 路由解析
 - `src-tauri/src/api/proxy/key_rotation.rs` — 密钥轮换
 - `src-tauri/src/api/proxy/failover.rs` — 故障转移冷却表
-- `src-tauri/src/api/proxy/websearch.rs` — WebSearch 劫持（本地搜索 + IR 注入）
+- `src-tauri/src/mcp/` — 本地 MCP 工具服务器（/mcp 端点；搜索工具剔除逻辑在 `stream.rs::strip_search_tools`，契约见 `spec-mcp-tools.md`）
 
 ## 测试要求
 

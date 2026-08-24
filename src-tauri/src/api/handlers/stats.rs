@@ -1,4 +1,4 @@
-//! 统计聚合 + 应用设置（websearch_hijack 开关）handler。
+//! 统计聚合 + 应用设置（mcp_websearch / mcp_webfetch / failover 开关）handler。
 
 use std::sync::Arc;
 
@@ -79,7 +79,8 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
     let locale = state.database.get_setting("locale").ok().flatten().unwrap_or_else(|| "zh-CN".to_string());
 
     Json(serde_json::json!({
-        "websearch_hijack": state.websearch_hijack.load(std::sync::atomic::Ordering::Relaxed),
+        "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
+        "mcp_webfetch": state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
         "failover_enabled": state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
         "theme": theme,
         "hue": hue.parse::<i32>().unwrap_or(264),
@@ -89,7 +90,8 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
 
 #[derive(Deserialize)]
 pub(crate) struct UpdateSettingsRequest {
-    websearch_hijack: Option<bool>,
+    mcp_websearch: Option<bool>,
+    mcp_webfetch: Option<bool>,
     failover_enabled: Option<bool>,
     theme: Option<String>,
     hue: Option<i32>,
@@ -100,10 +102,20 @@ pub(crate) async fn update_settings(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if let Some(v) = req.websearch_hijack {
-        state.websearch_hijack.store(v, std::sync::atomic::Ordering::Relaxed);
+    if let Some(v) = req.mcp_websearch {
+        state.mcp_websearch.store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
-        if let Err(e) = state.database.set_setting("websearch_hijack", val) {
+        if let Err(e) = state.database.set_setting("mcp_websearch", val) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ));
+        }
+    }
+    if let Some(v) = req.mcp_webfetch {
+        state.mcp_webfetch.store(v, std::sync::atomic::Ordering::Relaxed);
+        let val = if v { "true" } else { "false" };
+        if let Err(e) = state.database.set_setting("mcp_webfetch", val) {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),

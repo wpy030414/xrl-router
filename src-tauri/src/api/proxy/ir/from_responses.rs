@@ -28,7 +28,7 @@ pub fn responses_req_to_ir(req: &Value) -> IrRequest {
                     // Responses 格式：{"type": "function", "name": ..., "parameters": ...}
                     if t["type"].as_str() != Some("function") {
                         // server-side 内置工具（web_search_preview 等）：无 name 字段，
-                        // 归一化为 name="web_search"，保证 websearch 劫持对 Responses 客户端生效
+                        // 归一化为 name="web_search"，保证 MCP 模式的搜索工具剔除对 Responses 客户端生效
                         let ty = t["type"].as_str().unwrap_or("");
                         if ty.starts_with("web_search") {
                             return Some(IrTool {

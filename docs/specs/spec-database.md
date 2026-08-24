@@ -197,7 +197,7 @@ CREATE TABLE settings (
 );
 ```
 
-**用途**: `websearch_hijack` 开关 + 密钥轮询指针（`keypool_index_{provider_id}`）
+**用途**: `mcp_websearch` / `mcp_webfetch` / `failover_enabled` 开关 + 主题/色相/语言 + 密钥轮询指针（`keypool_index_{provider_id}`）。旧 `websearch_hijack` 键由 V16 迁移复制到 `mcp_websearch` 后保留（不再读取）。
 
 ### plugins
 

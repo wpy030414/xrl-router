@@ -251,7 +251,8 @@ export const requestLogApi = {
 
 // --- App Settings ---
 export interface AppSettings {
-  websearch_hijack: boolean;
+  mcp_websearch: boolean;
+  mcp_webfetch: boolean;
   failover_enabled: boolean;
   theme: string;
   hue: number;
@@ -260,7 +261,7 @@ export interface AppSettings {
 
 export const settingsApi = {
   get: () => request<AppSettings>('/api/settings'),
-  update: (data: { websearch_hijack?: boolean; failover_enabled?: boolean; theme?: string; hue?: number; locale?: string }) =>
+  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; failover_enabled?: boolean; theme?: string; hue?: number; locale?: string }) =>
     request<{ status: string }>('/api/settings', { method: 'PUT', body: data }),
 };
 

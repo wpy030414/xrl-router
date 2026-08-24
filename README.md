@@ -78,7 +78,7 @@ pnpm build
 
 客户端请求 `/v1/messages`（Anthropic 格式）、`/v1/chat/completions`（OpenAI Chat Completions 格式）或 `/v1/responses`（OpenAI Responses API 格式），网关根据模型别名解析到上游 Provider，经 **IR（中间表示）层** 统一协议转换后流式转发。仅支持流式响应。
 
-**IR 中间表示层**：三种客户端格式（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）先统一转换为 IR（`IrRequest` / `IrStreamEvent` / `IrUsage`），再渲染为目标上游格式。IR 以 Anthropic Messages 为骨架（内容块模型最丰富），并集覆盖三种格式的全部字段。所有内部工具（websearch 劫持、usage 追踪、错误构造）只操作 IR 类型，与具体协议解耦。实现位于 `api/proxy/ir/`。
+**IR 中间表示层**：三种客户端格式（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）先统一转换为 IR（`IrRequest` / `IrStreamEvent` / `IrUsage`），再渲染为目标上游格式。IR 以 Anthropic Messages 为骨架（内容块模型最丰富），并集覆盖三种格式的全部字段。所有内部工具（搜索工具剔除、usage 追踪、错误构造）只操作 IR 类型，与具体协议解耦。实现位于 `api/proxy/ir/`。
 
 **流式引擎架构**：handler.rs 是薄入口层（认证 + 请求体准备），核心逻辑委托给 stream.rs 的 `proxy_stream()` 函数完成路由解析、上游连接、密钥轮换和流式转发。stream.rs 路由解析后立即返回 Response（含 keepalive），上游等待和流式转发在后台 spawn 中完成，客户端毫秒级收到首字节。流式转发分支（passthrough / O→A / A→O）实现在 forward.rs。
 
@@ -130,9 +130,14 @@ pnpm build
 
 前端通过 WebSocket 接收密钥状态变更、用量更新等实时事件（3 秒自动重连）。
 
-### WebSearch 劫持
+### MCP 工具服务器（WebSearch / WebFetch）
 
-可选功能（设置页开关控制）：拦截包含 `web_search` 工具的请求，代理注入自己的 `web_search` 工具定义，模型通过标准 tool-calling 自主决定是否搜索、搜索什么、搜索几次。代理在本地执行 Bing 搜索并将结果回传模型，最多 10 轮 + 无进展检测（连续 2 轮查询词相似度 ≥ 0.6 提前收尾），耗尽后清理工具痕迹合并结果为文本指令强制无搜索回答。Bing 搜索绕过代理直连（完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + ck/a 重定向解码，避免出口 IP 在海外导致结果降级）。Messages 客户端（Claude Code）合成 server_tool_use + web_search_tool_result 卡片。
+网关内置一个 MCP（Streamable HTTP）端点 `/mcp`，设置页「路由」Tab 两个开关控制：
+
+- **MCP WebSearch**：开启后 `/mcp` 提供 `web_search` 工具（本地 Bing 搜索：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + ck/a 重定向解码，绕过代理直连避免出口 IP 在海外导致结果降级），且代理会剔除请求自带的 `web_search` 工具，防止上游官方搜索生效。关闭则完全不碰工具定义。
+- **MCP WebFetch**：开启后 `/mcp` 提供 `web_fetch` 工具——复用本机 Chrome/Edge headless 渲染页面（执行 JS）后提取完整正文（转 Markdown），探测不到浏览器时回退静态抓取并注明。
+
+在客户端（如 Claude Code）注册后，模型通过标准 MCP tool-calling 直接调用，工具调用过程完全可见。设置页提供可复制的注册命令（鉴权用 Service Key，`Authorization: Bearer`）。契约见 [docs/specs/spec-mcp-tools.md](docs/specs/spec-mcp-tools.md)。
 
 ### 国际化（i18n）
 

@@ -24,8 +24,11 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     pub master_key: crate::crypto::MasterKey,
     pub key_stats_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
-    /// WebSearch 劫持开关（运行时可改、无锁读）。
-    pub websearch_hijack: Arc<std::sync::atomic::AtomicBool>,
+    /// MCP WebSearch 开关（运行时可改、无锁读）：
+    /// 开启 = /mcp 提供 web_search 工具 + 代理剔除请求自带的搜索类工具（防上游官方搜索生效）。
+    pub mcp_websearch: Arc<std::sync::atomic::AtomicBool>,
+    /// MCP WebFetch 开关：开启 = /mcp 提供 web_fetch 工具（本机浏览器渲染页面后取正文）。
+    pub mcp_webfetch: Arc<std::sync::atomic::AtomicBool>,
     /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个（运行时可改）。
     pub failover_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// provider 级冷却表：provider_id → 冷却到期 unix 秒（纯内存，设计选择同密钥健康）。
@@ -55,9 +58,17 @@ impl AppState {
         keys.set_key_stats_tx(key_stats_tx.clone());
 
         let rate_limiter = RateLimiter::new();
-        let websearch_hijack = Arc::new(std::sync::atomic::AtomicBool::new(
+        let mcp_websearch = Arc::new(std::sync::atomic::AtomicBool::new(
             database
-                .get_setting("websearch_hijack")
+                .get_setting("mcp_websearch")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false),
+        ));
+        let mcp_webfetch = Arc::new(std::sync::atomic::AtomicBool::new(
+            database
+                .get_setting("mcp_webfetch")
                 .ok()
                 .flatten()
                 .map(|v| v == "true")
@@ -94,7 +105,8 @@ impl AppState {
             rate_limiter,
             master_key,
             key_stats_tx,
-            websearch_hijack,
+            mcp_websearch,
+            mcp_webfetch,
             failover_enabled,
             provider_cooldowns,
             plugins,

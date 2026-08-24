@@ -3,7 +3,9 @@
 use crate::gateway::server::AppState;
 
 /// 已通过认证的 service key 快照（含 allowed_models 白名单与 token 配额）。
-pub(super) struct ServiceKeyInfo {
+///
+/// `pub(crate)`：代理 `/v1/*` 与 MCP 端点 `/mcp` 共用。
+pub(crate) struct ServiceKeyInfo {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) key_masked: String,
@@ -16,7 +18,9 @@ pub(super) struct ServiceKeyInfo {
 
 /// Verify a service key against the service_keys table (argon2 hash).
 /// Returns the service_key info on success, None on failure.
-pub(super) async fn verify_service_key(state: &AppState, api_key: &str) -> Option<ServiceKeyInfo> {
+///
+/// `pub(crate)`：代理 `/v1/*` 与 MCP 端点 `/mcp` 共用同一套 Service Key 鉴权。
+pub(crate) async fn verify_service_key(state: &AppState, api_key: &str) -> Option<ServiceKeyInfo> {
     if api_key.is_empty() {
         return None;
     }

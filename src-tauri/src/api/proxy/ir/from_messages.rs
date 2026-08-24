@@ -36,7 +36,7 @@ pub fn messages_req_to_ir(req: &Value) -> IrRequest {
             arr.iter()
                 .filter_map(|t| {
                     // server-side 内置工具（web_search_20250305 等）：可能只有 type 没有 name，
-                    // 归一化为 name="web_search"，保证 websearch 劫持对 Messages 客户端生效
+                    // 归一化为 name="web_search"，保证 MCP 模式的搜索工具剔除对 Messages 客户端生效
                     let (name, is_websearch) = match t["name"].as_str() {
                         Some(n) => (n.to_string(), n.starts_with("web_search")),
                         None => {

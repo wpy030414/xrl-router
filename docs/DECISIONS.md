@@ -1549,3 +1549,112 @@ HTTP 级密钥轮换（400 quota / 401/402/403/429）已在双循环中实现，
 
 - 上游修复返回正确的 HTTP 状态码后，可收紧检测（但关键词分类在可预见的未来仍然适用）
 - 若出现「200 + error 流但换密钥无济于事」的上游（如账号级限额），可考虑加冷却/熔断，而不是简单轮换
+
+---
+
+## ADR-035: WebSearch/WebFetch 从 server-side 劫持迁移到本地 MCP 端点
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**取代**: ADR-028、ADR-030 的劫持循环方案（Bing HTTP 策略本身保留，见 ADR-031）  
+**关联**: ADR-031（Bing HTTP 浏览器头策略）、ADR-017（单 listener 架构）
+
+### 背景
+
+旧方案（ADR-028/030）由代理跑 server-side 劫持循环：注入 `web_search` 工具 → 缓冲所有中间搜索轮次 → 本地 Bing 搜索回传 → 收尾合成响应。实测体验与工程问题：
+
+1. **体验差**：所有中间轮全缓冲，客户端在搜索期间看不到任何进展，首字节延迟 = 全部搜索轮次 + 最终回答的总时长。
+2. **代码复杂脆弱**：~1650 行循环 + 收尾逻辑（轮数上限、无进展检测、工具痕迹清理、`to_chat_completions` 回填 bug 的规避），还有一整套 Claude Code 搜索卡片合成（`server_tool_use` / `web_search_tool_result`）——只有 Messages 客户端能享受卡片，Chat/Responses 客户端只有「缓冲 + 最终回答」。
+3. **前置条件苛刻**：Claude Code 第三方 base_url 默认禁用 WebSearch，必须靠 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=true` 强制开启，配置负担转嫁给主人。
+
+### 决策
+
+1. **删除劫持循环**，改为网关内置 **MCP（Streamable HTTP）端点 `/mcp`**，提供 `web_search`（复用 ADR-031 的 Bing HTTP 搜索）与 `web_fetch`（见 ADR-037）两个工具。客户端注册该 MCP 后，模型通过标准 MCP tool-calling 直接调用，工具调用过程对客户端完全可见。
+2. **开关语义替换**：`websearch_hijack` → `mcp_websearch`（V16 迁移值）。ON = `/mcp` 提供 `web_search` + 代理剔除请求自带搜索工具（防上游官方搜索生效）；新增 `mcp_webfetch` 控制 `web_fetch`。OFF = 完全不碰工具定义。
+3. **鉴权复用 Service Key**（`Authorization: Bearer`，argon2），安全模型与 `/v1/*` 一致；端点挂公开区（客户端可能在局域网）。
+4. 代理侧只保留「剔除」逻辑（`strip_search_tools`，含 `tool_choice` → Auto 改写），不再注入工具、不再跑循环、不再合成卡片。
+
+### 原因
+
+1. **标准协议 > 私有序列**：MCP 是客户端原生支持的协议，工具调用可见、可审批、可组合；劫持循环是黑盒，客户端只能看到一段被合成的流。
+2. **性能**：模型直接调用工具，无中间轮缓冲；每个工具调用独立往返，延迟摊薄。
+3. **删除大于新增**：净删 ~1600 行（`websearch.rs` 全删 + `forward_stream_ir_to_buffer` + `accumulate_ir_events` + 卡片渲染），新增 ~600 行（`mcp/` 三文件）。
+4. **开关全关时协议仍健康**：`tools/list` 返回空数组而非 404，已注册客户端不断连。
+
+### 代价
+
+- 客户端需一次性注册 MCP（设置页提供可复制的 `claude mcp add` 命令），之后一劳永逸。
+- 不再合成 Claude Code 搜索卡片——但 MCP 工具调用本身在客户端有原生展示。
+- `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` 前置条件不再需要（客户端自己的 WebSearch 工具与 MCP 并存，开关开启时代理剔除前者）。
+
+### 重新考虑的条件
+
+- 若主流客户端停止支持 Streamable HTTP MCP（可能性极低），再评估退回或换传输。
+
+---
+
+## ADR-036: MCP 端点用 rmcp handle() 嵌入 axum 0.7（不升级 0.8）
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**关联**: ADR-035、ADR-017（单 listener）
+
+### 背景
+
+rmcp（官方 Rust MCP SDK）的 `StreamableHttpService` 示例都基于 axum 0.8（`any_service` 挂载），而网关是 axum 0.7.9。升级整个网关的 axum 主版本只为挂一个端点，爆炸半径不值得。
+
+### 决策
+
+1. 用 `StreamableHttpService::handle<B>(&self, Request<B>) -> Response<BoxBody<Bytes, Infallible>>`——它接受**任意** `http_body::Body`、返回可转换的 `BoxBody`，与 axum 版本无关。
+2. 在 axum 0.7 写一个普通 `any` handler：鉴权后调 `handle()`，`Response::from_parts(parts, Body::new(body))` 转回 axum Body。
+3. 无会话模式：`NeverSessionManager` + `legacy_session_mode = false`——工具只读、无服务端推送，会话纯属开销。
+4. 手写 `ServerHandler`（不用 `#[tool_router]` 宏）：`tools/list` 必须按运行时开关动态过滤，宏生成的静态列表做不到；且只有两个工具，手写最直接。
+5. `ServerHandler` 深处拿不到 axum State → `mcp::init()` 启动时注入全局 `OnceLock<Arc<AppState>>`（Tauri 单实例，无风险）。
+
+### 原因
+
+1. `handle()` 是 rmcp 公开的稳定 API，泛型于请求体类型，天然适配任何 axum 版本——升级 0.8 的唯一动机（`any_service` 适配器）消失。
+2. axum 0.7 → 0.8 涉及 handler 签名、中间件、extractor 多处变更，全网关回归成本高，与「单端点」收益严重不匹配。
+
+### 代价
+
+- 多一层手工 body 转换（~5 行）。
+- 全局 OnceLock 注入是小小的不优雅，换取 handler 签名简单。
+
+### 重新考虑的条件
+
+- 若未来升级 axum 0.8（因其他原因），可改回 `any_service` 直接挂载。
+
+---
+
+## ADR-037: WebFetch 复用本机 Chrome/Edge headless 渲染（不自动下载）
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**关联**: ADR-035、ADR-016（统一 HTTP 客户端工厂）
+
+### 背景
+
+`web_fetch` 要求「执行页面 JS 后拿到完整内容」，纯静态抓取（reqwest）对 SPA/动态页面无效。需要一个真实的渲染引擎。
+
+### 决策
+
+1. **复用本机浏览器**：探测本地 Chrome/Edge（Windows 优先系统自带 Edge，其次 Chrome；含协议补全），`headless_chrome` crate 经 CDP 无头渲染（JS 执行），取渲染后 HTML → `htmd` 转 Markdown → 截断（约 60K 字符）。
+2. **不自动下载浏览器**（不做 Chrome for Testing 下载兜底）：Windows 自带 Edge，探测命中率基本 100%；探测失败回退静态抓取（`http::build_http_client()`，继承系统代理）并在输出开头注明「可能不含 JS 渲染结果」。
+3. **生命周期**：进程级懒启动 + 保活复用（`OnceLock<Mutex<Option<Browser>>>`），每次抓取新 Tab 用完即关；单用户场景 Mutex 串行（一次渲染一页）。
+4. 同步 `headless_chrome` API 进 `spawn_blocking`（项目既有模式，同 rusqlite）。
+
+### 原因
+
+1. **零下载零磁盘负担**：自动下载 ~150MB Chrome 首次体验差、占磁盘、还要处理版本管理；本机浏览器探测几乎必然命中（目标平台是桌面开发者机器）。
+2. **降级路径明确**：探测不到 → 静态抓取 + 明确告知，而非报错，工具仍可用。
+3. **选 `headless_chrome` 而非 `chromiumoxide`**：LaunchOptions 的探测/保活模型成熟，同步 + `spawn_blocking` 与项目同步代码模式一致。
+
+### 代价
+
+- 渲染时占用本机浏览器资源（单页、串行，影响有限）。
+- 极端环境（无任何 Chrome 系浏览器）退化为静态抓取，失去 JS 渲染能力——已明确告知。
+
+### 重新考虑的条件
+
+- 若出现大量「无本机浏览器」的目标环境，再评估 Chrome for Testing 自动下载兜底。

@@ -54,10 +54,22 @@ export default {
   'settings.autostart.on': 'Enabled',
   'settings.autostart.off': 'Disabled',
 
-  'settings.websearch.title': 'Hijack WebSearch',
-  'settings.websearch.desc': 'When enabled, requests with web_search tools are handled by local web search instead of upstream official search',
-  'settings.websearch.on': 'Enabled',
-  'settings.websearch.off': 'Disabled',
+  'settings.mcp_websearch.title': 'MCP WebSearch',
+  'settings.mcp_websearch.desc': 'When enabled, the /mcp endpoint exposes a local web search tool (web_search), and the proxy strips web_search tools from requests so upstream official search never runs',
+  'settings.mcp_websearch.on': 'Enabled',
+  'settings.mcp_websearch.off': 'Disabled',
+
+  'settings.mcp_webfetch.title': 'MCP WebFetch',
+  'settings.mcp_webfetch.desc': 'When enabled, the /mcp endpoint exposes a web fetch tool (web_fetch) that renders pages with the local Chrome/Edge (JavaScript runs) and extracts full content',
+  'settings.mcp_webfetch.on': 'Enabled',
+  'settings.mcp_webfetch.off': 'Disabled',
+
+  'settings.mcp_info.title': 'MCP Connection Info',
+  'settings.mcp_info.desc': 'Register the local MCP endpoint in your client (e.g. Claude Code) so the model can call these tools. Auth uses a Service Key (Bearer)',
+  'settings.mcp_info.endpoint': 'Endpoint',
+  'settings.mcp_info.register': 'Register command (replace <SERVICE_KEY> with your Service Key)',
+  'settings.mcp_info.copy': 'Copy register command',
+  'settings.mcp_info.copied': 'Copied',
 
   'settings.failover.title': 'Failover',
   'settings.failover.desc': 'When enabled, requests for a model with multiple providers automatically retry on the next provider after the primary fails (5xx/network error/timeout)',

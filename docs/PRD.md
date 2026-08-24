@@ -137,7 +137,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 
 | ID | 功能 | 实现位置 |
 |----|------|---------|
-| F-21 | **WebSearch 劫持（tool-calling loop + 本地 Bing 搜索）** | `api/proxy/websearch.rs` (execute_websearch_tool_loop) + `search/bing.rs` (SearchHttp: 浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连) |
+| F-21 | **本地 MCP 工具服务器（/mcp：web_search + web_fetch）** | `mcp/`（Streamable HTTP 端点，rmcp）+ `search/bing.rs` (SearchHttp: 浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连) + `mcp/fetch.rs`（本机 Chrome/Edge headless 渲染 + htmd 转 Markdown + 静态回退）。开关开启时代理剔除请求自带搜索工具（`api/proxy/stream.rs::strip_search_tools`），取代旧 server-side 劫持循环（已删除） |
 | F-22 | **模型同步（从上游拉取）** | `api/handlers/models.rs` |
 | F-23 | **系统托盘** | `lib.rs` |
 | F-24 | **插件系统（委托供应商）** | `plugin/` |
@@ -146,7 +146,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-27 | **供应商拖拽排序** | `ProvidersView.vue` + `api/handlers/providers.rs` (V13) |
 | F-28 | **暗色模式** | `theme.ts` + `global.css` |
 | F-29 | **上游模型代理获取（避 CORS）** | `api/handlers/models.rs` |
-| F-30 | **应用设置（websearch 开关）** | `api/handlers/` + `SettingsView.vue` |
+| F-30 | **应用设置（MCP WebSearch / WebFetch 开关 + 接入信息卡）** | `api/handlers/` + `SettingsView.vue` |
 | F-31 | **Token 配额（5h/7d 滚动窗口）** | `api/proxy/quota.rs` + `KeysView.vue` (V14) |
 | F-32 | **余额端点（/v1/user/balance）** | `api/proxy/quota.rs` |
 | F-33 | **系统代理自动继承（http.rs 统一工厂 + 多平台支持）** | `http.rs`（环境变量 → Windows 注册表 → macOS scutil，OnceLock 缓存） |
@@ -166,7 +166,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-47 | **list_models 扩展（capabilities + max_output_tokens）** | `api/proxy/handler.rs::proxy_list_models` |
 | F-48 | **V15: provider kind 统一命名** | `db/schema.rs`（`openai` → `chat_completions`、`anthropic` → `messages`） |
 | F-49 | **Bing 搜索策略升级（SearchHttp + 浏览器头 + 双域名 fallback）** | `search/bing.rs`（SearchHttp 结构体 + 懒预热 + ck/a 解码 + 降级检测） |
-| F-50 | **WebSearch server-side tool 渲染（Messages 客户端搜索卡片）** | `api/proxy/websearch.rs`（`render_websearch_messages_final`）+ `api/proxy/ir/to_messages.rs` |
+| F-50 | ~~WebSearch server-side tool 渲染（Messages 客户端搜索卡片）~~（已删除，随 server-side 劫持循环一并移除；模型改用客户端注册的 MCP 工具，见 F-21） | — |
 | F-51 | **macOS 系统代理自动检测（scutil --proxy）** | `http.rs`（`resolve_macos_proxy()`） |
 | F-52 | **MdiIcon 组件（@mdi/js SVG 动态图标）** | `src/components/MdiIcon.vue` + `src/components/AppShell.vue` |
 | F-53 | **主题色相滑块（hue slider）** | `src/theme.ts`（`setHue()` 生成 MD3 色阶）+ `SettingsView.vue` |

@@ -88,7 +88,6 @@ main.rs
                  ├─ route.rs       模型别名→上游 URL 解析 (resolve_route / resolve_route_candidates)
                  ├─ failover.rs    provider 级冷却表 (纯内存, 60s)
                  ├─ key_rotation.rs 密钥选取 + 健康反馈
-                 ├─ websearch.rs   WebSearch tool-calling loop（最多 10 轮 + 无进展检测 + 耗尽清理工具痕迹）
                  ├─ sniff.rs       SniffStream (透传+嗅探，保留但当前未被 forward.rs 引用)
                  └─ ir/            IR 中间表示层（三种协议统一抽象）
                       ├─ types.rs                IrRequest / IrMessage / IrContentBlock / IrStreamEvent / IrUsage
@@ -169,15 +168,12 @@ main.rs
   │  委托供应商 → 从 PluginManager 取实时 base_url
   │
   ▼
-[4b] WebSearch 劫持 ──── websearch_hijack + has_websearch_tool_ir
-  │  命中 → execute_websearch_tool_loop (websearch.rs):
-  │    ensure_websearch_tool 替换客户端搜索工具为代理 web_search
-  │    模型通过 tool-calling 自主决定是否搜索、搜索什么、搜索几次
-  │    代理本地 Bing 搜索（SearchHttp: 浏览器头 + cookie 复用 + 绕过代理直连）
-  │    结果作为 tool_result 回传模型 → 继续下一轮
-  │    最多 10 轮 + 无进展检测（连续 2 轮查询词相似度 ≥ 0.6 提前收尾）
-  │    耗尽后清理工具痕迹 + 合并结果为文本指令强制无搜索回答
-  │    Messages 客户端合成 server_tool_use + web_search_tool_result 卡片
+[4b] 搜索工具剔除（MCP 模式）──── mcp_websearch 开关
+  │  ON  → strip_search_tools (stream.rs):
+  │    移除请求自带的搜索类工具（客户端 `WebSearch` / 上游 server-side `web_search_*`），
+  │    防止上游官方搜索生效；tool_choice 指向被移除工具时改写为 Auto。
+  │    模型联网搜索走客户端注册的本地 MCP（/mcp 的 web_search 工具）。
+  │  OFF → 完全不碰工具定义
   │
   ▼
 [4c] 上下文超限预警 ──── 估算输入 token (chars/4) > model.context_window
@@ -213,7 +209,6 @@ main.rs
   │           └─ 后台 spawn 转发 + 15s keepalive 心跳 (oneshot 取消信号驱动, 见 ADR-021)
   │           └─ 响应头: Cache-Control: no-cache, Connection: keep-alive, X-Accel-Buffering: no
   │           └─ 请求体上限 64MiB (MAX_REQUEST_BODY_BYTES, 覆盖多模态大会话)
-  │  WebSearch 路径: execute_websearch_tool_loop() 缓冲中间轮次，仅最终回答流式给客户端
   │  120s chunk 间隔超时
   │
   ▼
@@ -250,7 +245,7 @@ src/
 │    ProviderNewView.vue  供应商创建/编辑 (支持插件模式)
 │    KeysView.vue         Service Key 管理 (表格 + 权限对话框 + 分发链接)
 │    StatsView.vue        用量统计 (数据磁贴 + Chart.js 折线图 + 请求日志分页表)
-│    SettingsView.vue     设置 3 Tab: 通用(语言/主题/开机启动) + 路由(websearch/failover) + 数据(导出/导入/重置)
+│    SettingsView.vue     设置 3 Tab: 通用(语言/主题/开机启动) + 路由(MCP WebSearch/WebFetch/接入信息/failover) + 数据(导出/导入/重置)
 │    InstallView.vue      局域网分发页: 消费端选择(Claude Code/ChatGPT) + 模型下拉 + 命令生成 (LAN 浏览器可访问)
 │
 ├── components/
@@ -299,7 +294,8 @@ src/
 │  ModelRegistry    DashMap 缓存 (按 tier 索引)      │
 │  RateLimiter      令牌桶状态                       │
 │  PluginManager    插件连接状态                     │
-│  websearch_hijack AtomicBool                      │
+│  mcp_websearch    AtomicBool                      │
+│  mcp_webfetch     AtomicBool                      │
 │  http_client      reqwest::Client (共享连接池)     │
 │  search_http      SearchHttp (搜索专用, 直连)       │
 └───────────────────────────────────────────────────┘
@@ -363,7 +359,8 @@ src/
 | IR 真实值覆盖估算值 | `forward.rs` 预填的 `chars/4` 估算值偏大，max 合并会永久压住真实值，污染 usage_log 与客户端上下文条 |
 | Responses input_tokens 增量口径 | 减去 `cached_tokens`，与 Chat Completions `prompt_tokens - cached_tokens` 一致 |
 | 上下文超限预警而非硬拒绝 | 估算口径偏保守，硬拒绝会阻断客户端 auto-compact（死锁） |
-| WebSearch 采用 tool-calling loop | 模型自主决定是否搜索、搜索什么；代理本地执行 Bing 搜索回传结果；轮数上限 + 无进展检测兜底防死循环 |
+| WebSearch/WebFetch 走本地 MCP | 旧 server-side 劫持循环（代理跑 tool loop + 缓冲中间轮）体验差且复杂；改为 `/mcp` Streamable HTTP 端点让客户端注册标准 MCP 工具，模型直接调用，代理仅在开关开启时剔除请求自带搜索工具防上游官方搜索生效（详见 `docs/DECISIONS.md` 与 `docs/specs/spec-mcp-tools.md`） |
+| WebFetch 复用本机浏览器 | 不自动下载 Chrome；探测本机 Chrome/Edge（Windows 自带 Edge），headless 渲染（JS 执行）后提取正文；探测不到回退静态抓取并注明（详见 `docs/DECISIONS.md`） |
 | failover 冷却纯内存 | 与密钥健康同一哲学，不持久化不广播；开关默认关闭，开启才改变请求行为 |
 | 数据导出用 SQL dump | SQLite 原生语句保真度高，导入即执行，天然支持跨版本迁移 |
 
@@ -391,6 +388,11 @@ xrl-router
   ├── scraper 0.20     HTML 解析 (Bing 搜索结果提取)
   ├── url 2            URL 构造 (Bing 搜索参数)
   ├── base64 0.22      base64url 解码 (Bing ck/a 重定向链接)
+  │
+  │  MCP 工具服务器 (/mcp 端点)
+  ├── rmcp 3           MCP Rust SDK (Streamable HTTP server, 无会话模式)
+  ├── headless_chrome 1  CDP 无头浏览器驱动 (WebFetch 渲染本机 Chrome/Edge)
+  ├── htmd 0.2         HTML → Markdown (渲染后正文转 Markdown 喂模型)
   │
   │  序列化 / 工具
   ├── thiserror 1      错误类型派生
