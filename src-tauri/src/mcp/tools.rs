@@ -1,10 +1,10 @@
-//! MCP 工具定义与执行：`web_search`（本地 Bing）+ `web_fetch`（本机浏览器渲染）。
+//! MCP 工具定义与执行：`web_search`（本地 Bing）+ `web_fetch`（Tauri WebView 渲染）。
 //!
 //! 手写 `ServerHandler`（不用 `#[tool_router]` 宏）——工具只有两个，且 `tools/list`
 //! 必须按运行时开关（`mcp_websearch` / `mcp_webfetch`）动态过滤，宏生成的静态
 //! 列表做不到。
 //!
-//! 工具实现需要 `AppState`（SearchHttp / 开关原子量 / 浏览器池），而 `ServerHandler`
+//! 工具实现需要 `AppState`（SearchHttp / 开关原子量），而 `ServerHandler`
 //! 方法深处 rmcp 内部拿不到 axum State，故启动时经 `init()` 注入全局引用
 //! （Tauri 单实例，`OnceLock` 无风险）。
 
@@ -112,8 +112,8 @@ fn web_fetch_tool() -> Tool {
     Tool::new(
         "web_fetch",
         "Fetch a web page and return its content as Markdown. The page is rendered \
-         with a local headless browser (JavaScript executes, so SPA/JS content is \
-         included). Use this to read full article content from a URL.",
+         with a local webview (JavaScript executes, so SPA/JS content is included). \
+         Use this to read full article content from a URL.",
         Arc::new(schema_with_single_field(
             "url",
             "The URL of the page to fetch (http or https)",
@@ -182,7 +182,7 @@ async fn run_web_search(args: &JsonObject) -> CallToolResponse {
     }
 }
 
-/// web_fetch 执行：本机浏览器渲染后取正文（Markdown）。
+/// web_fetch 执行：Tauri WebView 渲染后取正文（Markdown）。
 async fn run_web_fetch(args: &JsonObject) -> CallToolResponse {
     let url = match args
         .get("url")

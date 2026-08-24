@@ -1658,3 +1658,36 @@ rmcp（官方 Rust MCP SDK）的 `StreamableHttpService` 示例都基于 axum 0.
 ### 重新考虑的条件
 
 - 若出现大量「无本机浏览器」的目标环境，再评估 Chrome for Testing 自动下载兜底。
+
+---
+
+## ADR-038: WebFetch 渲染改用 Tauri 内置 WebView（移除 headless_chrome）
+
+**日期**: 2026-08-24  
+**状态**: 已接受  
+**关联**: ADR-037（被取代）、ADR-035
+
+### 背景
+
+ADR-037 的「重新考虑条件」被触发：实际目标环境（macOS 开发机）无 Chrome/Edge/Chromium，`web_fetch` 退化为静态抓取，SPA/JS 页面拿不到渲染内容。且探测到的浏览器要额外拉起独立进程（CDP 启动 ~500ms + 常驻开销）。
+
+### 决策
+
+1. **渲染引擎改用 Tauri 内置 WebView**：懒创建隐藏窗口（label `fetcher`）→ `navigate` → 轮询 `eval_with_callback` 等 `readyState == "complete"` 且资源计数稳定 → eval 取渲染后 HTML → `htmd` 转 Markdown。
+2. **删除 headless_chrome 依赖与浏览器探测代码**（探测候选列表、LaunchOptions、Tab 生命周期全删）。
+3. **保留静态抓取回退**：WebView 创建失败/超时/eval 异常 → 静态抓取 + 开头注记「可能不含 JS 渲染结果」。
+
+### 原因
+
+1. **可用性 ≈ 应用可用性**：网关进程即 Tauri 进程（窗口关闭只隐藏到托盘），WebView 三端全覆盖（macOS WKWebView / Windows WebView2 / Linux WebKitGTK），不再依赖任何第三方浏览器安装。
+2. **零额外进程**：无 CDP 启动开销与浏览器常驻，渲染就在应用内。
+3. **安全模型不变**：隐藏窗口不给远程域配 IPC capability（无 `dangerousRemoteDomainIpcAccess`），HTML 提取纯 Rust 单向 eval——远程页面接触不到 Tauri IPC，与 ADR-031 废弃的 WebView 搜索方案（远程域需授权）完全不同。
+4. **Windows 上 WebView2 本身就是 Chromium**，渲染行为与旧方案基本一致。
+
+### 代价
+
+- WKWebView/WebKitGTK 的 UA 与 Chrome 不同，个别站点渲染有差异（可接受，与静态回退同样在输出注记）。
+- macOS 隐藏窗口存在 JS 定时器节流风险（实测后如受影响，改用 1×1 离屏可见窗口）。
+- WebView2 `ExecuteScriptWithResult` 回传结果有体积限制 → JS 侧先截断（~1.5MB）再回传。
+- 导航失败事件无法直接获取（WKWebView 不暴露给 eval）→ 以 readyState 停滞超时兜底，触发静态回退。
+

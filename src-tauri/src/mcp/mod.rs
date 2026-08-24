@@ -6,8 +6,8 @@
 //! - `web_search`（`mcp_websearch`）：本地 Bing 搜索，复用 `crate::search::bing::search`。
 //!   开关同时控制代理层剔除请求自带的搜索类工具（见 `api/proxy/stream.rs`），
 //!   防止上游官方搜索生效。
-//! - `web_fetch`（`mcp_webfetch`）：复用本机 Chrome/Edge headless 执行页面 JS 后
-//!   提取正文（Markdown），探测不到浏览器时回退静态抓取（见 `fetch.rs`）。
+//! - `web_fetch`（`mcp_webfetch`）：Tauri 内置 WebView 渲染（隐藏窗口执行页面 JS
+//!   后提取正文 Markdown），渲染不可用时回退静态抓取（见 `fetch.rs`）。
 //!
 //! 鉴权与 `/v1/*` 代理一致：`Authorization: Bearer <service-key>`（argon2 校验）。
 //! 会话模式为无状态（`NeverSessionManager`）——工具只有两个且无服务端推送，
@@ -27,12 +27,15 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
 use crate::gateway::server::AppState;
+use tauri::AppHandle;
 
 type McpService = StreamableHttpService<tools::XrlMcpTools, NeverSessionManager>;
 
-/// 注入全局 AppState（`lib.rs` setup 创建 AppState 后调用）。
-pub(crate) fn init(state: Arc<AppState>) {
+/// 注入全局 AppState + AppHandle（`lib.rs` setup 创建 AppState 后调用；
+/// AppHandle 供 web_fetch 的 WebView 渲染层创建隐藏窗口）。
+pub(crate) fn init(state: Arc<AppState>, app: AppHandle) {
     tools::init(state);
+    fetch::init(app);
 }
 
 /// 全局 MCP 服务单例（懒加载）。`NeverSessionManager` 无状态、`XrlMcpTools` 无字段，

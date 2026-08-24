@@ -72,8 +72,8 @@ souvlaki = "0.8"
 # MCP 工具服务器（/mcp Streamable HTTP 端点，对外提供 web_search / web_fetch）
 rmcp = { version = "3", features = ["server", "macros", "transport-streamable-http-server"] }
 
-# WebFetch 页面渲染：复用本机 Chrome/Edge headless（CDP over websocket）
-headless_chrome = "1"
+# WebFetch 页面渲染：Tauri 内置 WebView（macOS WKWebView / Windows WebView2 / Linux WebKitGTK），
+# 无额外浏览器依赖（见 docs/DECISIONS.md ADR-038）
 
 # 渲染后的 HTML → Markdown（喂给模型前压缩体积、保留结构）
 htmd = "0.2"

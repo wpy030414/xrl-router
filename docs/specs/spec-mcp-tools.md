@@ -39,10 +39,11 @@ URL2
 ### `web_fetch`（受 `mcp_webfetch` 开关控制）
 
 - **参数**：`{ "url": string }`（required）。
-- **实现**：`mcp/fetch.rs`——探测本机 Chrome/Edge（Windows 优先 Edge 系统自带，其次 Chrome；含 `https://` 协议补全），`headless_chrome` CDP 无头渲染（JS 执行，SPA 内容可得），取渲染后 HTML → `htmd` 转 Markdown → 截断（约 60K 字符）。
-- **回退**：探测不到本机浏览器 → 静态抓取（`crate::http::build_http_client()`，继承系统代理），输出开头附注「未检测到本机浏览器，可能不含 JS 渲染结果」。
-- **浏览器生命周期**：进程级懒启动 + 保活复用（`OnceLock<Mutex<Option<Browser>>>`）；每次抓取新 Tab、用完即关；单用户场景 Mutex 串行（一次渲染一页）。
+- **实现**：`mcp/fetch.rs`——**Tauri 内置 WebView 渲染**（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）：懒创建隐藏窗口（label `fetcher`，进程级保活）→ `navigate` → 轮询 `eval_with_callback` 等 `readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号）→ eval 取渲染后 HTML（JS 侧先截断 ~1.5MB，防 WebView2 回传体积限制）→ `htmd` 转 Markdown → 截断（约 60K 字符）。
+- **回退**：WebView 创建失败/超时/eval 异常 → 静态抓取（`crate::http::build_http_client()`，继承系统代理），输出开头附注「WebView 渲染不可用：{原因}。以下为静态抓取内容，可能不含 JS 渲染结果」。
+- **并发**：`tokio::sync::Mutex` 串行（一次渲染一页，跨 await 持有）。
 - **错误处理**：导航失败/超时 → 工具级错误文本。
+
 
 ## 开关语义（设置页「路由」Tab）
 
@@ -66,9 +67,9 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 
 ## 实现位置
 
-- `src-tauri/src/mcp/mod.rs` — `/mcp` handler（鉴权 + 委托）+ 全局服务单例 + `init()` 注入 AppState。
+- `src-tauri/src/mcp/mod.rs` — `/mcp` handler（鉴权 + 委托）+ 全局服务单例 + `init()` 注入 AppState 与 AppHandle。
 - `src-tauri/src/mcp/tools.rs` — `ServerHandler` 实现（`list_tools` 按开关动态过滤 / `call_tool` 分发）+ 工具 schema。
-- `src-tauri/src/mcp/fetch.rs` — 浏览器探测 + headless 渲染 + 静态回退 + HTML→Markdown。
+- `src-tauri/src/mcp/fetch.rs` — 隐藏 WebView 窗口管理 + 渲染等待轮询 + eval 提取 + 静态回退 + HTML→Markdown。
 - `src-tauri/src/api/proxy/stream.rs` — `strip_search_tools` + 入口调用。
 - `src-tauri/src/api/router.rs` — `/mcp` 路由注册。
 - `src/views/SettingsView.vue` — 两个开关 + MCP 接入信息卡（端点 + 注册命令 + 复制）。
@@ -76,21 +77,21 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 ## 依赖
 
 - `rmcp`（MCP Rust SDK）：`server` + `macros` + `transport-streamable-http-server`。
-- `headless_chrome`（CDP 无头浏览器驱动）。
+- Tauri 内置 WebView（`tauri::WebviewWindow` + `eval_with_callback`）——无额外浏览器依赖，见 ADR-038。
 - `htmd`（HTML → Markdown）。
 
 > rmcp 的 `StreamableHttpService` 泛型接受任意 `http_body::Body`，返回 `BoxBody`，可直接嵌入 axum 0.7 handler，无需升级 0.8。
 
 ## 测试要求
 
-1. **单元测试**：工具按开关过滤（00/10/01/11）、工具 schema 字段、搜索结果格式化、URL 归一化、输出截断、HTML→Markdown、浏览器候选列表非空。
+1. **单元测试**：工具按开关过滤（三开关 8 组合核心子集）、工具 schema 字段、搜索结果格式化、URL 归一化、输出截断、HTML→Markdown、media_type 推断、三协议请求体构造、上游响应解析。
 2. **集成**：`/mcp` 鉴权（无/错误 key → 401）、initialize / tools/list / tools/call 往返（手工 JSON-RPC POST）。
 
 ## 完成标准
 
 - [x] `/mcp` Streamable HTTP 端点 + Service Key 鉴权
 - [x] `web_search` / `web_fetch` 工具，按开关动态过滤 `tools/list`
-- [x] WebFetch 本机浏览器渲染（探测 + 回退静态抓取）
+- [x] WebFetch 用 Tauri 内置 WebView 渲染（隐藏窗口 + eval 提取 + 静态回退）
 - [x] 代理侧搜索工具剔除（`mcp_websearch` ON）
 - [x] 删除旧劫持循环（`websearch.rs` + `forward_stream_ir_to_buffer` + `accumulate_ir_events` + 卡片渲染）
 - [x] 设置开关 + DB 迁移 V16 + 前端 UI（两开关 + 接入信息卡）

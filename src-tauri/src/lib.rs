@@ -290,7 +290,8 @@ pub fn run() {
 
             // MCP 工具模块需要全局 AppState 引用（SearchHttp / 开关 / 渲染层），
             // ServerHandler 深处拿不到 axum State，启动时注入一次。
-            crate::mcp::init(app_state.clone());
+            // AppHandle 供 web_fetch 的 WebView 渲染层创建隐藏窗口。
+            crate::mcp::init(app_state.clone(), app.handle().clone());
 
             // Pass Tauri AppHandle to PluginManager so it can emit events to frontend
             app_state.plugins.set_app_handle(app.handle().clone());

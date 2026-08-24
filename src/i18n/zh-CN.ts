@@ -60,7 +60,7 @@ export default {
   'settings.mcp_websearch.off': '已关闭',
 
   'settings.mcp_webfetch.title': 'MCP WebFetch',
-  'settings.mcp_webfetch.desc': '开启后，/mcp 端点提供网页抓取工具（web_fetch），用本机 Chrome/Edge 渲染页面（执行 JS）后提取完整正文',
+  'settings.mcp_webfetch.desc': '开启后，/mcp 端点提供网页抓取工具（web_fetch），用内置 WebView 渲染页面（执行 JS）后提取完整正文',
   'settings.mcp_webfetch.on': '已开启',
   'settings.mcp_webfetch.off': '已关闭',
 

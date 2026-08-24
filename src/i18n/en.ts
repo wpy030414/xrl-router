@@ -60,7 +60,7 @@ export default {
   'settings.mcp_websearch.off': 'Disabled',
 
   'settings.mcp_webfetch.title': 'MCP WebFetch',
-  'settings.mcp_webfetch.desc': 'When enabled, the /mcp endpoint exposes a web fetch tool (web_fetch) that renders pages with the local Chrome/Edge (JavaScript runs) and extracts full content',
+  'settings.mcp_webfetch.desc': 'When enabled, the /mcp endpoint exposes a web fetch tool (web_fetch) that renders pages with the built-in webview (JavaScript runs) and extracts full content',
   'settings.mcp_webfetch.on': 'Enabled',
   'settings.mcp_webfetch.off': 'Disabled',
 
