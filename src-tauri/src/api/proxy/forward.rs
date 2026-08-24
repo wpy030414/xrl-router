@@ -304,8 +304,11 @@ pub(super) async fn forward_stream_ir(
 fn classify_error(err_type: &str, message: &str) -> u16 {
     let haystack = format!("{} {}", err_type, message).to_lowercase();
 
-    // 429: 限流
-    for kw in ["rate_limit", "ratelimit", "too_many", "limit_reached", "rate limit"] {
+    // 429: 限流（覆盖蛇形写法 + 空格分隔的自然语言消息）
+    for kw in [
+        "rate_limit", "ratelimit", "too_many", "too many", "limit_reached",
+        "reached the limit", "rate limit",
+    ] {
         if haystack.contains(kw) {
             return 429;
         }
@@ -318,8 +321,11 @@ fn classify_error(err_type: &str, message: &str) -> u16 {
             return 402;
         }
     }
-    // 401: 认证失败
-    for kw in ["authentication", "invalid_api_key", "unauthorized", "api_key", "apikey"] {
+    // 401: 认证失败（覆盖蛇形写法 + 空格分隔的自然语言消息）
+    for kw in [
+        "authentication", "invalid_api_key", "invalid api key", "unauthorized",
+        "api_key", "api key", "apikey", "incorrect api key",
+    ] {
         if haystack.contains(kw) {
             return 401;
         }

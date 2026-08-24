@@ -6,7 +6,7 @@
 
 ## 迁移架构
 
-所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **15**。
+所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **18**。
 
 ```rust
 // db/schema.rs
@@ -56,8 +56,11 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V13 | providers 新增 sort_order 列 |
 | V14 | service_keys 新增 quota_5h / quota_7d 列（滚动窗口 token 配额，0 = 不设限） |
 | V15 | 统一 provider kind 命名：`openai` → `chat_completions`、`anthropic` → `messages`、`responses` 保持不变 |
+| V16 | WebSearch 劫持开关迁移为 MCP 模式：`websearch_hijack` → `mcp_websearch`（旧键保留兼容） |
+| V17 | MCP 视觉工具设置键：`mcp_vision` / `mcp_vision_provider` / `mcp_vision_model` 默认行 |
+| V18 | 新增 combos / combo_members 表 + 索引（组合别名：多个模型别名按顺序捆绑，路由时依次尝试直到可用） |
 
-## 当前表结构（V15 最终状态）
+## 当前表结构（V18 最终状态）
 
 ### providers
 
@@ -157,6 +160,31 @@ CREATE TABLE routes (
     FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
 );
 ```
+
+### combos / combo_members（V18：组合别名）
+
+```sql
+CREATE TABLE combos (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,          -- 组合别名（暴露给客户端），不得撞 models.display_name
+    enabled INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE combo_members (
+    id TEXT PRIMARY KEY,
+    combo_id TEXT NOT NULL,
+    member_alias TEXT NOT NULL,         -- TEXT 软引用 models.display_name（display_name 非唯一，无法建硬 FK）
+    position INTEGER NOT NULL DEFAULT 0, -- 尝试顺序（0 起）
+    FOREIGN KEY (combo_id) REFERENCES combos(id) ON DELETE CASCADE,
+    UNIQUE(combo_id, member_alias)
+);
+
+CREATE INDEX idx_combo_members_combo ON combo_members(combo_id);
+```
+
+**注意**: `member_alias` 是软引用——删除/禁用模型不影响组合结构，运行时跳过不可解析成员；`save_combo` 用事务 UPSERT 头 + DELETE 重插成员（不能用 INSERT OR REPLACE，会级联删成员）。
 
 ### usage_log
 
@@ -292,9 +320,9 @@ db.execute(
 
 管理 API：`GET /api/data/export`、`POST /api/data/import`（body `{sql}`）、`POST /api/data/reset`（`api/handlers/data.rs`）。
 
-- **`export_sql()`**: 覆盖 providers / models / api_keys / service_keys / plugins / usage_log / settings **七张表**，DROP + CREATE + INSERT，事务包裹，字符串转义单引号。**新增数据表时必须同步表清单**
+- **`export_sql()`**: 覆盖 providers / models / api_keys / service_keys / plugins / usage_log / settings / combos / combo_members **九张表**，DROP + CREATE + INSERT，事务包裹，字符串转义单引号。**新增数据表时必须同步表清单**（combos 在 combo_members 前，FK 顺序）
 - **`import_sql()`**: 直接 `execute_batch`（替换式导入，天然跨版本迁移）
-- **`reset_all_data()`**: 按固定表序 DELETE（usage_log / plugins / service_keys / api_keys / models / providers / settings），保留 schema_version
+- **`reset_all_data()`**: 按固定表序 DELETE（usage_log / plugins / service_keys / api_keys / models / combo_members / combos / providers / settings），保留 schema_version
 
 ## 实现位置
 
@@ -306,6 +334,7 @@ db.execute(
 - `src-tauri/src/db/service_keys.rs` - Service Key CRUD
 - `src-tauri/src/db/usage.rs` - Usage Log 查询 + 请求日志分页
 - `src-tauri/src/db/settings.rs` - Settings CRUD + 导出/导入/重置
+- `src-tauri/src/db/combos.rs` - Combo CRUD（V18）
 
 ## 测试要求
 
@@ -315,10 +344,10 @@ db.execute(
 
 ## 完成标准
 
-- [x] 15 版增量迁移（V1→V15）
+- [x] 18 版增量迁移（V1→V18）
 - [x] 迁移按序执行，跳过已应用的版本
 - [x] UPSERT 使用 `ON CONFLICT DO UPDATE`
 - [x] `usage_log` 自包含快照（无外键）
 - [x] `settings` 表支持运行时配置（failover_enabled / locale / 轮询指针）
-- [x] 数据导出/导入/重置（`export_sql` / `import_sql` / `reset_all_data`）
+- [x] 数据导出/导入/重置（`export_sql` / `import_sql` / `reset_all_data`，表清单含 combos / combo_members）
 - [x] 通过所有单元测试

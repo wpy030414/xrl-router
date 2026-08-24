@@ -64,6 +64,15 @@ export default {
   'settings.mcp_webfetch.on': 'Enabled',
   'settings.mcp_webfetch.off': 'Disabled',
 
+  'settings.mcp_vision.title': 'MCP Vision (image recognition)',
+  'settings.mcp_vision.desc': 'When enabled, the /mcp endpoint exposes a web_vision tool: pass an image URL or local path, and the vision model selected below generates a description (for models without vision)',
+  'settings.mcp_vision.on': 'Enabled',
+  'settings.mcp_vision.off': 'Disabled',
+  'settings.mcp_vision.provider_label': 'Vision provider',
+  'settings.mcp_vision.model_label': 'Vision model',
+  'settings.mcp_vision.provider_empty': 'No provider selected',
+  'settings.mcp_vision.model_empty': 'Select a provider first',
+
   'settings.mcp_info.title': 'MCP Connection Info',
   'settings.mcp_info.desc': 'Register the local MCP endpoint in your client (e.g. Claude Code) so the model can call these tools. Auth uses a Service Key (Bearer)',
   'settings.mcp_info.endpoint': 'Endpoint',

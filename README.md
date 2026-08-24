@@ -135,7 +135,8 @@ pnpm build
 网关内置一个 MCP（Streamable HTTP）端点 `/mcp`，设置页「路由」Tab 两个开关控制：
 
 - **MCP WebSearch**：开启后 `/mcp` 提供 `web_search` 工具（本地 Bing 搜索：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + ck/a 重定向解码，绕过代理直连避免出口 IP 在海外导致结果降级），且代理会剔除请求自带的 `web_search` 工具，防止上游官方搜索生效。关闭则完全不碰工具定义。
-- **MCP WebFetch**：开启后 `/mcp` 提供 `web_fetch` 工具——复用本机 Chrome/Edge headless 渲染页面（执行 JS）后提取完整正文（转 Markdown），探测不到浏览器时回退静态抓取并注明。
+- **MCP WebFetch**：开启后 `/mcp` 提供 `web_fetch` 工具——用内置 WebView 渲染页面（执行 JS，SPA 内容可得）后提取完整正文（转 Markdown），渲染不可用时回退静态抓取并注明。
+- **MCP Vision**：开启后在设置页指定一个「视觉专用模型」（供应商 + 模型），`/mcp` 提供 `web_vision` 工具——传入图片 URL 或本地路径，网关取图后调用视觉模型生成图片描述，无视觉能力的模型也能看图。
 
 在客户端（如 Claude Code）注册后，模型通过标准 MCP tool-calling 直接调用，工具调用过程完全可见。设置页提供可复制的注册命令（鉴权用 Service Key，`Authorization: Bearer`）。契约见 [docs/specs/spec-mcp-tools.md](docs/specs/spec-mcp-tools.md)。
 

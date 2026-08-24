@@ -151,6 +151,31 @@
         </div>
       </section>
 
+      <!-- MCP Vision -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiEyeOutline" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_vision.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_vision.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpVision" @change="toggleMcpVision"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpVision ? t('settings.mcp_vision.on') : t('settings.mcp_vision.off') }}</span>
+        </div>
+        <div v-if="mcpVision" class="section__body vision-selects">
+          <md-outlined-select :value="visionProvider" :label="t('settings.mcp_vision.provider_label')" @change="onVisionProviderChange">
+            <md-select-option value="" disabled>{{ t('settings.mcp_vision.provider_empty') }}</md-select-option>
+            <md-select-option v-for="p in visionProviders" :key="p.id" :value="p.id">{{ p.name }}</md-select-option>
+          </md-outlined-select>
+          <md-outlined-select :value="visionModel" :label="t('settings.mcp_vision.model_label')" @change="onVisionModelChange">
+            <md-select-option value="" disabled>{{ t('settings.mcp_vision.model_empty') }}</md-select-option>
+            <md-select-option v-for="m in visionModels" :key="m.model_id" :value="m.model_id">{{ m.display_name }}</md-select-option>
+          </md-outlined-select>
+        </div>
+      </section>
+
       <!-- MCP 接入信息 -->
       <section class="card section">
         <div class="section__head">
@@ -261,6 +286,8 @@ import '@material/web/tabs/tabs.js';
 import '@material/web/tabs/secondary-tab.js';
 import '@material/web/switch/switch.js';
 import '@material/web/button/outlined-button.js';
+import '@material/web/select/outlined-select.js';
+import '@material/web/select/select-option.js';
 import '@material/web/labs/segmentedbutton/outlined-segmented-button.js';
 import '@material/web/labs/segmentedbuttonset/outlined-segmented-button-set.js';
 import { useRouter } from 'vue-router';
@@ -269,9 +296,10 @@ import {
   mdiCogOutline, mdiDirections, mdiDatabaseOutline, mdiInformationOutline,
   mdiOpenInNew, mdiTranslate, mdiPalette, mdiPower, mdiSearchWeb, mdiWeb,
   mdiSwapHorizontal, mdiDatabaseSyncOutline, mdiDownload, mdiUpload,
-  mdiDeleteForever, mdiLinkVariant, mdiContentCopy,
+  mdiDeleteForever, mdiLinkVariant, mdiContentCopy, mdiEyeOutline,
 } from '@mdi/js';
-import { settingsApi, dataApi, BASE_URL } from '../api';
+import { settingsApi, dataApi, providersApi, modelsApi, BASE_URL } from '../api';
+import type { Provider, Model } from '../api';
 import { getTheme, setTheme, getHue, setHue, type Theme } from '../theme';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { save, open } from '@tauri-apps/plugin-dialog';
@@ -367,6 +395,49 @@ async function toggleMcpWebfetch() {
     await settingsApi.update({ mcp_webfetch: next });
   } catch {
     mcpWebfetch.value = !next;
+  }
+}
+
+// ── MCP Vision（视觉识别）──
+const mcpVision = ref(false);
+const visionProviders = ref<Provider[]>([]);
+const visionModels = ref<Model[]>([]);
+const visionProvider = ref('');
+const visionModel = ref('');
+
+async function toggleMcpVision() {
+  const next = !mcpVision.value;
+  mcpVision.value = next;
+  try {
+    await settingsApi.update({ mcp_vision: next });
+  } catch {
+    mcpVision.value = !next;
+  }
+}
+
+// 切换供应商：先清空模型键再存新供应商（防「新供应商 + 旧模型」不一致中间态）。
+async function onVisionProviderChange(e: Event) {
+  const id = (e.target as HTMLSelectElement).value;
+  visionProvider.value = id;
+  visionModel.value = '';
+  visionModels.value = [];
+  try {
+    await settingsApi.update({ mcp_vision_provider: id, mcp_vision_model: '' });
+    if (id) {
+      visionModels.value = await modelsApi.list(id);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function onVisionModelChange(e: Event) {
+  const id = (e.target as HTMLSelectElement).value;
+  visionModel.value = id;
+  try {
+    await settingsApi.update({ mcp_vision_model: id });
+  } catch {
+    // ignore
   }
 }
 
@@ -469,7 +540,20 @@ onMounted(async () => {
     const s = await settingsApi.get();
     mcpWebsearch.value = !!s.mcp_websearch;
     mcpWebfetch.value = !!s.mcp_webfetch;
+    mcpVision.value = !!s.mcp_vision;
+    visionProvider.value = s.mcp_vision_provider ?? '';
+    visionModel.value = s.mcp_vision_model ?? '';
     failover.value = !!s.failover_enabled;
+  } catch {
+    // ignore
+  }
+
+  // MCP Vision 级联选择数据（供应商一次加载，模型按所选供应商联动）
+  try {
+    visionProviders.value = await providersApi.list();
+    if (visionProvider.value) {
+      visionModels.value = await modelsApi.list(visionProvider.value);
+    }
   } catch {
     // ignore
   }
@@ -540,6 +624,8 @@ md-secondary-tab {
 .danger-btn { color: var(--md-sys-color-error); }
 
 .switch-row { display: flex; align-items: center; gap: 12px; }
+.vision-selects { display: flex; gap: 12px; flex-wrap: wrap; }
+.vision-selects md-outlined-select { width: 260px; }
 .switch-label { color: var(--md-sys-color-on-surface-variant); }
 
 /* MCP 接入信息 */

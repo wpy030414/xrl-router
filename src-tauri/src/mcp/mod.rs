@@ -1,6 +1,6 @@
 //! 本地 MCP 工具服务器：以 Streamable HTTP 端点（`/mcp`）挂在网关单 listener 上。
 //!
-//! 提供两个工具，分别由设置开关控制（`tools/list` 按请求实时过滤，开关切换后
+//! 提供三个工具，分别由设置开关控制（`tools/list` 按请求实时过滤，开关切换后
 //! 客户端重新连接即可看到最新列表）：
 //!
 //! - `web_search`（`mcp_websearch`）：本地 Bing 搜索，复用 `crate::search::bing::search`。
@@ -8,13 +8,16 @@
 //!   防止上游官方搜索生效。
 //! - `web_fetch`（`mcp_webfetch`）：Tauri 内置 WebView 渲染（隐藏窗口执行页面 JS
 //!   后提取正文 Markdown），渲染不可用时回退静态抓取（见 `fetch.rs`）。
+//! - `web_vision`（`mcp_vision`）：用设置页指定的「视觉专用模型」识别图片
+//!   （http(s) URL 或本地路径，网关取图后 base64 上送），返回描述文本（见 `vision.rs`）。
 //!
 //! 鉴权与 `/v1/*` 代理一致：`Authorization: Bearer <service-key>`（argon2 校验）。
-//! 会话模式为无状态（`NeverSessionManager`）——工具只有两个且无服务端推送，
+//! 会话模式为无状态（`NeverSessionManager`）——工具只有三个且无服务端推送，
 //! 不需要 MCP 会话，客户端每次请求独立处理。
 
 mod fetch;
 mod tools;
+mod vision;
 
 use std::sync::{Arc, OnceLock};
 

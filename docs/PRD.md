@@ -137,7 +137,7 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 
 | ID | 功能 | 实现位置 |
 |----|------|---------|
-| F-21 | **本地 MCP 工具服务器（/mcp：web_search + web_fetch）** | `mcp/`（Streamable HTTP 端点，rmcp）+ `search/bing.rs` (SearchHttp: 浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连) + `mcp/fetch.rs`（本机 Chrome/Edge headless 渲染 + htmd 转 Markdown + 静态回退）。开关开启时代理剔除请求自带搜索工具（`api/proxy/stream.rs::strip_search_tools`），取代旧 server-side 劫持循环（已删除） |
+| F-21 | **本地 MCP 工具服务器（/mcp：web_search + web_fetch + web_vision）** | `mcp/`（Streamable HTTP 端点，rmcp）+ `search/bing.rs` (SearchHttp: 浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连) + `mcp/fetch.rs`（Tauri 内置 WebView 渲染 + htmd 转 Markdown + 静态回退）+ `mcp/vision.rs`（视觉模型配置 + 取图 + 三协议上游调用）。开关开启时代理剔除请求自带搜索工具（`api/proxy/stream.rs::strip_search_tools`），取代旧 server-side 劫持循环（已删除） |
 | F-22 | **模型同步（从上游拉取）** | `api/handlers/models.rs` |
 | F-23 | **系统托盘** | `lib.rs` |
 | F-24 | **插件系统（委托供应商）** | `plugin/` |
@@ -174,16 +174,17 @@ LLM 生态的协议碎片化：Anthropic、OpenAI 等 Provider 的 API 格式互
 | F-55 | **Install 页面迁移为 Vue SPA + 多消费端** | `src/views/InstallView.vue`（Claude Code + ChatGPT/Codex）+ `api/router.rs`（ServeDir + SPA fallback）+ `api/handlers/stats.rs`（`/api/ui-settings` 公开端点） |
 | F-56 | **UI 设置后端持久化（theme/hue/locale）** | `api/handlers/stats.rs`（settings 表读写）+ `src/theme.ts` + `src/i18n/index.ts`（同步到后端） |
 | F-57 | **动态 BASE_URL（LAN 浏览器同源访问）** | `src/api.ts`（按 hostname 判断 Tauri vs LAN，LAN 用当前 origin） |
+| F-58 | **组合别名（Combo）** | `api/proxy/route.rs`（resolve_combo 展开）+ `api/proxy/stream.rs`（组合强制回退）+ `api/handlers/combos.rs` + `db/combos.rs` (V18) + `CombosView.vue` + `ComboNewView.vue`。多个模型别名按顺序捆绑，客户端用组合名连接时依次尝试直到可用；普通 400 立即透传；白名单按组合名授予 |
 
 ### 4.4 未实现（计划中）
 
 | ID | 功能 | 计划版本 |
 |----|------|---------|
-| F-58 | 管理 API 认证层（Basic Auth / Session Token） | v0.3 |
-| F-59 | 路由规则引擎（`routes` 表，优先级 + 权重） | v0.3 |
-| F-60 | 指数退避重试（failover 已实现 provider 级切换 + 60s 冷却，退避算法未做） | v0.3 |
-| F-61 | 更多 Provider 内置（DeepSeek、Gemini） | v0.3 |
-| F-62 | 自动更新机制 | v1.0 |
+| F-59 | 管理 API 认证层（Basic Auth / Session Token） | v0.3 |
+| F-60 | 路由规则引擎（`routes` 表，优先级 + 权重） | v0.3 |
+| F-61 | 指数退避重试（failover 已实现 provider 级切换 + 60s 冷却，退避算法未做） | v0.3 |
+| F-62 | 更多 Provider 内置（DeepSeek、Gemini） | v0.3 |
+| F-63 | 自动更新机制 | v1.0 |
 
 ### 4.5 已知断裂（待修复）
 

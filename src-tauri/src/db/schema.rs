@@ -284,4 +284,13 @@ UPDATE providers SET kind = 'messages' WHERE kind = 'anthropic';
 INSERT INTO settings (key, value) SELECT 'mcp_websearch', value FROM settings WHERE key = 'websearch_hijack'
 ON CONFLICT(key) DO NOTHING;
 "#,
+    // V17: MCP 视觉工具 web_vision 的设置键（默认关、未配置）。
+    // 插默认行保证数据导出自包含；行缺失时代码侧也有默认值兜底。
+    r#"
+INSERT INTO settings (key, value) VALUES
+  ('mcp_vision', 'false'),
+  ('mcp_vision_provider', ''),
+  ('mcp_vision_model', '')
+ON CONFLICT(key) DO NOTHING;
+"#,
 ];

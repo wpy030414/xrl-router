@@ -64,6 +64,15 @@ export default {
   'settings.mcp_webfetch.on': '已开启',
   'settings.mcp_webfetch.off': '已关闭',
 
+  'settings.mcp_vision.title': 'MCP Vision（视觉识别）',
+  'settings.mcp_vision.desc': '开启后，/mcp 端点提供 web_vision 工具：传入图片 URL 或本地路径，由下方指定的视觉模型生成图片描述（供无视觉能力的模型使用）',
+  'settings.mcp_vision.on': '已开启',
+  'settings.mcp_vision.off': '已关闭',
+  'settings.mcp_vision.provider_label': '视觉供应商',
+  'settings.mcp_vision.model_label': '视觉模型',
+  'settings.mcp_vision.provider_empty': '未选择供应商',
+  'settings.mcp_vision.model_empty': '先选择供应商',
+
   'settings.mcp_info.title': 'MCP 接入信息',
   'settings.mcp_info.desc': '在客户端（如 Claude Code）注册本地 MCP 端点后，模型即可调用上述工具。鉴权使用 Service Key（Bearer）',
   'settings.mcp_info.endpoint': '端点',

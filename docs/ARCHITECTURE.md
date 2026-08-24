@@ -159,13 +159,16 @@ main.rs
 [4] proxy_stream (stream.rs) ──── 流式引擎核心
   │
   ▼
-[4a] resolve_route / resolve_route_candidates (route.rs)
+[4a] resolve_combo / resolve_route / resolve_route_candidates (route.rs)
+  │  模型名是 enabled 组合 → resolve_combo: 按成员 position 逐个展开候选
+  │    (跨成员按 (provider_id, real_model_id) 去重保序; 成员不可解析跳过)
   │  failover_enabled=false → 仅主 provider (resolve_route, 历史行为)
   │  failover_enabled=true  → 全部候选 (同 display_name, 按 sort_order 排序,
   │                           按 provider_id 去重, 跳过离线插件 provider)
   │  失败 → 400
   │  成功 → ResolvedRoute { upstream_url, provider_kind, real_model_id, context_window, ... }
   │  委托供应商 → 从 PluginManager 取实时 base_url
+  │  (组合命中后强制 failover 语义, 见 4e)
   │
   ▼
 [4b] 搜索工具剔除（MCP 模式）──── mcp_websearch 开关
@@ -191,6 +194,7 @@ main.rs
   ▼
 [4e] failover 双层重试循环 (stream.rs + key_rotation.rs + failover.rs)
   │  外层: 遍历 provider 候选 (冷却中的直接跳过)
+  │  failover = 全局开关 || 组合请求 (组合成员间回退强制生效)
   │  内层: pick_key_for() → round-robin, 跳过 Red/Yellow
   │  http::build_http_client() → 自动继承系统代理
   │  发送请求 → 自适应头超时 header_timeout_for() (300/480/600s 按估算输入 token)
@@ -200,6 +204,7 @@ main.rs
   │     无后续候选: 网络错误 → 502, 头超时 → 504, 5xx → 透传上游错误
   │  2xx → mark_provider_ok(清冷却) + 记 winner → break
   │  无 winner: key 4xx 耗尽透传最后一次上游失败响应 / 无可用 key → 503
+  │  组合特殊: 普通 400 (非配额) → 立即透传, 不试下一成员 (请求级错误)
   │
   ▼
 [4f] 流式转发 (forward.rs 统一 IR 路径)
@@ -245,7 +250,7 @@ src/
 │    ProviderNewView.vue  供应商创建/编辑 (支持插件模式)
 │    KeysView.vue         Service Key 管理 (表格 + 权限对话框 + 分发链接)
 │    StatsView.vue        用量统计 (数据磁贴 + Chart.js 折线图 + 请求日志分页表)
-│    SettingsView.vue     设置 3 Tab: 通用(语言/主题/开机启动) + 路由(MCP WebSearch/WebFetch/接入信息/failover) + 数据(导出/导入/重置)
+│    SettingsView.vue     设置 3 Tab: 通用(语言/主题/开机启动) + 路由(MCP WebSearch/WebFetch/Vision/接入信息/failover) + 数据(导出/导入/重置)
 │    InstallView.vue      局域网分发页: 消费端选择(Claude Code/ChatGPT) + 模型下拉 + 命令生成 (LAN 浏览器可访问)
 │
 ├── components/
@@ -271,6 +276,8 @@ src/
 │                                                   │
 │  providers        供应商注册表 (含 sort_order)     │
 │  models           模型定义 (含别名 display_name)   │
+│  combos           组合别名 (V18: 多个别名捆绑)     │
+│  combo_members    组合成员 (member_alias 软引用)   │
 │  api_keys         Provider Key (AES-256-GCM 加密) │
 │  service_keys     客户端 Key (Argon2 哈希, 含 quota)│
 │  usage_log        请求日志 (自包含快照, 无 FK)      │
@@ -360,7 +367,8 @@ src/
 | Responses input_tokens 增量口径 | 减去 `cached_tokens`，与 Chat Completions `prompt_tokens - cached_tokens` 一致 |
 | 上下文超限预警而非硬拒绝 | 估算口径偏保守，硬拒绝会阻断客户端 auto-compact（死锁） |
 | WebSearch/WebFetch 走本地 MCP | 旧 server-side 劫持循环（代理跑 tool loop + 缓冲中间轮）体验差且复杂；改为 `/mcp` Streamable HTTP 端点让客户端注册标准 MCP 工具，模型直接调用，代理仅在开关开启时剔除请求自带搜索工具防上游官方搜索生效（详见 `docs/DECISIONS.md` 与 `docs/specs/spec-mcp-tools.md`） |
-| WebFetch 复用本机浏览器 | 不自动下载 Chrome；探测本机 Chrome/Edge（Windows 自带 Edge），headless 渲染（JS 执行）后提取正文；探测不到回退静态抓取并注明（详见 `docs/DECISIONS.md`） |
+| WebFetch 用内置 WebView 渲染 | 不自动下载浏览器、不探测本机 Chrome/Edge；懒创建隐藏 WebView 窗口（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）渲染页面（JS 执行）后提取正文；渲染失败回退静态抓取并注明（详见 `docs/DECISIONS.md`） |
+| web_vision 视觉识别 | 设置页指定「视觉专用模型」（provider + model）；`/mcp` 提供 `web_vision`：网关取图（http(s)/本地路径，8MiB 上限）→ base64 → 按 ProviderKind 构造非流式请求调上游，返回描述文本；不计配额（详见 `docs/DECISIONS.md` ADR-039） |
 | failover 冷却纯内存 | 与密钥健康同一哲学，不持久化不广播；开关默认关闭，开启才改变请求行为 |
 | 数据导出用 SQL dump | SQLite 原生语句保真度高，导入即执行，天然支持跨版本迁移 |
 
@@ -391,7 +399,6 @@ xrl-router
   │
   │  MCP 工具服务器 (/mcp 端点)
   ├── rmcp 3           MCP Rust SDK (Streamable HTTP server, 无会话模式)
-  ├── headless_chrome 1  CDP 无头浏览器驱动 (WebFetch 渲染本机 Chrome/Edge)
   ├── htmd 0.2         HTML → Markdown (渲染后正文转 Markdown 喂模型)
   │
   │  序列化 / 工具
