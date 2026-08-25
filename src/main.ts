@@ -6,6 +6,15 @@ import { routes } from './router.js';
 import { initTheme, initSystemThemeListener } from './theme';
 import { initI18n } from './i18n';
 
+// Material Web Components — 入口必需组件（ConnectionStatus / PluginRegisterDialog 使用）
+// 必须在 mount 前同步加载：若延迟到挂载后，未定义的 custom element 会被浏览器
+// 当普通元素渲染、直接显示 light DOM 内容（如 PluginRegisterDialog 的标题/按钮），
+// 造成「发现空插件」的假弹窗。
+import '@material/web/button/filled-button.js';
+import '@material/web/button/text-button.js';
+import '@material/web/icon/icon.js';
+import '@material/web/dialog/dialog.js';
+
 // ── 第一步：同步初始化（只读 localStorage + 设置 CSS，微秒级）──
 // 这两步必须在挂载前完成，确保首帧就有正确的主题色和语言。
 initTheme();
@@ -44,15 +53,6 @@ if (splash) {
   splash.classList.add('fade-out');
   splash.addEventListener('transitionend', () => splash.remove());
 }
-
-// Material Web Components — 延后到挂载后异步加载。
-// 它们是注册 custom element 的副作用 import，不影响 Vue 渲染；
-// 组件在 JS 加载后自动 upgrade，用户无感知。
-// （入口必需组件 ConnectionStatus / PluginRegisterDialog 使用）
-import('@material/web/button/filled-button.js');
-import('@material/web/button/text-button.js');
-import('@material/web/icon/icon.js');
-import('@material/web/dialog/dialog.js');
 
 // Claude FM 初始化：连接后端引擎，获取初始状态并监听事件。
 // 移到挂载后：FM 状态不影响首屏渲染，不需要阻塞 mount。
