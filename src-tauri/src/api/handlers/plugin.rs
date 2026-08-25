@@ -3,24 +3,25 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Json, Path, State};
+use axum::extract::{ConnectInfo, Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
+use tracing::{info, warn, error};
 
 use crate::gateway::server::AppState;
 use crate::plugin::PluginRegisterMsg;
 
 pub(crate) async fn plugin_ws_handler(
     ws: WebSocketUpgrade,
+    ConnectInfo(client_addr): ConnectInfo<std::net::SocketAddr>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_plugin_ws(socket, state))
+    info!("Plugin WS: incoming connection from {}", client_addr);
+    ws.on_upgrade(move |socket| handle_plugin_ws(socket, state, client_addr))
 }
 
-async fn handle_plugin_ws(mut socket: WebSocket, state: Arc<AppState>) {
-    use tracing::{info, warn, error};
-
+async fn handle_plugin_ws(mut socket: WebSocket, state: Arc<AppState>, client_addr: std::net::SocketAddr) {
     // First message must be "register"
     let plugin_id = match socket.recv().await {
         Some(Ok(Message::Text(text))) => {
@@ -38,10 +39,20 @@ async fn handle_plugin_ws(mut socket: WebSocket, state: Arc<AppState>) {
             let reg_msg: PluginRegisterMsg = match serde_json::from_value(msg.clone()) {
                 Ok(m) => m,
                 Err(e) => {
-                    warn!("Plugin WS: invalid register message: {}", e);
+                    warn!("Plugin WS: invalid register message from {}: {}", client_addr, e);
                     return;
                 }
             };
+
+            // 空 plugin_id 视为无效注册，拒绝但不弹窗（截图里「发现插件：」冒号后为空即此情况）
+            if reg_msg.plugin_id.trim().is_empty() {
+                warn!("Plugin WS: rejected register with empty plugin_id from {}", client_addr);
+                let _ = socket.send(Message::Text(
+                    serde_json::json!({"type": "error", "reason": "empty plugin_id"}).to_string().into()
+                )).await;
+                return;
+            }
+
             let keys: Vec<String> = serde_json::from_value(
                 msg.get("keys").cloned().unwrap_or(serde_json::json!([]))
             ).unwrap_or_default();
