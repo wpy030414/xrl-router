@@ -27,7 +27,7 @@ use crate::gateway::server::AppState;
 use super::auth::ServiceKeyInfo;
 use super::forward::ForwardOutcome;
 use super::ir;
-use super::ir::types::{IrRequest, IrToolChoice};
+use super::ir::types::{IrContentBlock, IrRequest, IrSystemBlock, IrSystemContent, IrToolChoice};
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::{resolve_route, ResolvedRoute};
 
@@ -113,6 +113,20 @@ pub async fn proxy_stream(
     // 开关关闭则完全不碰工具定义。
     if state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed) {
         strip_search_tools(&mut ctx.ir_request);
+    }
+
+    // MCP WebFetch 模式：开关开启时剔除请求自带的网页抓取类工具（客户端内置
+    // `WebFetch` / 上游 server-side `web_fetch_*`），防止上游官方抓取生效——
+    // 模型需要抓取网页时走客户端注册的本地 MCP（/mcp 的 web_fetch 工具）。
+    // 开关关闭则完全不碰工具定义。
+    if state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed) {
+        strip_fetch_tools(&mut ctx.ir_request);
+    }
+
+    // MCP Vision 模式：开关开启且请求含图片时，自动注入系统提示，
+    // 强制模型使用 web_vision 工具识图（模型默认不知道自己看不见图）。
+    if state.mcp_vision.load(std::sync::atomic::Ordering::Relaxed) {
+        inject_vision_hint(&mut ctx.ir_request);
     }
 
     let trace_id = &ctx.trace_id;
@@ -632,6 +646,64 @@ fn is_search_tool_name(name: &str) -> bool {
     name.starts_with("web_search") || name.eq_ignore_ascii_case("WebSearch")
 }
 
+/// 判断工具名是否属于网页抓取类（代理应剔除的范畴）。
+///
+/// 覆盖两种来源：
+/// - Anthropic 服务端内置的 `web_fetch_*`（IR 层已归一化为 `web_fetch`）
+/// - Claude Code 客户端的 `WebFetch`（PascalCase）
+fn is_fetch_tool_name(name: &str) -> bool {
+    name.starts_with("web_fetch") || name.eq_ignore_ascii_case("WebFetch")
+}
+
+/// MCP Vision 提示注入 + 图片剥离。
+///
+/// 检测请求消息中是否包含图片内容块；若包含，则：
+/// 1. 在系统提示末尾追加指令，强制模型使用 `web_vision` 工具识图；
+/// 2. **剥掉所有图片内容块**，避免不支持视觉的上游模型收到图片后
+///    返回空响应或报错（图片由 web_vision 工具走独立视觉模型处理）。
+fn inject_vision_hint(ir_request: &mut IrRequest) {
+    // 剥掉图片并检测是否有图片
+    let mut has_image = false;
+    for msg in &mut ir_request.messages {
+        let before = msg.content.len();
+        msg.content.retain(|block| !matches!(block, IrContentBlock::Image { .. }));
+        if msg.content.len() < before {
+            has_image = true;
+        }
+        // 若剥光后内容为空，补一个占位文本以免上游拒绝空消息
+        if msg.content.is_empty() {
+            msg.content.push(IrContentBlock::Text {
+                text: "[Image content omitted — analyze it via the web_vision tool]".to_string(),
+                cache_control: None,
+            });
+        }
+    }
+    if !has_image {
+        return;
+    }
+
+    info!("mcp: stripped image blocks from request, injected web_vision hint");
+
+    const HINT: &str = "This conversation contains images. You MUST use the `web_vision` tool \
+                        to analyze them before responding. You cannot see images directly.";
+
+    match &mut ir_request.system {
+        Some(IrSystemContent::Text(ref mut s)) => {
+            s.push_str("\n\n");
+            s.push_str(HINT);
+        }
+        Some(IrSystemContent::Blocks(ref mut blocks)) => {
+            blocks.push(IrSystemBlock {
+                text: HINT.to_string(),
+                cache_control: None,
+            });
+        }
+        None => {
+            ir_request.system = Some(IrSystemContent::Text(HINT.to_string()));
+        }
+    }
+}
+
 /// MCP WebSearch 模式下的工具剔除。
 ///
 /// 移除请求自带的全部搜索类工具（客户端内置 `WebSearch` / 上游 server-side
@@ -660,6 +732,37 @@ pub(super) fn strip_search_tools(ir_request: &mut IrRequest) {
 
     if removed > 0 {
         info!(removed, "mcp: stripped search tools from proxied request");
+    }
+}
+
+/// MCP WebFetch 模式下的工具剔除。
+///
+/// 移除请求自带的全部网页抓取类工具（客户端内置 `WebFetch` / 上游 server-side
+/// `web_fetch_*`），避免上游官方抓取生效——模型需要抓取网页时应走客户端注册的
+/// 本地 MCP（`/mcp` 的 `web_fetch` 工具）。非抓取类工具不受影响。
+///
+/// `tool_choice` 若强制指向被移除的抓取工具，改写为 `Auto`
+/// （代理不再注入自己的工具，无可改写的目标名）。
+pub(super) fn strip_fetch_tools(ir_request: &mut IrRequest) {
+    let before = ir_request.tools.len();
+    ir_request.tools.retain(|t| {
+        let dominated = is_fetch_tool_name(&t.name);
+        if dominated {
+            info!(tool = %t.name, "mcp: removing fetch tool from proxied request");
+        }
+        !dominated
+    });
+    let removed = before - ir_request.tools.len();
+
+    if let Some(IrToolChoice::Tool { name }) = &ir_request.tool_choice {
+        if is_fetch_tool_name(name) {
+            info!(from = %name, "mcp: rewriting tool_choice target to auto");
+            ir_request.tool_choice = Some(IrToolChoice::Auto);
+        }
+    }
+
+    if removed > 0 {
+        info!(removed, "mcp: stripped fetch tools from proxied request");
     }
 }
 

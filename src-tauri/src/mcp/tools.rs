@@ -132,10 +132,12 @@ fn web_fetch_tool() -> Tool {
 fn web_vision_tool() -> Tool {
     Tool::new(
         "web_vision",
-        "Analyze an image with the configured vision model and return its \
-         description as text. Use this when the conversation model cannot see \
-         images directly. The image can be an http(s) URL or a local absolute \
-         path / file:// URL.",
+        "IMPORTANT: The current conversation model CANNOT see images directly. \
+         You MUST call this tool for ANY image in the conversation — including \
+         http(s) URLs, file:// paths, or any image attachment — before you can \
+         discuss its content. Without calling this tool, images are completely \
+         invisible to you. Do NOT attempt to describe or analyze images without \
+         using this tool first.",
         Arc::new(
             json!({
                 "type": "object",
