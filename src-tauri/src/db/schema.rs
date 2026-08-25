@@ -318,4 +318,11 @@ CREATE TABLE IF NOT EXISTS combo_members (
 
 CREATE INDEX IF NOT EXISTS idx_combo_members_combo ON combo_members(combo_id);
 "#,
+    // V19: MCP 桌面通知工具 notify 的设置键（默认关）。
+    // 插默认行保证数据导出自包含；行缺失时代码侧也有默认值兜底。
+    r#"
+INSERT INTO settings (key, value) VALUES
+  ('mcp_notify', 'false')
+ON CONFLICT(key) DO NOTHING;
+"#,
 ];

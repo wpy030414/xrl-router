@@ -32,6 +32,8 @@ pub struct AppState {
     /// MCP Vision 开关：开启 = /mcp 提供 web_vision 工具（配置的视觉模型识别图片）。
     /// 视觉模型本身（provider/model）不缓存在内存——管理页可删改，调用时 DB 实时解析。
     pub mcp_vision: Arc<std::sync::atomic::AtomicBool>,
+    /// MCP Notify 开关：开启 = /mcp 提供 notify 工具（发送系统桌面通知）。
+    pub mcp_notify: Arc<std::sync::atomic::AtomicBool>,
     /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个（运行时可改）。
     pub failover_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// provider 级冷却表：provider_id → 冷却到期 unix 秒（纯内存，设计选择同密钥健康）。
@@ -85,6 +87,14 @@ impl AppState {
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ));
+        let mcp_notify = Arc::new(std::sync::atomic::AtomicBool::new(
+            database
+                .get_setting("mcp_notify")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false),
+        ));
         let failover_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
             database
                 .get_setting("failover_enabled")
@@ -119,6 +129,7 @@ impl AppState {
             mcp_websearch,
             mcp_webfetch,
             mcp_vision,
+            mcp_notify,
             failover_enabled,
             provider_cooldowns,
             plugins,

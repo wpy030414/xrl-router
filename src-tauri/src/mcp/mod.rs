@@ -16,6 +16,7 @@
 //! 不需要 MCP 会话，客户端每次请求独立处理。
 
 mod fetch;
+mod notify;
 mod tools;
 mod vision;
 
@@ -38,7 +39,8 @@ type McpService = StreamableHttpService<tools::XrlMcpTools, NeverSessionManager>
 /// AppHandle 供 web_fetch 的 WebView 渲染层创建隐藏窗口）。
 pub(crate) fn init(state: Arc<AppState>, app: AppHandle) {
     tools::init(state);
-    fetch::init(app);
+    fetch::init(app.clone());
+    notify::init(app);
 }
 
 /// 全局 MCP 服务单例（懒加载）。`NeverSessionManager` 无状态、`XrlMcpTools` 无字段，

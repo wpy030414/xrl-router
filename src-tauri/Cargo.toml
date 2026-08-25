@@ -62,6 +62,7 @@ url = "2"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-fs = "2.5.1"
+tauri-plugin-notification = "2"
 
 # Audio playback
 rodio = "0.20"

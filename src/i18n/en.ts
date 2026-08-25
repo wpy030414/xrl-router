@@ -55,18 +55,23 @@ export default {
   'settings.autostart.on': 'Enabled',
   'settings.autostart.off': 'Disabled',
 
-  'settings.mcp_websearch.title': 'MCP WebSearch',
-  'settings.mcp_websearch.desc': 'When enabled, the /mcp endpoint exposes a web_search tool (local Bing web search), and the proxy strips native web_search tools from requests to force the model to use the local MCP',
+  'settings.mcp_notify.title': 'Progress Notifications',
+  'settings.mcp_notify.desc': 'When enabled, the model proactively alerts you when a task completes or a decision is needed',
+  'settings.mcp_notify.on': 'Enabled',
+  'settings.mcp_notify.off': 'Disabled',
+
+  'settings.mcp_websearch.title': 'Web Search',
+  'settings.mcp_websearch.desc': 'When enabled, the model can search the web for free via the gateway-wrapped Bing',
   'settings.mcp_websearch.on': 'Enabled',
   'settings.mcp_websearch.off': 'Disabled',
 
-  'settings.mcp_webfetch.title': 'MCP WebFetch',
-  'settings.mcp_webfetch.desc': 'When enabled, the /mcp endpoint exposes a web_fetch tool (renders pages with the built-in WebView to extract full content), and the proxy strips native web_fetch tools from requests to force the model to use the local MCP',
+  'settings.mcp_webfetch.title': 'Web Page Crawling',
+  'settings.mcp_webfetch.desc': 'When enabled, the model extracts richer information from dynamic web pages via the gateway',
   'settings.mcp_webfetch.on': 'Enabled',
   'settings.mcp_webfetch.off': 'Disabled',
 
-  'settings.mcp_vision.title': 'MCP WebVision',
-  'settings.mcp_vision.desc': 'When enabled, the /mcp endpoint exposes a web_vision tool (image recognition via the vision model selected below), and the proxy strips image content from requests to force the model to use the local MCP',
+  'settings.mcp_vision.title': 'Vision Support',
+  'settings.mcp_vision.desc': 'When enabled, the model uses a dedicated vision model to analyze images',
   'settings.mcp_vision.on': 'Enabled',
   'settings.mcp_vision.off': 'Disabled',
   'settings.mcp_vision.provider_label': 'Provider',
@@ -75,7 +80,7 @@ export default {
   'settings.mcp_vision.model_empty': 'Select a provider first',
 
   'settings.mcp_info.title': 'MCP Connection Info',
-  'settings.mcp_info.desc': 'Register the local MCP endpoint in your client so the model can call these tools. Auth uses a Service Key (Bearer)',
+  'settings.mcp_info.desc': 'Register the local MCP endpoint in your client so the model can call the tools above. Auth uses a Service Key (Bearer)',
   'settings.mcp_info.endpoint': 'Endpoint',
   'settings.mcp_info.register': 'Register command for Claude Code',
 

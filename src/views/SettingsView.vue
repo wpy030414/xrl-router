@@ -139,6 +139,21 @@
         </div>
       </section>
 
+      <!-- MCP Notify -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiBellOutline" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_notify.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_notify.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpNotify" @change="toggleMcpNotify"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpNotify ? t('settings.mcp_notify.on') : t('settings.mcp_notify.off') }}</span>
+        </div>
+      </section>
+
       <!-- MCP WebVision -->
       <section class="card section">
         <div class="section__head">
@@ -293,6 +308,7 @@ import {
   mdiOpenInNew, mdiTranslate, mdiPalette, mdiPower, mdiSearchWeb, mdiWeb,
   mdiSwapHorizontal, mdiDatabaseSyncOutline, mdiDownload, mdiUpload,
   mdiDeleteForever, mdiLinkVariant, mdiContentCopy, mdiEyeOutline,
+  mdiBellOutline,
 } from '@mdi/js';
 import { settingsApi, dataApi, providersApi, modelsApi, BASE_URL } from '../api';
 import type { Provider, Model } from '../api';
@@ -391,6 +407,19 @@ async function toggleMcpWebfetch() {
     await settingsApi.update({ mcp_webfetch: next });
   } catch {
     mcpWebfetch.value = !next;
+  }
+}
+
+// ── MCP Notify（桌面通知）──
+const mcpNotify = ref(false);
+
+async function toggleMcpNotify() {
+  const next = !mcpNotify.value;
+  mcpNotify.value = next;
+  try {
+    await settingsApi.update({ mcp_notify: next });
+  } catch {
+    mcpNotify.value = !next;
   }
 }
 
@@ -536,6 +565,7 @@ onMounted(async () => {
     const s = await settingsApi.get();
     mcpWebsearch.value = !!s.mcp_websearch;
     mcpWebfetch.value = !!s.mcp_webfetch;
+    mcpNotify.value = !!s.mcp_notify;
     mcpVision.value = !!s.mcp_vision;
     visionProvider.value = s.mcp_vision_provider ?? '';
     visionModel.value = s.mcp_vision_model ?? '';
@@ -627,7 +657,7 @@ md-secondary-tab {
 /* MCP 接入信息 */
 .mcp-info { flex-direction: column; align-items: stretch; }
 .mcp-info__label { color: var(--md-sys-color-on-surface-variant); margin-top: 4px; }
-.mcp-info .key-box { word-break: break-all; user-select: text; }
+.mcp-info .key-box { word-break: break-all; -webkit-user-select: text; user-select: text; }
 
 .key-box {
   background: var(--md-sys-color-surface-container-high);

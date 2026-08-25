@@ -1,5 +1,5 @@
 //! MCP 工具定义与执行：`web_search`（本地 Bing）+ `web_fetch`（Tauri WebView 渲染）
-//! + `web_vision`（视觉模型识图）。
+//! + `web_vision`（视觉模型识图）+ `notify`（系统桌面通知）。
 //!
 //! 手写 `ServerHandler`（不用 `#[tool_router]` 宏）——工具只有三个，且 `tools/list`
 //! 必须按运行时开关（`mcp_websearch` / `mcp_webfetch` / `mcp_vision`）动态过滤，
@@ -54,15 +54,16 @@ impl ServerHandler for XrlMcpTools {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         // 开关实时读取：客户端（重新）连接时即拿到最新工具列表。
-        let (ws, wf, v) = match app_state() {
+        let (ws, wf, v, n) = match app_state() {
             Some(s) => (
                 s.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
                 s.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
                 s.mcp_vision.load(std::sync::atomic::Ordering::Relaxed),
+                s.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
             ),
-            None => (false, false, false),
+            None => (false, false, false, false),
         };
-        Ok(ListToolsResult::with_all_items(filter_tools(ws, wf, v)))
+        Ok(ListToolsResult::with_all_items(filter_tools(ws, wf, v, n)))
     }
 
     async fn call_tool(
@@ -75,6 +76,7 @@ impl ServerHandler for XrlMcpTools {
             "web_search" => Ok(run_web_search(&args).await),
             "web_fetch" => Ok(run_web_fetch(&args).await),
             "web_vision" => Ok(run_web_vision(&args).await),
+            "notify" => Ok(run_notify(&args).await),
             other => Err(ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("unknown tool: {other}"),
@@ -85,13 +87,16 @@ impl ServerHandler for XrlMcpTools {
 }
 
 /// 按开关组合过滤工具列表（纯函数，便于单测）。
-fn filter_tools(websearch: bool, webfetch: bool, vision: bool) -> Vec<Tool> {
-    let mut tools = Vec::with_capacity(3);
+fn filter_tools(websearch: bool, webfetch: bool, vision: bool, notify: bool) -> Vec<Tool> {
+    let mut tools = Vec::with_capacity(4);
     if websearch {
         tools.push(web_search_tool());
     }
     if webfetch {
         tools.push(web_fetch_tool());
+    }
+    if notify {
+        tools.push(notify_tool());
     }
     if vision {
         tools.push(web_vision_tool());
@@ -126,6 +131,46 @@ fn web_fetch_tool() -> Tool {
         )),
     )
     .with_title("Web Fetch")
+    .with_annotations(ToolAnnotations::new().read_only(true))
+}
+
+fn notify_tool() -> Tool {
+    Tool::new(
+        "notify",
+        "Send a desktop notification to the user. Use this to alert the user \
+         when a long-running task is complete, when an important event occurs, \
+         or when the user needs to be notified about something.",
+        Arc::new(
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The notification title (required)"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "The notification body text (optional)"
+                    },
+                    "sound": {
+                        "type": "string",
+                        "description": "Notification sound (optional, defaults to \"default\"). \
+                            Use \"default\" for the system default notification sound. \
+                            Or specify a platform-specific sound name: \
+                            macOS: \"Glass\", \"Basso\", \"Frog\", \"Hero\", \"Submarine\", \"Pop\", etc. \
+                            Linux: freedesktop sound names like \"message-new-email\", \"bell\". \
+                            Windows: toast sound names."
+                    }
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )
+    .with_title("Notify")
     .with_annotations(ToolAnnotations::new().read_only(true))
 }
 
@@ -251,6 +296,53 @@ async fn run_web_fetch(args: &JsonObject) -> CallToolResponse {
     }
 }
 
+/// notify 执行：发送系统桌面通知（宽松参数：title 必填，body / sound 可选）。
+async fn run_notify(args: &JsonObject) -> CallToolResponse {
+    let title = match args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(t) => t.to_string(),
+        None => {
+            return CallToolResult::error(vec![ContentBlock::text(
+                "Error: missing required argument `title`".to_string(),
+            )])
+            .into()
+        }
+    };
+    let body = args
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    // sound 宽松解析：缺失 / null / 空字符串 → 使用 "default"；否则原样透传给底层
+    // （"default" 或平台特定声音名，由 notify-rust 在各平台处理）。
+    let sound = args
+        .get("sound")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    info!(title = %title, sound = ?sound, "mcp: notify executing");
+    let params = super::notify::NotifyParams {
+        title: &title,
+        body: body.map(|s| s.as_ref()),
+        sound: sound.map(|s| s.as_ref()),
+    };
+    match super::notify::send_notification(&params) {
+        Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]).into(),
+        Err(e) => {
+            tracing::warn!(title = %title, error = %e, "mcp: notify failed");
+            CallToolResult::error(vec![ContentBlock::text(format!(
+                "Failed to send notification: {e}"
+            ))])
+            .into()
+        }
+    }
+}
+
 fn tool_unavailable() -> CallToolResponse {
     CallToolResult::error(vec![ContentBlock::text(
         "Tool unavailable: gateway state not initialized.".to_string(),
@@ -345,26 +437,30 @@ mod tests {
 
     #[test]
     fn test_filter_tools_by_switches() {
-        assert_eq!(filter_tools(false, false, false).len(), 0);
-        let ws = filter_tools(true, false, false);
+        assert_eq!(filter_tools(false, false, false, false).len(), 0);
+        let ws = filter_tools(true, false, false, false);
         assert_eq!(ws.len(), 1);
         assert_eq!(ws[0].name.as_ref(), "web_search");
-        let wf = filter_tools(false, true, false);
+        let wf = filter_tools(false, true, false, false);
         assert_eq!(wf.len(), 1);
         assert_eq!(wf[0].name.as_ref(), "web_fetch");
-        let v = filter_tools(false, false, true);
+        let v = filter_tools(false, false, true, false);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name.as_ref(), "web_vision");
-        let all = filter_tools(true, true, true);
-        assert_eq!(all.len(), 3);
+        let n = filter_tools(false, false, false, true);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].name.as_ref(), "notify");
+        let all = filter_tools(true, true, true, true);
+        assert_eq!(all.len(), 4);
         assert_eq!(all[0].name.as_ref(), "web_search");
         assert_eq!(all[1].name.as_ref(), "web_fetch");
-        assert_eq!(all[2].name.as_ref(), "web_vision");
+        assert_eq!(all[2].name.as_ref(), "notify");
+        assert_eq!(all[3].name.as_ref(), "web_vision");
     }
 
     #[test]
     fn test_tool_schemas_required_fields() {
-        for t in [web_search_tool(), web_fetch_tool()] {
+        for t in [web_search_tool(), web_fetch_tool(), notify_tool()] {
             let schema = &t.input_schema;
             assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
             let required = schema["required"].as_array().unwrap();

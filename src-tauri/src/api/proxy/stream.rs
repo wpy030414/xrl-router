@@ -123,6 +123,15 @@ pub async fn proxy_stream(
         strip_fetch_tools(&mut ctx.ir_request);
     }
 
+    // MCP Notify 模式：开关开启时剔除请求自带的原生通知工具（如 Claude Code 的
+    // `PushNotification`、OpenAI 的 `send_notification`），并注入系统提示告知模型
+    // 必须使用本地 MCP 的 `notify` 工具（跨平台、支持声音等宽松参数）。
+    // 同时告知模型在任务完成、需要用户决策、响应完毕等场景主动调用通知。
+    if state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed) {
+        strip_notify_tools(&mut ctx.ir_request);
+        inject_notify_hint(&mut ctx.ir_request);
+    }
+
     // MCP Vision 模式：开关开启且请求含图片时，自动注入系统提示，
     // 强制模型使用 web_vision 工具识图（模型默认不知道自己看不见图）。
     if state.mcp_vision.load(std::sync::atomic::Ordering::Relaxed) {
@@ -655,6 +664,28 @@ fn is_fetch_tool_name(name: &str) -> bool {
     name.starts_with("web_fetch") || name.eq_ignore_ascii_case("WebFetch")
 }
 
+/// 判断工具名是否属于"客户端/上游原生通知工具"（代理应剔除的范畴）。
+///
+/// 覆盖多种来源：
+/// - Claude Code 内置的 `PushNotification`
+/// - OpenAI Codex / ChatGPT 内置的 `send_notification`
+/// - 通用名 `notify` / `notification`（上游 server-side 或客户端自定义）
+/// - 以 `notify_` 开头或 `_notification` 结尾的派生名
+///
+/// **显式排除所有 MCP 工具**（`mcp__` 前缀）：本网关的本地 MCP 通知工具
+/// （`mcp__xrl-tools__notify`）必须保留，不能被误剔除。
+fn is_notify_tool_name(name: &str) -> bool {
+    if name.starts_with("mcp__") {
+        return false;
+    }
+    name.eq_ignore_ascii_case("PushNotification")
+        || name.eq_ignore_ascii_case("send_notification")
+        || name.eq_ignore_ascii_case("notify")
+        || name.eq_ignore_ascii_case("notification")
+        || name.starts_with("notify_")
+        || name.ends_with("_notification")
+}
+
 /// MCP Vision 提示注入 + 图片剥离。
 ///
 /// 检测请求消息中是否包含图片内容块；若包含，则：
@@ -764,6 +795,98 @@ pub(super) fn strip_fetch_tools(ir_request: &mut IrRequest) {
     if removed > 0 {
         info!(removed, "mcp: stripped fetch tools from proxied request");
     }
+}
+
+/// MCP Notify 模式下的原生通知工具剔除。
+///
+/// 移除请求自带的全部"客户端/上游原生"通知工具（如 Claude Code 的
+/// `PushNotification`、OpenAI 的 `send_notification` 等），避免模型走
+/// 原生通道——原生通知受限于客户端实现（无声音、参数少、部分平台静默），
+/// 应强制走本地 MCP 的 `notify` 工具（经 `notify-rust` 跨平台实现，
+/// 支持 `sound` 等宽松参数）。
+///
+/// **保留所有 MCP 工具**（`mcp__` 前缀）：本地 MCP 的 `mcp__xrl-tools__notify`
+/// 是模型唯一可用的通知通道，绝不能被误剔除。
+///
+/// `tool_choice` 若强制指向被移除的通知工具，改写为 `Auto`。
+pub(super) fn strip_notify_tools(ir_request: &mut IrRequest) {
+    let before = ir_request.tools.len();
+    ir_request.tools.retain(|t| {
+        let dominated = is_notify_tool_name(&t.name);
+        if dominated {
+            info!(tool = %t.name, "mcp: removing native notify tool from proxied request");
+        }
+        !dominated
+    });
+    let removed = before - ir_request.tools.len();
+
+    if let Some(IrToolChoice::Tool { name }) = &ir_request.tool_choice {
+        if is_notify_tool_name(name) {
+            info!(from = %name, "mcp: rewriting tool_choice target to auto");
+            ir_request.tool_choice = Some(IrToolChoice::Auto);
+        }
+    }
+
+    if removed > 0 {
+        info!(removed, "mcp: stripped native notify tools from proxied request");
+    }
+}
+
+/// MCP Notify 模式下的系统提示注入。
+///
+/// 在系统提示末尾追加指令，告知模型：原生通知工具已被禁用，
+/// 必须通过 MCP `notify` 工具发送通知，并在以下场景**主动调用**：
+/// - 任务完成（长时间运行结束、构建/部署/下载等）
+/// - 需要用户决策（等待用户输入、选择方案等）
+/// - 响应完毕且用户可能已离开终端
+///
+/// 仅在请求中确实存在 MCP 通知工具（`mcp__*notify*`）时才注入提示，
+/// 避免提示指向一个不存在的工具。
+pub(super) fn inject_notify_hint(ir_request: &mut IrRequest) {
+    // 检查是否存在 MCP 通知工具（`mcp__` 前缀 + 名称含 `notify`）
+    let has_mcp_notify = ir_request
+        .tools
+        .iter()
+        .any(|t| t.name.starts_with("mcp__") && t.name.to_lowercase().contains("notify"));
+    if !has_mcp_notify {
+        return;
+    }
+
+    // 找到第一个可用的 MCP notify 工具名（用于提示中精确引用）
+    let mcp_notify_name = ir_request
+        .tools
+        .iter()
+        .find(|t| t.name.starts_with("mcp__") && t.name.to_lowercase().contains("notify"))
+        .map(|t| t.name.as_str())
+        .unwrap_or("notify");
+
+    const HINT: &str = "\n\n[Desktop Notification Policy] \
+        Native notification tools (e.g. PushNotification, send_notification) are DISABLED. \
+        You MUST use the `__TOOL__` MCP tool to send desktop notifications. \
+        Proactively call it whenever: \
+        (1) a long-running task completes (build, deploy, download, scan, etc.); \
+        (2) you need the user's decision or answer and the user may not be watching the terminal; \
+        (3) your response is finished and the user may have stepped away. \
+        Keep the notification message concise (under 200 characters) and lead with the actionable fact.";
+
+    let hint = HINT.replace("__TOOL__", mcp_notify_name);
+
+    match &mut ir_request.system {
+        Some(IrSystemContent::Text(ref mut s)) => {
+            s.push_str(&hint);
+        }
+        Some(IrSystemContent::Blocks(ref mut blocks)) => {
+            blocks.push(IrSystemBlock {
+                text: hint,
+                cache_control: None,
+            });
+        }
+        None => {
+            ir_request.system = Some(IrSystemContent::Text(hint));
+        }
+    }
+
+    info!(tool = %mcp_notify_name, "mcp: injected notify hint into system prompt");
 }
 
 // ═══════════════════════════════════════════════════════════════════
