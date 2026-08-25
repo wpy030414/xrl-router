@@ -44,6 +44,13 @@ URL2
 - **并发**：`tokio::sync::Mutex` 串行（一次渲染一页，跨 await 持有）。
 - **错误处理**：导航失败/超时 → 工具级错误文本。
 
+### `web_vision`（受 `mcp_vision` 开关控制）
+
+- **参数**：`{ "url": string }`（required，http(s) URL 或本地绝对路径 / `file://`）。
+- **实现**：`mcp/vision.rs`——网关取图（http(s) URL 经共享 client 下载，继承系统代理，Content-Length 预检 + 8MiB 上限；本地路径直接读文件）→ base64 编码 → 按 ProviderKind（Messages / ChatCompletions / Responses）构造非流式请求（`stream: false`）→ 调用设置页指定的「视觉专用模型」→ 返回描述文本。
+- **视觉专用模型配置**：settings 键 `mcp_vision_provider` / `mcp_vision_model`（存上游真实 `model_id`），调用时实时解析（ProviderRegistry + DB 直读），管理页删改立即生效。
+- **不计配额**：与 web_search/web_fetch 一致，不触碰 usage 统计与服务 key 配额；单次调用不重试，上游错误文本透传。
+- **错误处理**：图片下载失败 / 视觉模型不支持 / 上游错误 → 工具级错误文本。
 
 ## 开关语义（设置页「路由」Tab）
 
@@ -51,6 +58,7 @@ URL2
 |--------|------|------|
 | `mcp_websearch` | `false`（V16 迁移自 `websearch_hijack`） | ON：`/mcp` 提供 `web_search` + **代理剔除请求自带的搜索类工具**；OFF：不碰工具定义 |
 | `mcp_webfetch` | `false` | ON：`/mcp` 提供 `web_fetch`；OFF：不提供 |
+| `mcp_vision` | `false`（V17 迁移） | ON：`/mcp` 提供 `web_vision`；OFF：不提供 |
 
 持久化：`settings` 表（`mcp_websearch` / `mcp_webfetch`），AppState 原子量运行时读写，`/api/settings` GET/PUT。
 

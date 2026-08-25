@@ -2,28 +2,27 @@
 
 > 多 Provider AI LLM API 路由网关 — Tauri 2 桌面应用
 
-xrl-router 是一个运行在本地的 LLM API 统一网关。客户端通过 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses API 三种端点访问所有大模型 Provider，网关经 IR 中间表示层统一协议转换，负责路由解析、密钥轮换和用量统计喵～
+xrl-router 是一个运行在本地的 LLM API 统一网关。客户端通过 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses API 三种端点访问所有大模型 Provider，网关负责路由解析、密钥轮换和用量统计。
 
-## 技术栈
+## What is this?
 
-| 层 | 技术 |
-|---|---|
-| 后端 | Rust (edition 2021) + Tauri 2 + axum 0.7 + tokio |
-| 数据库 | SQLite 3 (rusqlite 0.32 bundled, WAL 模式) |
-| HTTP 客户端 | reqwest 0.12 (流式 SSE) |
-| 加密 | aes-gcm 0.10 (Provider Key 加密) + argon2 0.5 (Service Key 哈希) |
-| 前端 | Vue 3 + Pinia + Vue Router 4 |
-| UI | Material Web Components (MD3) + MDI 图标 + Chart.js + vue-chartjs + SortableJS (拖拽排序) + 自研 i18n (zh-CN/en) |
-| 桌面插件 | tauri-plugin-autostart (开机自启) + tauri-plugin-dialog/fs (数据导出导入) + tauri-plugin-shell (外链打开) |
-| 构建 | Vite 8 (前端) + Cargo (后端) |
+- **定位**：本地优先的 LLM API 网关桌面应用
+- **核心问题**：LLM 生态协议碎片化（Anthropic/OpenAI 等 API 格式不兼容），开发者需维护多套客户端代码，密钥散落各处
 
-## 快速开始
+## Why does it exist?
+
+- **统一接入**：通过单一端点访问所有 Provider，客户端零配置
+- **本地优先**：数据不经第三方，隐私安全
+- **轻量美观**：Tauri 2 框架，安装包 < 10MB，内存占用 < 100MB
+- **现有方案不足**：OpenRouter 是云端 SaaS、LiteLLM 是 Python 服务、one-api 需要 Docker 部署，本地开发体验差
+
+## How to install and run?
 
 ### 前置要求
 
 - **Rust** >= 1.75.0
 - **Node.js** >= 20 + **pnpm**
-- Tauri CLI 已包含在 devDependencies 中，`pnpm dev` 自动调用
+- Tauri CLI 已包含在 devDependencies 中
 
 ### 安装与运行
 
@@ -38,123 +37,33 @@ pnpm dev
 pnpm build
 ```
 
-### 接入 CC Switch
+### 接入客户端
 
 - **Base URL**：`http://127.0.0.1:19068`
 - **API Key**：在应用内「密钥管理」页创建的 Service Key
 - **模型**：使用应用内配置的模型别名（网关负责路由到真实上游）
-- **余额查询**：使用 TokenPlan 模板所需的 ZenMux 兼容格式，请求地址 `http://127.0.0.1:19068/v1/user/balance?zenmux`，API Key 同上方配置的 API Key
-- **配额**：Service Key 可在「密钥管理」页配置 5h/7d 滚动窗口 token 上限，触顶返回 429（`quota_error` + `retry-after`）
 
-### 局域网分发（install 页面）
+### 局域网分发
 
-把本机变成局域网 API 网关：在「密钥管理」页创建密钥后，弹窗里复制「分发链接」，发给局域网设备打开。Install 页面（Vue SPA，`/install` 前端路由）支持两种消费端：Claude Code（写 `~/.claude/settings.json`）和 ChatGPT/Codex（写 `~/.codex/config.toml` + `auth.json`），按平台（Windows PowerShell / macOS·Linux Bash）生成单行命令，复制到终端运行一次即可。页面自动同步管理端的主题、令牌色和语言设置。详见 [docs/specs/spec-lan-deploy.md](docs/specs/spec-lan-deploy.md)。
+把本机变成局域网 API 网关：在「密钥管理」页创建密钥后，弹窗里复制「分发链接」，发给局域网设备打开。Install 页面支持 Claude Code 和 ChatGPT/Codex 两种消费端，按平台生成单行命令。详见 [docs/specs/spec-lan-deploy.md](docs/specs/spec-lan-deploy.md)。
 
-> 网关单端口 `19068` 绑 `0.0.0.0`，`/api/*` 管理端点通过 IP 中间件限制仅本机（loopback）可访问，前端 SPA 通过 fallback 机制由 Vue Router 处理 `/install` 路由，`/v1/*` 与 `/api/ui-settings` 对外开放供局域网设备使用。局域网分发需放行防火墙 19068 端口。
+## Current status
 
-### 配置
+- **Stage**：stable（核心功能已完成）
+- **已知限制**：
+  - 仅支持流式响应（强制 `stream=true`）
+  - 不支持 Google Gemini 等新协议（需走插件系统）
+  - 单用户本地桌面应用，不支持多租户/云端部署
 
-通过环境变量（均有默认值）：
+## Core tech
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `PORT` | `19068` | HTTP 监听端口 |
-| `HOST` | `0.0.0.0` | 绑定地址（`/api/*` 由 IP 中间件限制仅 loopback 可访问） |
-| `DB_PATH` | _(系统数据目录)_ | SQLite 文件路径 |
-| `LOG_LEVEL` | `info` | 日志级别 |
-| `API_KEY` | _(无)_ | 预留 API Key 字段（当前未启用认证） |
-| `CORS_ORIGINS` | `localhost:5173/19068,127.0.0.1:5173/19068,tauri://localhost,https://tauri.localhost,http://tauri.localhost` | 允许的跨域来源（共 7 个） |
+- **后端**：Rust + Tauri 2 + axum 0.7 + tokio
+- **数据库**：SQLite 3 (WAL 模式)
+- **前端**：Vue 3 + Pinia + Material Design 3
+- **协议转换**：IR（中间表示层）统一 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses API 三种格式
+- **安全**：AES-256-GCM 加密 Provider Key + Argon2 哈希 Service Key
 
-**代理**：上游请求自动继承系统代理（环境变量 `HTTPS_PROXY`/`HTTP_PROXY` → Windows 注册表 → macOS scutil），`localhost`/`127.0.0.1` 自动豁免直连（插件系统上游在本机）。国内网络下钉钉 DEAP 等上游需走 Clash 等代理才能连通。
-
-首次启动自动在系统应用数据目录创建数据库（15 版迁移）和主密钥文件：
-- macOS: `~/Library/Application Support/im.xrl.router/`
-- Linux: `~/.config/im.xrl.router/`
-- Windows: `C:\Users\<user>\AppData\Roaming\im.xrl.router\`
-
-## 核心技术
-
-### LLM 代理
-
-客户端请求 `/v1/messages`（Anthropic 格式）、`/v1/chat/completions`（OpenAI Chat Completions 格式）或 `/v1/responses`（OpenAI Responses API 格式），网关根据模型别名解析到上游 Provider，经 **IR（中间表示）层** 统一协议转换后流式转发。仅支持流式响应。
-
-**IR 中间表示层**：三种客户端格式（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）先统一转换为 IR（`IrRequest` / `IrStreamEvent` / `IrUsage`），再渲染为目标上游格式。IR 以 Anthropic Messages 为骨架（内容块模型最丰富），并集覆盖三种格式的全部字段。所有内部工具（搜索工具剔除、usage 追踪、错误构造）只操作 IR 类型，与具体协议解耦。实现位于 `api/proxy/ir/`。
-
-**流式引擎架构**：handler.rs 是薄入口层（认证 + 请求体准备），核心逻辑委托给 stream.rs 的 `proxy_stream()` 函数完成路由解析、上游连接、密钥轮换和流式转发。stream.rs 路由解析后立即返回 Response（含 keepalive），上游等待和流式转发在后台 spawn 中完成，客户端毫秒级收到首字节。流式转发分支（passthrough / O→A / A→O）实现在 forward.rs。
-
-**SSE 优化**：为避免客户端因等待上游响应（可能耗时数秒）而超时断开，passthrough 路径立即返回 HTTP Response（含 `:keepalive` 初始字节），后台 spawn 处理上游数据流。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`，并每 15 秒发送 keepalive 心跳（oneshot 取消信号驱动，主任务结束即停心跳，修复流式响应永不结束），确保连接存活。
-
-**自适应超时 + 请求体放宽**：上游响应头超时不再固定 60s，改为按估算输入 token 自适应（≥100k → 600s、≥50k → 480s、基准 300s），对齐 Claude Code 客户端超时，避免大上下文长排队被误判挂死而断流。请求体上限从 axum 默认 2MiB 放宽到 64MiB，覆盖多轮历史 + 工具结果 + base64 截图的多模态大会话。
-
-**上下文超限预警**：请求路由解析后，按估算输入 token（`chars/4`）与模型 `context_window` 比对，超限时仅记录 warn 日志、不阻断请求。原因：chars/4 估算偏保守（中文/代码实际 token 数通常低于估算），且硬拒绝会阻断客户端 auto-compact（`/compact` 自身也需走代理，形成死锁）。上游自行判断是否超限并返回准确错误，客户端可据此 auto-compact。
-
-> **⚠️ 仅流式 + 客户端回退**：网关只支持流式响应（强制 `stream=true`）。若客户端在流中断后回退为**非流式重试**（例如把 SSE 响应误当成普通 JSON 解析），会看到类似 `API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request` 的报错——这是设计使然（网关对无法恢复的中断以 HTTP 200 + SSE error 事件表达，状态码无法中途改写），并非网络被劫持。遇到此报错请检查上游日志与客户端超时配置。
-
-客户端消费端配置见 [接入 CC Switch](#接入-cc-switch)。
-
-### 密钥池
-
-每个 Provider 可配多个 API Key，round-robin 轮询调度。上游返回 401/403 标红永久跳过，402/429 标黄冷却 5 分钟，2xx 恢复绿色。轮询指针持久化到 settings 表，重启后从上次位置继续。
-
-### 故障转移（Provider Failover）
-
-同一模型别名下配置多个 Provider 时，可开启故障转移（设置页「路由」Tab，默认关闭）：上游 5xx / 网络错误 / 响应头超时自动切换到下一个候选 Provider，并对失败的 Provider 冷却 60 秒（纯内存，不持久化）。开启后请求依次尝试候选（按 `sort_order` 排序），key 级 4xx（401/402/403/429）仍优先在 Provider 内换 key 耗尽后才切 Provider。关闭时行为与单 Provider 完全一致。
-
-### 安全
-
-- Provider API Key: **AES-256-GCM** 加密存储，主密钥独立于数据库（`master.key`，权限 0600）
-- Service Key: **Argon2** 哈希存储（随机盐），创建时仅返回一次明文
-- 管理 API 通过 `admin_ip_guard` 中间件限制仅 loopback IP 可访问（`/api/*` 端点，`/api/ui-settings` 除外），CORS origin 白名单；公开路径（`/v1/*` 需 key 鉴权、`/api/ui-settings`、前端 SPA fallback）对外开放，管理接口局域网不可达
-
-### 局域网分发（install 页面）
-
-密钥管理页创建密钥后可复制「分发链接」（`http://<本机IP>:19068/install?t=<明文key>`），局域网设备打开即进入 Vue SPA 的 install 页面（通过 fallback 机制由 Vue Router 处理）。页面支持两种消费端：**Claude Code**（写 `~/.claude/settings.json`，含 `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` + 4 模型槽位）和 **ChatGPT/Codex**（写 `~/.codex/config.toml` + `auth.json`），按平台生成单行命令。页面自动从后端读取管理端的主题、令牌色和语言设置（`/api/ui-settings` 公开端点），保持与主机应用一致的视觉风格。密钥明文嵌入 URL，仅限可信设备，撤销即在密钥列表删除。
-
-### 插件系统
-
-外部服务通过 WebSocket 注册为「委托供应商」，将非标 API 桥接为标准接口。Router 负责密钥轮换和用量统计，插件负责协议转换和业务头注入。
-
-### 系统托盘 + 开机静默启动
-
-关闭窗口后应用隐藏到系统托盘，网关继续运行。开启「开机静默启动」（设置页通用 Tab）后，系统登录时以 `--minimized` 拉起应用，窗口不显示、网关照常运行、驻留托盘；托盘菜单语言跟随应用语言设置（zh-CN / en）。
-
-### Claude FM（后端广播电台引擎）
-
-应用内置一台「电台」：音频解码与播放由 Rust 后端 `FmEngine` 直接完成，输出到系统音频设备。前端仅负责展示与控制：
-
-- **后端引擎**：`api/handlers/fm.rs`（~630 行），rodio 解码 + 系统音频设备输出，`std::thread::spawn` 运行（rodio 需稳定线程），`mpsc` channel 接收播放控制消息。souvlaki 接入系统媒体控制（macOS Now Playing / Windows SMTC / Linux MPRIS）。双缓冲预加载：当前曲播放时预下载下一曲，切歌零等待。
-- **前端展示**：`src/fm/player.ts`（~110 行）纯命令/事件，通过 `fm_toggle` / `fm_play` / `fm_pause` / `fm_get_state` Tauri command 控制播放，通过 `fm-meta` / `fm-ready` / `fm-state-changed` 事件接收状态更新。
-- **托盘集成**：预热完成后菜单加入「Claude FM」勾选项（勾选播放 / 取消暂停），点击直接调用引擎（不绕前端中转）。窗口关闭只隐藏到托盘，音乐持续。
-
-### WebSocket 实时推送
-
-前端通过 WebSocket 接收密钥状态变更、用量更新等实时事件（3 秒自动重连）。
-
-### MCP 工具服务器（WebSearch / WebFetch）
-
-网关内置一个 MCP（Streamable HTTP）端点 `/mcp`，设置页「路由」Tab 两个开关控制：
-
-- **MCP WebSearch**：开启后 `/mcp` 提供 `web_search` 工具（本地 Bing 搜索：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + ck/a 重定向解码，绕过代理直连避免出口 IP 在海外导致结果降级），且代理会剔除请求自带的 `web_search` 工具，防止上游官方搜索生效。关闭则完全不碰工具定义。
-- **MCP WebFetch**：开启后 `/mcp` 提供 `web_fetch` 工具——用内置 WebView 渲染页面（执行 JS，SPA 内容可得）后提取完整正文（转 Markdown），渲染不可用时回退静态抓取并注明。
-- **MCP Vision**：开启后在设置页指定一个「视觉专用模型」（供应商 + 模型），`/mcp` 提供 `web_vision` 工具——传入图片 URL 或本地路径，网关取图后调用视觉模型生成图片描述，无视觉能力的模型也能看图。
-
-在客户端（如 Claude Code）注册后，模型通过标准 MCP tool-calling 直接调用，工具调用过程完全可见。设置页提供可复制的注册命令（鉴权用 Service Key，`Authorization: Bearer`）。契约见 [docs/specs/spec-mcp-tools.md](docs/specs/spec-mcp-tools.md)。
-
-### 国际化（i18n）
-
-全应用支持 zh-CN / en 双语言（2026-08 起）：前端 `src/i18n/` 极简实现（`t()` + `setLocale()`，localStorage 持久化），后端托盘菜单与 install 分发页同步双语。主题支持 `light / dark / system` 三态，system 模式跟随操作系统（修复了 Tauri 窗口主题强制导致跟随失效的问题）。
-
-### 数据管理
-
-设置页「数据」Tab：**导出**为 SQL dump 文件（.sql，可跨版本迁移）、**导入**覆盖恢复（导入前有确认对话框）、**一键重置**全部数据（保留 schema 版本）。导出/导入通过系统文件对话框选择路径，需要 `tauri-plugin-dialog` + `tauri-plugin-fs`。
-
-### 请求日志
-
-统计页新增「请求日志」区块：分页表格（每页 10 条，时间逆序），展示时间 / 密钥 / 供应商 / 模型 / 输入输出 tokens / 成功失败状态（失败可悬停查看错误信息），配合用量图表使用。
-
-## 当前状态
-
-核心功能已完成，详见 [docs/PRD.md](docs/PRD.md) 路线图。
+> Note: README 不承载项目的完整文档职责，详细信息见 [docs/](docs/)。
 
 ## 项目文档
 
