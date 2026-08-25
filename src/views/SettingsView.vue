@@ -99,7 +99,7 @@
             @input="onHueInput"
           />
           <span class="hue-value mono">{{ hue }}°</span>
-          <span class="hue-preview" :style="{ background: `hsl(${hue}, 50%, 42%)` }"></span>
+          <span class="hue-preview" :style="{ background: `var(--md-sys-color-primary)` }"></span>
           <md-text-button class="hue-reset" @click="resetHue">{{ t('settings.theme.hue_reset') }}</md-text-button>
         </div>
       </section>
@@ -122,6 +122,48 @@
 
     <!-- ========== 路由 TAB ========== -->
     <div v-show="activeTab === 1" class="tab-panel">
+      <!-- MCP 接入信息 -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiLinkVariant" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_info.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_info.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body mcp-info">
+          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.endpoint') }}</div>
+          <div class="key-box mono md-typescale-body-medium">{{ mcpEndpoint }}</div>
+          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.register') }}</div>
+          <div class="key-box mono md-typescale-body-medium">{{ mcpRegisterCommand }}</div>
+        </div>
+      </section>
+
+      <!-- MCP WebVision -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiEyeOutline" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_vision.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_vision.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpVision" @change="toggleMcpVision"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpVision ? t('settings.mcp_vision.on') : t('settings.mcp_vision.off') }}</span>
+        </div>
+        <div v-if="mcpVision" class="section__body vision-selects">
+          <md-outlined-select :value="visionProvider" :label="t('settings.mcp_vision.provider_label')" @change="onVisionProviderChange">
+            <md-select-option value="" disabled>{{ t('settings.mcp_vision.provider_empty') }}</md-select-option>
+            <md-select-option v-for="p in visionProviders" :key="p.id" :value="p.id">{{ p.name }}</md-select-option>
+          </md-outlined-select>
+          <md-outlined-select :value="visionModel" :label="t('settings.mcp_vision.model_label')" @change="onVisionModelChange">
+            <md-select-option value="" disabled>{{ t('settings.mcp_vision.model_empty') }}</md-select-option>
+            <md-select-option v-for="m in visionModels" :key="m.model_id" :value="m.model_id">{{ m.display_name }}</md-select-option>
+          </md-outlined-select>
+        </div>
+      </section>
+
       <section class="card section">
         <div class="section__head">
           <span class="section__icon"><MdiIcon :path="mdiSearchWeb" /></span>
@@ -148,52 +190,6 @@
         <div class="section__body switch-row">
           <md-switch :selected="mcpWebfetch" @change="toggleMcpWebfetch"></md-switch>
           <span class="md-typescale-body-medium switch-label">{{ mcpWebfetch ? t('settings.mcp_webfetch.on') : t('settings.mcp_webfetch.off') }}</span>
-        </div>
-      </section>
-
-      <!-- MCP Vision -->
-      <section class="card section">
-        <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiEyeOutline" /></span>
-          <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_vision.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_vision.desc') }}</p>
-          </div>
-        </div>
-        <div class="section__body switch-row">
-          <md-switch :selected="mcpVision" @change="toggleMcpVision"></md-switch>
-          <span class="md-typescale-body-medium switch-label">{{ mcpVision ? t('settings.mcp_vision.on') : t('settings.mcp_vision.off') }}</span>
-        </div>
-        <div v-if="mcpVision" class="section__body vision-selects">
-          <md-outlined-select :value="visionProvider" :label="t('settings.mcp_vision.provider_label')" @change="onVisionProviderChange">
-            <md-select-option value="" disabled>{{ t('settings.mcp_vision.provider_empty') }}</md-select-option>
-            <md-select-option v-for="p in visionProviders" :key="p.id" :value="p.id">{{ p.name }}</md-select-option>
-          </md-outlined-select>
-          <md-outlined-select :value="visionModel" :label="t('settings.mcp_vision.model_label')" @change="onVisionModelChange">
-            <md-select-option value="" disabled>{{ t('settings.mcp_vision.model_empty') }}</md-select-option>
-            <md-select-option v-for="m in visionModels" :key="m.model_id" :value="m.model_id">{{ m.display_name }}</md-select-option>
-          </md-outlined-select>
-        </div>
-      </section>
-
-      <!-- MCP 接入信息 -->
-      <section class="card section">
-        <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiLinkVariant" /></span>
-          <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_info.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_info.desc') }}</p>
-          </div>
-        </div>
-        <div class="section__body mcp-info">
-          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.endpoint') }}</div>
-          <div class="key-box mono md-typescale-body-medium">{{ mcpEndpoint }}</div>
-          <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.register') }}</div>
-          <div class="key-box mono md-typescale-body-medium">{{ mcpRegisterCommand }}</div>
-          <md-text-button @click="copyMcpCommand">
-            <MdiIcon :path="mdiContentCopy" slot="icon" />
-            {{ mcpCopied ? t('settings.mcp_info.copied') : t('settings.mcp_info.copy') }}
-          </md-text-button>
         </div>
       </section>
 
@@ -351,8 +347,8 @@ function onHueInput(e: Event) {
 }
 
 function resetHue() {
-  hue.value = 264;
-  setHue(264);
+  hue.value = 200;
+  setHue(200);
 }
 
 // ── 开机自启 ──
@@ -444,7 +440,7 @@ async function onVisionModelChange(e: Event) {
 // ── MCP 接入信息 ──
 const mcpEndpoint = `${BASE_URL}/mcp`;
 const mcpRegisterCommand =
-  `claude mcp add --transport http xrl-tools ${mcpEndpoint} ` +
+  `claude mcp add --scope user --transport http xrl-tools ${mcpEndpoint} ` +
   `--header "Authorization: Bearer <SERVICE_KEY>"`;
 const mcpCopied = ref(false);
 
