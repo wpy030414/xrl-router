@@ -44,7 +44,7 @@
 
     <div class="enabled-row">
       <span class="md-typescale-body-medium">{{ t('comboNew.enabled_label') }}</span>
-      <md-switch :selected="enabled" @input="enabled = ($event.target as HTMLInputElement).checked"></md-switch>
+      <md-switch :selected="enabled" @change="enabled = ($event.target as any).selected"></md-switch>
     </div>
 
     <div class="actions">

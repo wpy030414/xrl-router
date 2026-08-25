@@ -116,8 +116,28 @@ body {
   color: var(--md-sys-color-on-surface);
 }
 
-/* 滚动条配色跟随主题（color-scheme 已让原生滚动条自适应；
-   此处显式着色作为 WebView 兜底，避免部分环境仍用系统色） */
+/* 滚动条不占据布局宽度：html 使用 overlay 模式让滚动条悬浮在内容上方，
+   避免不同 tab 内容高度差异导致滚动条出现/消失时内容区宽度跳动 */
+html {
+  overflow: overlay;
+  scrollbar-width: none; /* Firefox：隐藏滚动条但仍可滚动 */
+}
+/* WebKit overlay 滚动条：默认透明，悬停时显示 */
+html::-webkit-scrollbar {
+  width: 12px;
+  background: transparent;
+}
+html::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+html::-webkit-scrollbar-thumb:hover,
+html:hover::-webkit-scrollbar-thumb {
+  background: var(--md-sys-color-outline-variant);
+  background-clip: content-box;
+}
 * {
   scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 }
