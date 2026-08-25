@@ -10,8 +10,12 @@
 // 令牌色（accent hue）：0-360 色相滑块，持久化到 localStorage。
 // 通过覆盖 --md-sys-color-primary 系列 CSS 变量驱动全局主题色。
 // 默认色相 264°（MD3 标准紫）。
+//
+// 色彩生成使用 Material 官方的 HCT 色彩空间（基于 CIE Lab），
+// 确保所有色相都有正确的感知亮度（tone）和对比度层次。
 
 import { settingsApi } from './api';
+import { Hct, SchemeContent, MaterialDynamicColors } from '@material/material-color-utilities';
 
 // Tauri 窗口主题同步：动态导入，非 Tauri 环境不加载。
 async function applyWindowTheme(t: 'light' | 'dark' | null) {
@@ -28,7 +32,7 @@ export type Theme = 'light' | 'dark' | 'system';
 
 const STORAGE_KEY = 'theme';
 const HUE_KEY = 'theme-hue';
-const DEFAULT_HUE = 264;
+const DEFAULT_HUE = 200;
 
 function systemTheme(): 'light' | 'dark' {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -52,128 +56,94 @@ export function getHue(): number {
 }
 
 // 从色相值生成完整 MD3 色彩令牌并覆盖到 :root。
-// 派生规则（HCT→HSL 近似）：
-//   primary   = 主色相，全饱和
-//   secondary = 同色相，低饱和（柔和）
-//   tertiary  = 色相偏移 +60°
-//   surface   = 极低饱和度微染主色调
-//   outline   = 低饱和中性
-//   error     = 固定红，不随主色调变化
-// 当 hue === DEFAULT_HUE 时移除所有覆盖，回退到 global.css 内置令牌。
-
-const HUE_TOKENS = [
-  '--md-sys-color-primary', '--md-sys-color-on-primary',
-  '--md-sys-color-primary-container', '--md-sys-color-on-primary-container',
-  '--md-sys-color-secondary', '--md-sys-color-on-secondary',
-  '--md-sys-color-secondary-container', '--md-sys-color-on-secondary-container',
-  '--md-sys-color-tertiary', '--md-sys-color-on-tertiary',
-  '--md-sys-color-tertiary-container', '--md-sys-color-on-tertiary-container',
-  '--md-sys-color-inverse-primary',
-  '--md-sys-color-surface', '--md-sys-color-on-surface',
-  '--md-sys-color-surface-variant', '--md-sys-color-on-surface-variant',
-  '--md-sys-color-surface-dim', '--md-sys-color-surface-bright',
-  '--md-sys-color-surface-container-lowest', '--md-sys-color-surface-container-low',
-  '--md-sys-color-surface-container', '--md-sys-color-surface-container-high',
-  '--md-sys-color-surface-container-highest',
-  '--md-sys-color-outline', '--md-sys-color-outline-variant',
-  '--md-sys-color-inverse-surface', '--md-sys-color-inverse-on-surface',
-  '--md-sys-color-background', '--md-sys-color-on-background',
-];
+// 使用 Material 官方的 HCT 色彩空间（基于 CIE Lab），
+// 确保所有色相都有正确的感知亮度（tone）和对比度层次。
 
 function applyHue(hue: number) {
   const root = document.documentElement.style;
-  if (hue === DEFAULT_HUE) {
-    for (const t of HUE_TOKENS) root.removeProperty(t);
-    return;
-  }
 
-  const h = hue;
-  const h2 = (hue + 60) % 360; // tertiary 色相偏移
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
 
-  function set(name: string, s: number, l: number, hVal: number = h) {
-    root.setProperty(name, `hsl(${hVal}, ${s}%, ${l}%)`);
-  }
+  // 将 HSL 色相转换为 ARGB，让 HCT 提取正确的色相
+  // 滑块使用 HSL 色相（264° = 紫色），HCT 色相空间不同
+  const hslToArgb = (h: number, s: number, l: number): number => {
+    s /= 100;
+    l /= 100;
+    const k = (n: number) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    const r = Math.round(f(0) * 255);
+    const g = Math.round(f(8) * 255);
+    const b = Math.round(f(4) * 255);
+    return (0xff << 24) | (r << 16) | (g << 8) | b;
+  };
 
-  if (isDark) {
-    // ── Dark ──
-    // Primary（亮色 on dark bg）
-    set('--md-sys-color-primary', 60, 78);
-    set('--md-sys-color-on-primary', 48, 22);
-    set('--md-sys-color-primary-container', 38, 36);
-    set('--md-sys-color-on-primary-container', 100, 93);
-    set('--md-sys-color-inverse-primary', 50, 42);
+  // 用中等饱和度生成种子颜色，HCT 会提取正确的色相
+  const seedArgb = hslToArgb(hue, 70, 50);
+  const seedColor = Hct.fromInt(seedArgb);
 
-    // Secondary（柔和）
-    set('--md-sys-color-secondary', 16, 82);
-    set('--md-sys-color-on-secondary', 18, 22);
-    set('--md-sys-color-secondary-container', 16, 30);
-    set('--md-sys-color-on-secondary-container', 20, 92);
+  // SchemeContent 生成 Material Design 3 的动态配色方案
+  const scheme = new SchemeContent(seedColor, isDark, 0);
 
-    // Tertiary（色相偏移 +60°）
-    set('--md-sys-color-tertiary', 55, 82, h2);
-    set('--md-sys-color-on-tertiary', 45, 22, h2);
-    set('--md-sys-color-tertiary-container', 35, 34, h2);
-    set('--md-sys-color-on-tertiary-container', 100, 93, h2);
+  // MaterialDynamicColors 提供所有 MD3 标准色
+  const colors = new MaterialDynamicColors();
 
-    // Surface（微染主色调）
-    set('--md-sys-color-surface', 8, 7);
-    set('--md-sys-color-on-surface', 6, 92);
-    set('--md-sys-color-surface-variant', 8, 28);
-    set('--md-sys-color-on-surface-variant', 8, 80);
-    set('--md-sys-color-surface-dim', 8, 7);
-    set('--md-sys-color-surface-bright', 8, 22);
-    set('--md-sys-color-surface-container-lowest', 6, 5);
-    set('--md-sys-color-surface-container-low', 8, 10);
-    set('--md-sys-color-surface-container', 8, 12);
-    set('--md-sys-color-surface-container-high', 8, 16);
-    set('--md-sys-color-surface-container-highest', 8, 20);
-    set('--md-sys-color-outline', 8, 60);
-    set('--md-sys-color-outline-variant', 8, 28);
-    set('--md-sys-color-inverse-surface', 6, 92);
-    set('--md-sys-color-inverse-on-surface', 8, 20);
-    set('--md-sys-color-background', 8, 7);
-    set('--md-sys-color-on-background', 6, 92);
-  } else {
-    // ── Light ──
-    // Primary（深色 on light bg）
-    set('--md-sys-color-primary', 50, 40);
-    set('--md-sys-color-on-primary', 100, 98);
-    set('--md-sys-color-primary-container', 100, 93);
-    set('--md-sys-color-on-primary-container', 80, 14);
-    set('--md-sys-color-inverse-primary', 60, 80);
+  // 将 ARGB 整数转换为 CSS 格式
+  const toCss = (argb: number) => {
+    const r = (argb >> 16) & 0xff;
+    const g = (argb >> 8) & 0xff;
+    const b = argb & 0xff;
+    return `rgb(${r}, ${g}, ${b})`;
+  };
 
-    // Secondary（柔和）
-    set('--md-sys-color-secondary', 16, 42);
-    set('--md-sys-color-on-secondary', 100, 98);
-    set('--md-sys-color-secondary-container', 20, 92);
-    set('--md-sys-color-on-secondary-container', 18, 10);
+  // 设置 CSS 变量
+  const set = (name: string, argb: number) => {
+    root.setProperty(name, toCss(argb));
+  };
 
-    // Tertiary（色相偏移 +60°）
-    set('--md-sys-color-tertiary', 45, 40, h2);
-    set('--md-sys-color-on-tertiary', 100, 98, h2);
-    set('--md-sys-color-tertiary-container', 100, 93, h2);
-    set('--md-sys-color-on-tertiary-container', 75, 14, h2);
+  // Primary 角色
+  set('--md-sys-color-primary', colors.primary().getArgb(scheme));
+  set('--md-sys-color-on-primary', colors.onPrimary().getArgb(scheme));
+  set('--md-sys-color-primary-container', colors.primaryContainer().getArgb(scheme));
+  set('--md-sys-color-on-primary-container', colors.onPrimaryContainer().getArgb(scheme));
+  set('--md-sys-color-inverse-primary', colors.inversePrimary().getArgb(scheme));
 
-    // Surface（微染主色调）
-    set('--md-sys-color-surface', 12, 97);
-    set('--md-sys-color-on-surface', 8, 12);
-    set('--md-sys-color-surface-variant', 10, 90);
-    set('--md-sys-color-on-surface-variant', 8, 28);
-    set('--md-sys-color-surface-dim', 10, 88);
-    set('--md-sys-color-surface-bright', 12, 97);
-    set('--md-sys-color-surface-container-lowest', 0, 100);
-    set('--md-sys-color-surface-container-low', 12, 96);
-    set('--md-sys-color-surface-container', 12, 94);
-    set('--md-sys-color-surface-container-high', 10, 92);
-    set('--md-sys-color-surface-container-highest', 10, 90);
-    set('--md-sys-color-outline', 8, 48);
-    set('--md-sys-color-outline-variant', 10, 80);
-    set('--md-sys-color-inverse-surface', 8, 20);
-    set('--md-sys-color-inverse-on-surface', 10, 95);
-    set('--md-sys-color-background', 12, 97);
-    set('--md-sys-color-on-background', 8, 12);
-  }
+  // Secondary 角色（低饱和度的 primary 色相）
+  set('--md-sys-color-secondary', colors.secondary().getArgb(scheme));
+  set('--md-sys-color-on-secondary', colors.onSecondary().getArgb(scheme));
+  set('--md-sys-color-secondary-container', colors.secondaryContainer().getArgb(scheme));
+  set('--md-sys-color-on-secondary-container', colors.onSecondaryContainer().getArgb(scheme));
+
+  // Tertiary 角色（色相偏移约 +60°）
+  set('--md-sys-color-tertiary', colors.tertiary().getArgb(scheme));
+  set('--md-sys-color-on-tertiary', colors.onTertiary().getArgb(scheme));
+  set('--md-sys-color-tertiary-container', colors.tertiaryContainer().getArgb(scheme));
+  set('--md-sys-color-on-tertiary-container', colors.onTertiaryContainer().getArgb(scheme));
+
+  // Surface 角色（基于 primary 色相的极低饱和度变体）
+  set('--md-sys-color-surface', colors.surface().getArgb(scheme));
+  set('--md-sys-color-on-surface', colors.onSurface().getArgb(scheme));
+  set('--md-sys-color-surface-variant', colors.surfaceVariant().getArgb(scheme));
+  set('--md-sys-color-on-surface-variant', colors.onSurfaceVariant().getArgb(scheme));
+  set('--md-sys-color-surface-dim', colors.surfaceDim().getArgb(scheme));
+  set('--md-sys-color-surface-bright', colors.surfaceBright().getArgb(scheme));
+  set('--md-sys-color-surface-container-lowest', colors.surfaceContainerLowest().getArgb(scheme));
+  set('--md-sys-color-surface-container-low', colors.surfaceContainerLow().getArgb(scheme));
+  set('--md-sys-color-surface-container', colors.surfaceContainer().getArgb(scheme));
+  set('--md-sys-color-surface-container-high', colors.surfaceContainerHigh().getArgb(scheme));
+  set('--md-sys-color-surface-container-highest', colors.surfaceContainerHighest().getArgb(scheme));
+
+  // Outline 角色
+  set('--md-sys-color-outline', colors.outline().getArgb(scheme));
+  set('--md-sys-color-outline-variant', colors.outlineVariant().getArgb(scheme));
+
+  // Inverse 角色
+  set('--md-sys-color-inverse-surface', colors.inverseSurface().getArgb(scheme));
+  set('--md-sys-color-inverse-on-surface', colors.inverseOnSurface().getArgb(scheme));
+
+  // Background 角色（通常与 surface 相同）
+  set('--md-sys-color-background', colors.background().getArgb(scheme));
+  set('--md-sys-color-on-background', colors.onBackground().getArgb(scheme));
 }
 
 // 同步 UI 设置到后端（LAN install 页面可读取）
