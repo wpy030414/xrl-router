@@ -56,6 +56,9 @@ pub struct StreamContext {
     pub(super) est_input: u64,
     /// 按输入规模放宽后的「等待上游响应头」超时（秒），handler 预计算。
     pub(super) header_timeout_secs: u64,
+    /// 客户端原始 stream 偏好（true=流式，false=非流式）。
+    /// 上游始终走流式，但客户端非流式时需要收集所有事件后返回 JSON。
+    pub(super) client_wants_stream: bool,
 }
 
 /// provider 级失败（5xx/网络错误/响应头超时）：failover 切换后若无任何
@@ -138,63 +141,20 @@ pub async fn proxy_stream(
         inject_vision_hint(&mut ctx.ir_request);
     }
 
+    // ── 分支：客户端非流式 → 走收集路径 ──────────────────────────────
+    // 上游始终走流式（复用所有流式基础设施），但客户端期望 JSON 响应时，
+    // 收集所有 IR 事件后组装成完整的非流式 JSON 返回。
+    if !ctx.client_wants_stream {
+        return super::non_stream::proxy_non_stream(state, ctx).await;
+    }
+
     let trace_id = &ctx.trace_id;
     let model_name = &ctx.model_name;
     let header_timeout_secs = ctx.header_timeout_secs;
 
-    // ── 1. 路由解析（同步段，~1ms） ─────────────────────────────────
-    let global_failover = state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed);
-    // 组合别名优先：命中 enabled 组合 → 展开为多候选；组合强制 failover 语义
-    // （成员间回退不受全局开关影响），普通别名保持现有行为。
-    let is_combo = super::route::resolve_combo(&state, model_name).await;
-    // is_combo 会被下方 if let 移动消费，这里先取出「是否组合请求」标记。
-    let is_combo_req = is_combo.is_some();
-    let candidates: Vec<ResolvedRoute> = if let Some(cands) = is_combo {
-        if cands.is_empty() {
-            warn!(trace_id = %trace_id, model = %model_name, "Combo has no resolvable members");
-            return Err((
-                StatusCode::BAD_REQUEST,
-                HeaderMap::new(),
-                Json(json!({"error": {"type": "invalid_request_error", "message": "Model not found or not available"}})),
-            ));
-        }
-        info!(
-            trace_id = %trace_id,
-            combo = %model_name,
-            candidates = cands.len(),
-            "Combo resolved"
-        );
-        cands
-    } else {
-        let cands = if global_failover {
-            super::route::resolve_route_candidates(&state, model_name).await
-        } else {
-            resolve_route(&state, model_name).await.map(|r| vec![r])
-        };
-        match cands {
-            Some(c) if !c.is_empty() => {
-                info!(
-                    trace_id = %trace_id,
-                    candidates = c.len(),
-                    provider_kind = %c[0].provider_kind,
-                    real_model = %c[0].real_model_id,
-                    "Route resolved"
-                );
-                c
-            }
-            _ => {
-                warn!(trace_id = %trace_id, model = %model_name, "Model not found or not available");
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    HeaderMap::new(),
-                    Json(json!({"error": {"type": "invalid_request_error", "message": "Model not found or not available"}})),
-                ));
-            }
-        }
-    };
-    // 组合强制 failover：外层循环的冷却跳过/密钥耗尽/网络错误/超时/5xx 换成员门
-    // 全部以 failover 为条件，组合命中后强制为 true（普通别名不受影响）。
-    let failover = global_failover || is_combo_req;
+    // ── 1. 路由解析（同步段，~1ms；与非流式路径共享） ────────────────
+    let (candidates, failover, is_combo_req) =
+        resolve_candidates(&state, model_name, trace_id).await?;
 
     // ── 2. 上下文超限预警（同步段，纯内存判断） ────────────────────
     // 估算输入 token 超过模型 context_window 时仅记 warn，不阻断请求。
@@ -634,6 +594,70 @@ pub async fn proxy_stream(
     Ok(sse_response(rx))
 }
 
+/// 路由解析（组合别名展开 + failover 候选），流式与非流式两条路径共享。
+///
+/// 返回 `(候选列表, failover 开关, 是否组合请求)`；模型不可解析时返回 400
+/// 错误元组（两条路径都以 HTTP 400 表达，此时尚未向客户端发送任何字节）。
+pub(super) async fn resolve_candidates(
+    state: &AppState,
+    model_name: &str,
+    trace_id: &str,
+) -> Result<(Vec<ResolvedRoute>, bool, bool), ErrorTuple> {
+    let global_failover = state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed);
+    // 组合别名优先：命中 enabled 组合 → 展开为多候选；组合强制 failover 语义
+    // （成员间回退不受全局开关影响），普通别名保持现有行为。
+    let is_combo = super::route::resolve_combo(state, model_name).await;
+    // is_combo 会被下方 if let 移动消费，这里先取出「是否组合请求」标记。
+    let is_combo_req = is_combo.is_some();
+    let candidates: Vec<ResolvedRoute> = if let Some(cands) = is_combo {
+        if cands.is_empty() {
+            warn!(trace_id = %trace_id, model = %model_name, "Combo has no resolvable members");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                Json(json!({"error": {"type": "invalid_request_error", "message": "Model not found or not available"}})),
+            ));
+        }
+        info!(
+            trace_id = %trace_id,
+            combo = %model_name,
+            candidates = cands.len(),
+            "Combo resolved"
+        );
+        cands
+    } else {
+        let cands = if global_failover {
+            super::route::resolve_route_candidates(state, model_name).await
+        } else {
+            resolve_route(state, model_name).await.map(|r| vec![r])
+        };
+        match cands {
+            Some(c) if !c.is_empty() => {
+                info!(
+                    trace_id = %trace_id,
+                    candidates = c.len(),
+                    provider_kind = %c[0].provider_kind,
+                    real_model = %c[0].real_model_id,
+                    "Route resolved"
+                );
+                c
+            }
+            _ => {
+                warn!(trace_id = %trace_id, model = %model_name, "Model not found or not available");
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    HeaderMap::new(),
+                    Json(json!({"error": {"type": "invalid_request_error", "message": "Model not found or not available"}})),
+                ));
+            }
+        }
+    };
+    // 组合强制 failover：外层循环的冷却跳过/密钥耗尽/网络错误/超时/5xx 换成员门
+    // 全部以 failover 为条件，组合命中后强制为 true（普通别名不受影响）。
+    let failover = global_failover || is_combo_req;
+    Ok((candidates, failover, is_combo_req))
+}
+
 /// 用 mpsc rx 构造标准 SSE Response（含 keepalive 用的响应头集合）。
 pub(super) fn sse_response(rx: mpsc::Receiver<Result<Bytes, Infallible>>) -> Response {
     Response::builder()
@@ -949,7 +973,7 @@ pub(super) fn send_error_event(
 /// 1. `error.code` 包含 "quota"（不区分大小写）
 /// 2. `error.type` 包含 "quota" 或 "insufficient_quota"
 /// 3. `error.message` 包含 "quota" 或 "insufficient"
-fn is_key_quota_error(body: &str) -> bool {
+pub(super) fn is_key_quota_error(body: &str) -> bool {
     let v = match serde_json::from_str::<Value>(body) {
         Ok(v) => v,
         Err(_) => return false,
@@ -987,7 +1011,7 @@ fn is_key_quota_error(body: &str) -> bool {
 }
 
 /// 从上游错误 body 中提取可读错误信息。
-fn extract_error_message(body: &str) -> String {
+pub(super) fn extract_error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|v| {

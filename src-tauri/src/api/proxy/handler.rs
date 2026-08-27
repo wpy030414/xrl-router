@@ -179,7 +179,11 @@ async fn authenticate_and_stream(
         ));
     }
 
-    // ── 强制 stream=true ────────────────────────────────────────
+    // ── 保存客户端原始 stream 偏好 ──────────────────────────────────
+    // 上游永远走流式（简化实现），但客户端非流式时需要收集所有事件后返回 JSON
+    let client_wants_stream = ir_request.stream;
+
+    // ── 强制 stream=true（上游始终走流式） ────────────────────────────
     ir_request.stream = true;
 
     // ── 输入 token 估算（translation 路径 message_start 占位用） ─
@@ -187,7 +191,7 @@ async fn authenticate_and_stream(
     // 大上下文（缓存恢复）首字节延迟高，按输入规模放宽响应头超时
     let header_timeout_secs = super::header_timeout_for(est_input);
 
-    // ── 委托流式引擎 ────────────────────────────────────────────
+    // ── 委托流式引擎 ────────────────────────────────────────────────
     super::stream::proxy_stream(
         state,
         StreamContext {
@@ -200,6 +204,7 @@ async fn authenticate_and_stream(
             client_format,
             est_input,
             header_timeout_secs,
+            client_wants_stream,
         },
     )
     .await

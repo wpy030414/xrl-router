@@ -346,7 +346,7 @@ fn classify_error(err_type: &str, message: &str) -> u16 {
 /// - messages:  `{"type":"error","error":{"type":"insufficient_quota","message":...}}`
 /// - responses: `{"type":"response.failed","response":{"error":{...}}}` 或 `{"type":"error",...}`
 /// - chat:      `{"error":{"code":...,"message":...}}`
-fn extract_stream_error(chunk: &Value, provider_kind: &str) -> Option<(u16, String)> {
+pub(super) fn extract_stream_error(chunk: &Value, provider_kind: &str) -> Option<(u16, String)> {
     let (err_type, message) = match provider_kind {
         "messages" => {
             if chunk["type"].as_str() != Some("error") {
@@ -410,7 +410,7 @@ fn extract_stream_error(chunk: &Value, provider_kind: &str) -> Option<(u16, Stri
 /// 仅当响应体是完整 JSON 且含顶层 error 对象时视为错误——内容审核空流
 /// ({"choices":[{...finish_reason":"content_filter"}]})没有 error 键,不触发;
 /// 空响应体 / HTML / 其他 JSON 均不触发。
-fn extract_non_sse_error(body: &str, provider_kind: &str) -> Option<(u16, String)> {
+pub(super) fn extract_non_sse_error(body: &str, provider_kind: &str) -> Option<(u16, String)> {
     let v = serde_json::from_str::<Value>(body).ok()?;
     extract_stream_error(&v, provider_kind)
 }

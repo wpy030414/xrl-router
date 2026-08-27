@@ -122,6 +122,21 @@
 
     <!-- ========== 路由 TAB ========== -->
     <div v-show="activeTab === 1" class="tab-panel">
+      <!-- 故障转移 -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiSwapHorizontal" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.failover.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.failover.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="failover" @change="toggleFailover"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ failover ? t('settings.failover.on') : t('settings.failover.off') }}</span>
+        </div>
+      </section>
+
       <!-- MCP 接入信息 -->
       <section class="card section">
         <div class="section__head">
@@ -136,6 +151,36 @@
           <div class="key-box mono md-typescale-body-medium">{{ mcpEndpoint }}</div>
           <div class="mcp-info__label md-typescale-label-large">{{ t('settings.mcp_info.register') }}</div>
           <div class="key-box mono md-typescale-body-medium">{{ mcpRegisterCommand }}</div>
+        </div>
+      </section>
+
+      <!-- MCP WebSearch -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiSearchWeb" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_websearch.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_websearch.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpWebsearch" @change="toggleMcpWebsearch"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpWebsearch ? t('settings.mcp_websearch.on') : t('settings.mcp_websearch.off') }}</span>
+        </div>
+      </section>
+
+      <!-- MCP WebFetch -->
+      <section class="card section">
+        <div class="section__head">
+          <span class="section__icon"><MdiIcon :path="mdiWeb" /></span>
+          <div>
+            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_webfetch.title') }}</h3>
+            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_webfetch.desc') }}</p>
+          </div>
+        </div>
+        <div class="section__body switch-row">
+          <md-switch :selected="mcpWebfetch" @change="toggleMcpWebfetch"></md-switch>
+          <span class="md-typescale-body-medium switch-label">{{ mcpWebfetch ? t('settings.mcp_webfetch.on') : t('settings.mcp_webfetch.off') }}</span>
         </div>
       </section>
 
@@ -176,50 +221,6 @@
             <md-select-option value="" disabled>{{ t('settings.mcp_vision.model_empty') }}</md-select-option>
             <md-select-option v-for="m in visionModels" :key="m.model_id" :value="m.model_id">{{ m.display_name }}</md-select-option>
           </md-outlined-select>
-        </div>
-      </section>
-
-      <section class="card section">
-        <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiSearchWeb" /></span>
-          <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_websearch.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_websearch.desc') }}</p>
-          </div>
-        </div>
-        <div class="section__body switch-row">
-          <md-switch :selected="mcpWebsearch" @change="toggleMcpWebsearch"></md-switch>
-          <span class="md-typescale-body-medium switch-label">{{ mcpWebsearch ? t('settings.mcp_websearch.on') : t('settings.mcp_websearch.off') }}</span>
-        </div>
-      </section>
-
-      <!-- MCP WebFetch -->
-      <section class="card section">
-        <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiWeb" /></span>
-          <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.mcp_webfetch.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.mcp_webfetch.desc') }}</p>
-          </div>
-        </div>
-        <div class="section__body switch-row">
-          <md-switch :selected="mcpWebfetch" @change="toggleMcpWebfetch"></md-switch>
-          <span class="md-typescale-body-medium switch-label">{{ mcpWebfetch ? t('settings.mcp_webfetch.on') : t('settings.mcp_webfetch.off') }}</span>
-        </div>
-      </section>
-
-      <!-- 故障转移 -->
-      <section class="card section">
-        <div class="section__head">
-          <span class="section__icon"><MdiIcon :path="mdiSwapHorizontal" /></span>
-          <div>
-            <h3 class="md-typescale-title-medium">{{ t('settings.failover.title') }}</h3>
-            <p class="md-typescale-body-medium section__desc">{{ t('settings.failover.desc') }}</p>
-          </div>
-        </div>
-        <div class="section__body switch-row">
-          <md-switch :selected="failover" @change="toggleFailover"></md-switch>
-          <span class="md-typescale-body-medium switch-label">{{ failover ? t('settings.failover.on') : t('settings.failover.off') }}</span>
         </div>
       </section>
     </div>

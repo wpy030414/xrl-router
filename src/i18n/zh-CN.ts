@@ -65,7 +65,7 @@ export default {
   'settings.mcp_websearch.on': '已开启',
   'settings.mcp_websearch.off': '已关闭',
 
-  'settings.mcp_webfetch.title': '网页信息爬取',
+  'settings.mcp_webfetch.title': '网页信息提炼',
   'settings.mcp_webfetch.desc': '开启后，模型会利用网关能加载动态网页的能力，提取更丰富的信息',
   'settings.mcp_webfetch.on': '已开启',
   'settings.mcp_webfetch.off': '已关闭',
@@ -80,7 +80,7 @@ export default {
   'settings.mcp_vision.model_empty': '先选择供应商',
 
   'settings.mcp_info.title': 'MCP 接入信息',
-  'settings.mcp_info.desc': '在客户端注册本地 MCP 端点后，模型即可调用上述工具。鉴权使用 Service Key（Bearer）',
+  'settings.mcp_info.desc': '在客户端注册本地 MCP 端点后，模型即可调用下述工具。鉴权使用 Service Key（Bearer）',
   'settings.mcp_info.endpoint': '端点',
   'settings.mcp_info.register': 'Claude Code 可用的注册命令',
 

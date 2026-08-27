@@ -11,6 +11,7 @@ pub mod forward;
 pub mod handler;
 pub mod ir;
 pub mod key_rotation;
+pub mod non_stream;
 pub mod quota;
 pub mod route;
 pub mod stream;
