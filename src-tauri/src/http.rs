@@ -124,11 +124,6 @@ fn resolve_windows_registry_proxy() -> Option<String> {
     })
 }
 
-#[cfg(not(windows))]
-fn resolve_windows_registry_proxy() -> Option<String> {
-    None
-}
-
 /// 构建带系统代理的 reqwest 客户端。
 ///
 /// 调用方可继续链式覆盖 timeout / cookie_store 等。

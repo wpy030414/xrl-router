@@ -82,3 +82,9 @@ htmd = "0.2"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# block 0.1.6（souvlaki → cocoa 的 macOS 传递依赖）触发 future-incompat lint
+# uninhabited-static（rust-lang/rust#74840），上游 2016 年后无新版，故 vendor 打补丁。
+# 详见 vendor/block/Cargo.toml 说明。
+[patch.crates-io]
+block = { path = "vendor/block" }

@@ -1,5 +1,14 @@
 //! usage_log 写入与统计聚合（V12 起统计自包含，不再 JOIN 父表）。
 
+/// 构造 service_key_id 的 SQL 过滤片段（单引号转义防注入；None / 空 = 不过滤）。
+/// 统计三处查询共用，保证「按密钥筛选」行为一致。
+fn key_filter_sql(service_key_id: Option<&str>) -> String {
+    match service_key_id {
+        Some(k) if !k.is_empty() => format!(" AND u.service_key_id = '{}'", k.replace('\'', "''")),
+        _ => String::new(),
+    }
+}
+
 impl super::Database {
     /// 指定 service key 在 5h / 7d 固定窗口内已用的 tokens。
     /// 窗口按 epoch 对齐（`now - now % window_secs`），与 quota.rs 的
@@ -87,10 +96,11 @@ impl super::Database {
         to_ts: i64,
         bucket_seconds: i64,
         tz_offset: i64,
+        service_key_id: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let prefix = if bucket_seconds == 3600 { "h" } else { "d" };
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let sql = format!(
             "SELECT
                 COALESCE(u.service_key_id, '') AS skid,
                 u.service_key_name AS key_name,
@@ -101,10 +111,12 @@ impl super::Database {
                 SUM(u.cache_read_input_tokens) AS cache_read_tokens,
                 COUNT(*) AS requests
              FROM usage_log u
-             WHERE u.timestamp >= ?1 AND u.timestamp <= ?2
+             WHERE u.timestamp >= ?1 AND u.timestamp <= ?2{}
              GROUP BY COALESCE(u.service_key_id, ''), bucket
              ORDER BY bucket, skid",
-        )?;
+            key_filter_sql(service_key_id),
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map(rusqlite::params![from_ts, to_ts, bucket_seconds, tz_offset], |row| {
             let prompt: i64 = row.get(4)?;
@@ -151,9 +163,10 @@ impl super::Database {
         &self,
         from_ts: i64,
         to_ts: i64,
+        service_key_id: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let sql = format!(
             "SELECT
                 u.model_id,
                 u.model_display_name,
@@ -162,11 +175,13 @@ impl super::Database {
                 SUM(u.cache_read_input_tokens) AS cache_read_tokens,
                 COUNT(*) AS requests
              FROM usage_log u
-             WHERE u.timestamp >= ?1 AND u.timestamp <= ?2
+             WHERE u.timestamp >= ?1 AND u.timestamp <= ?2{}
              GROUP BY u.model_id
              ORDER BY requests DESC
              LIMIT 1",
-        )?;
+            key_filter_sql(service_key_id),
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map(rusqlite::params![from_ts, to_ts], |row| {
             let model_id: String = row.get(0)?;
@@ -194,17 +209,34 @@ impl super::Database {
     }
 
     /// 分页拉取请求日志，按时间逆序（同秒按 id 逆序，保证稳定排序）。
+    /// from/to 可选时间范围（None = 不限），service_key_id 可选密钥筛选。
     /// 返回 (总行数, 当前页行)。page >= 1；越界页返回空 data。
     pub fn get_usage_log_page(
         &self,
         page: i64,
         page_size: i64,
+        from_ts: Option<i64>,
+        to_ts: Option<i64>,
+        service_key_id: Option<&str>,
     ) -> anyhow::Result<(i64, Vec<serde_json::Value>)> {
+        // i64 数字直接内插安全；key 片段经 key_filter_sql 转义。
+        let mut where_sql = String::from(" WHERE 1=1");
+        if let Some(f) = from_ts {
+            where_sql.push_str(&format!(" AND u.timestamp >= {}", f));
+        }
+        if let Some(t) = to_ts {
+            where_sql.push_str(&format!(" AND u.timestamp <= {}", t));
+        }
+        where_sql.push_str(&key_filter_sql(service_key_id));
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn.query_row("SELECT COUNT(*) FROM usage_log", [], |row| row.get(0))?;
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM usage_log u{}", where_sql),
+            [],
+            |row| row.get(0),
+        )?;
         let offset = (page - 1).max(0) * page_size;
 
-        let mut stmt = conn.prepare(
+        let sql = format!(
             "SELECT
                 id, timestamp,
                 provider_name, model_display_name,
@@ -213,10 +245,12 @@ impl super::Database {
                 request_type,
                 prompt_tokens, completion_tokens, latency_ms,
                 success, error_message
-             FROM usage_log
+             FROM usage_log u{}
              ORDER BY timestamp DESC, id DESC
              LIMIT ?1 OFFSET ?2",
-        )?;
+            where_sql,
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map(rusqlite::params![page_size, offset], |row| {
             Ok(serde_json::json!({
@@ -267,7 +301,7 @@ mod tests {
         }
 
         // 第 1 页：10 条，逆序（最新的 1_000_000_024 在前）
-        let (total, page1) = db.get_usage_log_page(1, 10).unwrap();
+        let (total, page1) = db.get_usage_log_page(1, 10, None, None, None).unwrap();
         assert_eq!(total, 25);
         assert_eq!(page1.len(), 10);
         assert_eq!(page1[0]["timestamp"], 1_000_000_024);
@@ -277,16 +311,27 @@ mod tests {
         assert_eq!(page1[0]["error_message"], serde_json::json!("err"));
 
         // 第 2 页 / 第 3 页：衔接正确
-        let (_, page2) = db.get_usage_log_page(2, 10).unwrap();
+        let (_, page2) = db.get_usage_log_page(2, 10, None, None, None).unwrap();
         assert_eq!(page2[0]["timestamp"], 1_000_000_014);
-        let (_, page3) = db.get_usage_log_page(3, 10).unwrap();
+        let (_, page3) = db.get_usage_log_page(3, 10, None, None, None).unwrap();
         assert_eq!(page3.len(), 5);
         assert_eq!(page3[4]["timestamp"], 1_000_000_000);
 
         // 越界页：空数据
-        let (total4, page4) = db.get_usage_log_page(4, 10).unwrap();
+        let (total4, page4) = db.get_usage_log_page(4, 10, None, None, None).unwrap();
         assert_eq!(total4, 25);
         assert!(page4.is_empty());
+
+        // 按密钥筛选：全部行都是 sk1 → 命中 25；不存在的密钥 → 0
+        let (total_sk, page_sk) = db.get_usage_log_page(1, 10, None, None, Some("sk1")).unwrap();
+        assert_eq!(total_sk, 25);
+        assert_eq!(page_sk.len(), 10);
+        let (total_miss, _) = db.get_usage_log_page(1, 10, None, None, Some("sk-missing")).unwrap();
+        assert_eq!(total_miss, 0);
+
+        // 时间范围过滤：只保留 [1_000_000_010, 1_000_000_019] 的 10 行
+        let (total_range, _) = db.get_usage_log_page(1, 10, Some(1_000_000_010), Some(1_000_000_019), None).unwrap();
+        assert_eq!(total_range, 10);
     }
 
     /// 5h / 7d 固定窗口聚合：只有当前窗口内的行被计入，跨窗口后用量归零。

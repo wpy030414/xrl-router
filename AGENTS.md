@@ -7,7 +7,7 @@
 xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应用形式运行。
 
 - **后端**：Rust + axum HTTP 服务，单 listener 绑 `0.0.0.0:19068`
-- **前端**：Vue 3 SPA，跑在 Tauri WebView 里
+- **前端**：React 18 SPA，跑在 Tauri WebView 里
 - **数据库**：SQLite 本地文件
 - **核心功能**：客户端通过 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses API 三种端点访问所有大模型 Provider，网关经 IR 中间表示层统一协议转换，负责路由解析、密钥轮换和用量统计
 
@@ -53,7 +53,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 
 #### UI 层面
 
-- ❌ **不引入非 MD3 的组件库**（Ant Design、shadcn、Radix 等）
+- ❌ **不引入非 shadcn/ui 的组件库**（Ant Design、MUI、Arco Design 等）
 - ❌ **不做响应式移动适配**。Tauri 窗口默认 1200x800，桌面场景
 - ✅ **国际化已实现**（zh-CN / en）。新增页面时必须为新字符串补充两个语言包的 key
 
@@ -111,10 +111,12 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 
 #### 前端
 
-- UI 用 Material Design 3（`@material/web`），**不要**引入其他组件库
-- 颜色用 CSS 变量 `var(--md-sys-color-*)`，**不要**硬编码 hex
+- UI 用 shadcn/ui（基于 Radix UI + Tailwind CSS），**不要**引入其他组件库
+- 颜色用 Tailwind 工具类（如 `bg-primary`, `text-muted-foreground`），**不要**硬编码 hex
 - `api.ts` 的 `BASE_URL` 是动态解析的（Tauri/localhost vs LAN）
 - **非 Tauri 环境兼容**：前端代码通过动态 `import()` 延迟加载 Tauri API
+- 状态管理用 Zustand，**不要**用 Redux 或其他状态库
+- 路由用 react-router-dom v6
 
 #### HTTP 客户端
 
@@ -152,13 +154,14 @@ src-tauri/src/
 └── types/                     数据结构定义
 
 src/
-├── main.ts / App.vue / router.ts  前端入口
+├── main.tsx / App.tsx / router.tsx  前端入口
 ├── api.ts / ws.ts             REST + WebSocket 客户端
-├── theme.ts / i18n/           主题 + 国际化
-├── views/                     7 个页面（Providers/Keys/Stats/Settings/Install/ClaudeFm/Combos）
-├── components/                AppShell / MdiIcon / PluginRegisterDialog
-├── stores/                    Pinia stores（providers/keys/models）
-└── fm/                        Claude FM 前端
+├── hooks/                     自定义 hooks（useTheme, useWebSocket, useI18n）
+├── i18n/                      国际化（zh-CN / en）
+├── stores/                    Zustand stores（providers, keys, models, settings, combos, ui）
+├── views/                     9 个页面视图（.tsx）
+├── components/                AppShell / ConnectionStatus / PluginRegisterDialog + ui/（shadcn/ui 组件）
+└── lib/                       工具函数（utils.ts）
 
 docs/
 ├── PRD.md                     产品需求文档
@@ -177,6 +180,6 @@ docs/
 | 新增 DB 表/列 | `db/schema.rs`（追加迁移）+ `db/mod.rs` |
 | 修改代理逻辑 | `api/proxy/stream.rs` + `handler.rs` + `ir/` |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
-| 修改前端 | `src/main.ts` + `src/styles/global.css` |
-| 修改 Claude FM | `api/handlers/fm.rs` + `src/fm/player.ts` + `src/views/ClaudeFmView.vue` |
+| 修改前端 | `src/main.tsx` + `src/index.css` |
+| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` |
 | 修改协议转换 | `api/proxy/ir/types.rs` + `from_*.rs` + `to_*.rs` |

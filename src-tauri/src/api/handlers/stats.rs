@@ -20,12 +20,19 @@ pub(crate) struct StatsQuery {
     /// Local timezone offset in seconds (e.g. UTC+8 = 28800), so buckets align
     /// to local day/hour boundaries instead of UTC.
     tz_offset: Option<i64>,
+    /// Service key id — only include usage from this client key. 空 = 全部密钥.
+    service_key_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct LogQuery {
     page: Option<i64>,
     page_size: Option<i64>,
+    /// Optional time range (unix seconds); 缺省 = 不限时间。
+    from: Option<i64>,
+    to: Option<i64>,
+    /// Service key id — filter the request log by client key. 空 = 全部密钥.
+    service_key_id: Option<String>,
 }
 
 /// GET /api/stats/requests — 请求日志分页（时间逆序），每页默认 10 条。
@@ -37,7 +44,7 @@ pub(crate) async fn get_stats_requests(
     let page_size = params.page_size.unwrap_or(10).clamp(1, 100);
     let (total, data) = state
         .database
-        .get_usage_log_page(page, page_size)
+        .get_usage_log_page(page, page_size, params.from, params.to, params.service_key_id.as_deref())
         .unwrap_or_else(|_| (0, Vec::new()));
     Json(serde_json::json!({
         "total": total,
@@ -62,11 +69,11 @@ pub(crate) async fn get_stats(
     let tz_offset = params.tz_offset.unwrap_or(0);
     let data = state
         .database
-        .get_usage_by_day_and_key(from, to, bucket_seconds, tz_offset)
+        .get_usage_by_day_and_key(from, to, bucket_seconds, tz_offset, params.service_key_id.as_deref())
         .unwrap_or_default();
     let model_usage = state
         .database
-        .get_usage_by_model(from, to)
+        .get_usage_by_model(from, to, params.service_key_id.as_deref())
         .unwrap_or_default();
     let top_model = model_usage.first().cloned();
 

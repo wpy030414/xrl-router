@@ -4,53 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>XRL Router</title>
-    <link rel="stylesheet" href="/src/styles/global.css" />
-    <style>
-      /* ── 启动画面（纯 CSS，零 JS 依赖）──
-         页面加载后立即显示，Vue 挂载完成后由 #app 覆盖并淡出。
-         关键：这段 CSS 内联在 <head> 里，浏览器解析到 <body> 就能渲染，
-         不被任何 JS bundle 阻塞。 */
-      #splash {
-        position: fixed;
-        inset: 0;
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 24px;
-        background: var(--md-sys-color-surface, #FEF7FF);
-        color: var(--md-sys-color-on-surface, #1D1B20);
-        transition: opacity 0.4s ease;
-      }
-      #splash.fade-out {
-        opacity: 0;
-        pointer-events: none;
-      }
-      #splash .spinner {
-        width: 36px;
-        height: 36px;
-        border: 3px solid var(--md-sys-color-outline-variant, #CAC4D0);
-        border-top-color: var(--md-sys-color-primary, #6750A4);
-        border-radius: 50%;
-        animation: splash-spin 0.8s linear infinite;
-      }
-      @keyframes splash-spin {
-        to { transform: rotate(360deg); }
-      }
-      /* 暗色模式适配（data-theme 由 initTheme 在挂载前设置） */
-      [data-theme="dark"] #splash {
-        background: var(--md-sys-color-surface, #141218);
-        color: var(--md-sys-color-on-surface, #E6E0E9);
-      }
-    </style>
+    <link rel="stylesheet" href="/src/index.css" />
   </head>
   <body>
-    <!-- 启动画面：浏览器解析到此处立即渲染，不等 JS -->
-    <div id="splash">
-      <div class="spinner"></div>
-    </div>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -6,6 +6,7 @@ export default {
   'nav.keys': 'Keys',
   'nav.stats': 'Stats',
   'nav.settings': 'Settings',
+  'nav.collapse': 'Collapse',
 
   // ── Claude FM ──
   'fm.play': 'Play',
@@ -22,6 +23,8 @@ export default {
   'common.unnamed': 'Unnamed',
   'common.unknown': 'Unknown',
   'common.all': 'All',
+  'common.enabled': 'Enabled',
+  'common.disabled': 'Disabled',
 
   // ── Connection status ──
   'conn.offline': 'Cannot connect to the backend service',
@@ -108,6 +111,9 @@ export default {
   'providers.title': 'Providers',
   'providers.add': 'Add Provider',
   'providers.drag_tip': 'Drag to reorder',
+  'providers.sort': 'Sort',
+  'providers.sort_save': 'Save',
+  'providers.sort_failed': 'Failed to save order, please retry',
   'providers.keys_available': '{green}/{total} keys available',
   'providers.plugin_online': 'Plugin (online)',
   'providers.plugin_offline': 'Plugin (offline)',
@@ -166,11 +172,13 @@ export default {
   // ── Keys list ──
   'keys.title': 'Keys',
   'keys.create': 'Create Key',
+  'keys.search': 'Search key name or mask…',
   'keys.col_key': 'Key',
   'keys.col_models': 'Available Models',
   'keys.col_quota': 'Quota',
   'keys.col_created': 'Created',
   'keys.col_updated': 'Updated',
+  'keys.col_times': 'Created / Updated',
   'keys.rename': 'Rename',
   'keys.edit_perm': 'Edit Permissions',
   'keys.config_quota': 'Configure Quota',

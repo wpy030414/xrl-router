@@ -1,40 +1,31 @@
-import { defineStore } from 'pinia';
-import { ref } from 'vue';
-import { providersApi } from '../api';
+import { create } from 'zustand';
+import { providersApi, type Provider } from '@/lib/api';
 
-export interface Provider {
-  id: string;
-  name: string;
-  kind: 'messages' | 'chat_completions' | 'responses';
-  base_url: string;
-  enabled: boolean;
-  created_at: number;
-  updated_at: number;
+interface ProvidersState {
+  providers: Provider[];
+  fetchProviders: () => Promise<void>;
+  reorderProviders: (ids: string[]) => Promise<void>;
 }
 
-export const useProviderStore = defineStore('providers', () => {
-  const providers = ref<Provider[]>([]);
+export const useProvidersStore = create<ProvidersState>((set, get) => ({
+  providers: [],
 
-  async function fetchProviders() {
-    providers.value = await providersApi.list();
-  }
+  async fetchProviders() {
+    const providers = await providersApi.list();
+    set({ providers });
+  },
 
-  // 拖拽排序：重新赋值数组（保持响应式），并持久化新顺序
-  async function reorderProviders(ids: string[]) {
-    const map = new Map(providers.value.map((p) => [p.id, p]));
-    providers.value = ids.map((id) => map.get(id)).filter((p): p is Provider => !!p);
+  async reorderProviders(ids: string[]) {
+    const { providers, fetchProviders } = get();
+    const map = new Map(providers.map((p) => [p.id, p]));
+    const reordered = ids.map((id) => map.get(id)).filter((p): p is Provider => !!p);
+    set({ providers: reordered });
     try {
       await providersApi.reorder(ids);
-    } catch (e: any) {
+    } catch (e) {
       // 保存失败时回滚到服务端顺序
       await fetchProviders();
       throw e;
     }
-  }
-
-  return {
-    providers,
-    fetchProviders,
-    reorderProviders,
-  };
-});
+  },
+}));

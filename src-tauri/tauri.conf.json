@@ -1,6 +1,6 @@
 {
   "productName": "XRL Router",
-  "version": "26.8.27+1024",
+  "version": "26.8.28+0050",
   "identifier": "im.xrl.router",
   "build": {
     "beforeDevCommand": "pnpm exec vite",
@@ -15,7 +15,9 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

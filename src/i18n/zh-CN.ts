@@ -6,6 +6,7 @@ export default {
   'nav.keys': '密钥',
   'nav.stats': '统计',
   'nav.settings': '设置',
+  'nav.collapse': '折叠',
 
   // ── Claude FM ──
   'fm.play': '播放',
@@ -22,6 +23,8 @@ export default {
   'common.unnamed': '未命名',
   'common.unknown': '未知',
   'common.all': '全部',
+  'common.enabled': '已启用',
+  'common.disabled': '已禁用',
 
   // ── 连接状态 ──
   'conn.offline': '无法连接到后端服务',
@@ -108,6 +111,9 @@ export default {
   'providers.title': '供应商',
   'providers.add': '添加供应商',
   'providers.drag_tip': '拖动排序',
+  'providers.sort': '排序',
+  'providers.sort_save': '保存',
+  'providers.sort_failed': '排序保存失败，请重试',
   'providers.keys_available': '{green}/{total} 可用密钥',
   'providers.plugin_online': '插件（在线）',
   'providers.plugin_offline': '插件（离线）',
@@ -166,11 +172,13 @@ export default {
   // ── 密钥列表 ──
   'keys.title': '密钥',
   'keys.create': '创建密钥',
+  'keys.search': '搜索密钥名称或掩码…',
   'keys.col_key': '密钥',
   'keys.col_models': '可用模型',
   'keys.col_quota': '限额',
   'keys.col_created': '创建时间',
   'keys.col_updated': '修改时间',
+  'keys.col_times': '创建 / 修改时间',
   'keys.rename': '重命名',
   'keys.edit_perm': '修改权限',
   'keys.config_quota': '配置额度',

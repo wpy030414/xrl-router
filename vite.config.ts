@@ -1,5 +1,5 @@
 import { defineConfig, type Plugin } from 'vite';
-import vue from '@vitejs/plugin-vue';
+import react from '@vitejs/plugin-react';
 import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -25,25 +25,22 @@ function stripPingFangOnDarwin(): Plugin {
 
 export default defineConfig({
   plugins: [
-    vue({
-      // MD3 Web Components 是原生 custom element（main.ts 副作用 import 注册），
-      // 不是 Vue 组件：告知编译器避免 "Failed to resolve component: md-*" 警告
-      template: {
-        compilerOptions: {
-          isCustomElement: (tag: string) => tag.startsWith('md-'),
-        },
-      },
-    }),
+    react(),
     stripPingFangOnDarwin(),
   ],
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+    },
+  },
   server: {
     port: 5173,
     proxy: {
       '/api': 'http://127.0.0.1:19068',
       '/v1': 'http://127.0.0.1:19068',
       '/health': 'http://127.0.0.1:19068',
-      '/fm': 'http://127.0.0.1:19068',
-      '/install': 'http://127.0.0.1:19068',
+      '/install/download': 'http://127.0.0.1:19068',
+      '/install/info': 'http://127.0.0.1:19068',
       '/ws': {
         target: 'ws://127.0.0.1:19068',
         ws: true,

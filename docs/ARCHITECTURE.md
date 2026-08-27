@@ -4,12 +4,12 @@
 
 ## 1. 系统总览
 
-xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`0.0.0.0:19068`），前端 Vue 3 SPA 运行在 Tauri WebView 中。
+xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`0.0.0.0:19068`），前端 React 18 SPA 运行在 Tauri WebView 中。
 
 ```
 ┌─── Tauri 桌面应用 ───────────────────────────────────────────────────────┐
 │                                                                           │
-│  WebView (Vue 3 SPA)                    Rust 后端 (axum + tokio)          │
+│  WebView (React 18 SPA)                 Rust 后端 (axum + tokio)          │
 │  ┌───────────────────┐                  ┌──────────────────────────────┐ │
 │  │ ProvidersView     │  HTTP (无认证)   │ /api/providers,keys,models   │ │
 │  │ KeysView          │────────────────▶│ /api/stats,settings,plugins  │ │
@@ -180,34 +180,41 @@ SSE 流返回客户端
 
 ```
 src/
-├── main.ts            Vue 入口 + MD3 组件按需导入 + initI18n
-├── App.vue            根组件: AppShell + PluginRegisterDialog + router-view
-├── router.ts          8 条路由 (含 /install)
+├── main.tsx           React 入口 + initI18n
+├── App.tsx            根组件: RouterProvider + WebSocket 连接
+├── router.tsx         React Router v6 路由配置
 ├── api.ts             REST 客户端 (动态 BASE_URL)
 ├── ws.ts              WebSocket 客户端 (自动重连 3s)
-├── theme.ts           主题 light/dark/system (localStorage 持久化)
-├── i18n/              自研 i18n: t() + setLocale() + zh-CN.ts / en.ts
+├── index.css          Tailwind CSS + CSS 变量
+├── i18n/              Zustand + useT hook: zh-CN.ts / en.ts
+├── lib/               工具函数 (utils.ts, tauri.ts)
+├── hooks/             自定义 hooks (useTheme, useWebSocket)
 ├── fm/                Claude FM 前端（纯命令/事件）
 │
 ├── views/
-│    ClaudeFmView.vue   Claude FM 视图
-│    ProvidersView.vue    供应商列表
-│    ProviderNewView.vue  供应商创建/编辑
-│    KeysView.vue         Service Key 管理
-│    StatsView.vue        用量统计
-│    SettingsView.vue     设置 3 Tab
-│    InstallView.vue      局域网分发页
+│    ClaudeFmView.tsx      Claude FM 视图
+│    ProvidersView.tsx     供应商列表（拖拽排序）
+│    ProviderFormView.tsx  供应商创建/编辑
+│    KeysView.tsx          Service Key 管理（虚拟滚动）
+│    StatsView.tsx         用量统计（Recharts 图表）
+│    SettingsView.tsx      设置 3 Tab
+│    InstallView.tsx       局域网分发页
+│    CombosView.tsx        组合列表
+│    ComboFormView.tsx     组合创建/编辑
 │
 ├── components/
-│    AppShell.vue              MD3 导航抽屉
-│    ConnectionStatus.vue      离线横幅
-│    PluginRegisterDialog.vue  插件注册确认
-│    MdiIcon.vue               动态 MDI 图标
+│    AppShell.tsx              导航抽屉（侧边栏）
+│    ConnectionStatus.tsx      离线横幅
+│    PluginRegisterDialog.tsx  插件注册确认
+│    ui/                       shadcn/ui 组件
 │
-└── stores/ (Pinia)
+└── stores/ (Zustand)
      providers.ts    Provider 列表
      keys.ts         API Key 列表
      models.ts       Model 列表
+     settings.ts     应用设置
+     combos.ts       组合管理
+     ui.ts           UI 状态
 ```
 
 ## 5. 存储架构
@@ -324,12 +331,14 @@ xrl-router
   ├── htmd 0.2         HTML → Markdown
   ├── rodio 0.20       音频播放
   ├── souvlaki 0.8     系统媒体控制
-  ├── Vue 3            UI 框架
-  ├── Pinia            状态管理
-  ├── @material/web    MD3 组件
-  ├── @mdi/js          MDI 图标
-  ├── Chart.js + vue-chartjs   统计图表
-  └── SortableJS       拖拽排序
+  ├── React 18         UI 框架
+  ├── Zustand          状态管理
+  ├── shadcn/ui        UI 组件（基于 Radix UI + Tailwind CSS）
+  ├── lucide-react     图标库
+  ├── react-router-dom v6  路由
+  ├── Recharts         统计图表
+  ├── @dnd-kit/core    拖拽排序
+  └── @tanstack/react-virtual  虚拟滚动
 ```
 
 ## 9. 插件系统交互
