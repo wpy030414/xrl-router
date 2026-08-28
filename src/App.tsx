@@ -1,4 +1,4 @@
-import { RouterProvider } from 'react-router-dom';
+import { RouterProvider } from 'react-router';
 import { router } from './router';
 import { useEffect } from 'react';
 import { wsClient } from './lib/ws';
