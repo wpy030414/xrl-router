@@ -8,8 +8,7 @@
 //!   防止上游官方搜索生效。
 //! - `web_fetch`（`mcp_webfetch`）：Tauri 内置 WebView 渲染（隐藏窗口执行页面 JS
 //!   后提取正文 Markdown），渲染不可用时回退静态抓取（见 `fetch.rs`）。
-//! - `web_vision`（`mcp_vision`）：用设置页指定的「视觉专用模型」识别图片
-//!   （http(s) URL 或本地路径，网关取图后 base64 上送），返回描述文本（见 `vision.rs`）。
+//! - `notify`（`mcp_notify`）：发送系统桌面通知（见 `notify.rs`）。
 //!
 //! 鉴权与 `/v1/*` 代理一致：`Authorization: Bearer <service-key>`（argon2 校验）。
 //! 会话模式为无状态（`NeverSessionManager`）——工具只有三个且无服务端推送，
@@ -18,7 +17,6 @@
 mod fetch;
 mod notify;
 mod tools;
-mod vision;
 
 use std::sync::{Arc, OnceLock};
 
@@ -66,7 +64,7 @@ fn mcp_service() -> &'static McpService {
 
 /// `POST/GET/DELETE /mcp` 入口：鉴权 → 委托 rmcp Streamable HTTP 服务。
 ///
-/// 鉴权失败 401；两个开关都关闭时仍正常应答协议请求（`tools/list` 返回空），
+/// 鉴权失败 401；全部开关都关闭时仍正常应答协议请求（`tools/list` 返回空），
 /// 保证已注册的客户端连接不报错。
 pub(crate) async fn handle_mcp_request(
     State(state): State<Arc<AppState>>,

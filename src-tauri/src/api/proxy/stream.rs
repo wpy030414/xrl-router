@@ -27,7 +27,7 @@ use crate::gateway::server::AppState;
 use super::auth::ServiceKeyInfo;
 use super::forward::ForwardOutcome;
 use super::ir;
-use super::ir::types::{IrContentBlock, IrRequest, IrSystemBlock, IrSystemContent, IrToolChoice};
+use super::ir::types::{IrRequest, IrSystemBlock, IrSystemContent, IrToolChoice};
 use super::key_rotation::{pick_key_for, update_key_health};
 use super::route::{resolve_route, ResolvedRoute};
 
@@ -133,12 +133,6 @@ pub async fn proxy_stream(
     if state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed) {
         strip_notify_tools(&mut ctx.ir_request);
         inject_notify_hint(&mut ctx.ir_request);
-    }
-
-    // MCP Vision 模式：开关开启且请求含图片时，自动注入系统提示，
-    // 强制模型使用 web_vision 工具识图（模型默认不知道自己看不见图）。
-    if state.mcp_vision.load(std::sync::atomic::Ordering::Relaxed) {
-        inject_vision_hint(&mut ctx.ir_request);
     }
 
     // ── 分支：客户端非流式 → 走收集路径 ──────────────────────────────
@@ -708,55 +702,6 @@ fn is_notify_tool_name(name: &str) -> bool {
         || name.eq_ignore_ascii_case("notification")
         || name.starts_with("notify_")
         || name.ends_with("_notification")
-}
-
-/// MCP Vision 提示注入 + 图片剥离。
-///
-/// 检测请求消息中是否包含图片内容块；若包含，则：
-/// 1. 在系统提示末尾追加指令，强制模型使用 `web_vision` 工具识图；
-/// 2. **剥掉所有图片内容块**，避免不支持视觉的上游模型收到图片后
-///    返回空响应或报错（图片由 web_vision 工具走独立视觉模型处理）。
-fn inject_vision_hint(ir_request: &mut IrRequest) {
-    // 剥掉图片并检测是否有图片
-    let mut has_image = false;
-    for msg in &mut ir_request.messages {
-        let before = msg.content.len();
-        msg.content.retain(|block| !matches!(block, IrContentBlock::Image { .. }));
-        if msg.content.len() < before {
-            has_image = true;
-        }
-        // 若剥光后内容为空，补一个占位文本以免上游拒绝空消息
-        if msg.content.is_empty() {
-            msg.content.push(IrContentBlock::Text {
-                text: "[Image content omitted — analyze it via the web_vision tool]".to_string(),
-                cache_control: None,
-            });
-        }
-    }
-    if !has_image {
-        return;
-    }
-
-    info!("mcp: stripped image blocks from request, injected web_vision hint");
-
-    const HINT: &str = "This conversation contains images. You MUST use the `web_vision` tool \
-                        to analyze them before responding. You cannot see images directly.";
-
-    match &mut ir_request.system {
-        Some(IrSystemContent::Text(ref mut s)) => {
-            s.push_str("\n\n");
-            s.push_str(HINT);
-        }
-        Some(IrSystemContent::Blocks(ref mut blocks)) => {
-            blocks.push(IrSystemBlock {
-                text: HINT.to_string(),
-                cache_control: None,
-            });
-        }
-        None => {
-            ir_request.system = Some(IrSystemContent::Text(HINT.to_string()));
-        }
-    }
 }
 
 /// MCP WebSearch 模式下的工具剔除。

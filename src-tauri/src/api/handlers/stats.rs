@@ -88,10 +88,7 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
     Json(serde_json::json!({
         "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_webfetch": state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
-        "mcp_vision": state.mcp_vision.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_notify": state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
-        "mcp_vision_provider": state.database.get_setting("mcp_vision_provider").ok().flatten().unwrap_or_default(),
-        "mcp_vision_model": state.database.get_setting("mcp_vision_model").ok().flatten().unwrap_or_default(),
         "failover_enabled": state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
         "theme": theme,
         "hue": hue.parse::<i32>().unwrap_or(264),
@@ -103,10 +100,7 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
 pub(crate) struct UpdateSettingsRequest {
     mcp_websearch: Option<bool>,
     mcp_webfetch: Option<bool>,
-    mcp_vision: Option<bool>,
     mcp_notify: Option<bool>,
-    mcp_vision_provider: Option<String>,
-    mcp_vision_model: Option<String>,
     failover_enabled: Option<bool>,
     theme: Option<String>,
     hue: Option<i32>,
@@ -137,36 +131,10 @@ pub(crate) async fn update_settings(
             ));
         }
     }
-    if let Some(v) = req.mcp_vision {
-        state.mcp_vision.store(v, std::sync::atomic::Ordering::Relaxed);
-        let val = if v { "true" } else { "false" };
-        if let Err(e) = state.database.set_setting("mcp_vision", val) {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ));
-        }
-    }
     if let Some(v) = req.mcp_notify {
         state.mcp_notify.store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_notify", val) {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ));
-        }
-    }
-    if let Some(ref v) = req.mcp_vision_provider {
-        if let Err(e) = state.database.set_setting("mcp_vision_provider", v) {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ));
-        }
-    }
-    if let Some(ref v) = req.mcp_vision_model {
-        if let Err(e) = state.database.set_setting("mcp_vision_model", v) {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),

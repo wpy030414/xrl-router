@@ -1,8 +1,8 @@
 //! MCP 工具定义与执行：`web_search`（本地 Bing）+ `web_fetch`（Tauri WebView 渲染）
-//! + `web_vision`（视觉模型识图）+ `notify`（系统桌面通知）。
+//! + `notify`（系统桌面通知）。
 //!
 //! 手写 `ServerHandler`（不用 `#[tool_router]` 宏）——工具只有三个，且 `tools/list`
-//! 必须按运行时开关（`mcp_websearch` / `mcp_webfetch` / `mcp_vision`）动态过滤，
+//! 必须按运行时开关（`mcp_websearch` / `mcp_webfetch` / `mcp_notify`）动态过滤，
 //! 宏生成的静态列表做不到。
 //!
 //! 工具实现需要 `AppState`（SearchHttp / 开关原子量），而 `ServerHandler`
@@ -54,16 +54,15 @@ impl ServerHandler for XrlMcpTools {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         // 开关实时读取：客户端（重新）连接时即拿到最新工具列表。
-        let (ws, wf, v, n) = match app_state() {
+        let (ws, wf, n) = match app_state() {
             Some(s) => (
                 s.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
                 s.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
-                s.mcp_vision.load(std::sync::atomic::Ordering::Relaxed),
                 s.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
             ),
-            None => (false, false, false, false),
+            None => (false, false, false),
         };
-        Ok(ListToolsResult::with_all_items(filter_tools(ws, wf, v, n)))
+        Ok(ListToolsResult::with_all_items(filter_tools(ws, wf, n)))
     }
 
     async fn call_tool(
@@ -75,7 +74,6 @@ impl ServerHandler for XrlMcpTools {
         match request.name.as_ref() {
             "web_search" => Ok(run_web_search(&args).await),
             "web_fetch" => Ok(run_web_fetch(&args).await),
-            "web_vision" => Ok(run_web_vision(&args).await),
             "notify" => Ok(run_notify(&args).await),
             other => Err(ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,
@@ -87,8 +85,8 @@ impl ServerHandler for XrlMcpTools {
 }
 
 /// 按开关组合过滤工具列表（纯函数，便于单测）。
-fn filter_tools(websearch: bool, webfetch: bool, vision: bool, notify: bool) -> Vec<Tool> {
-    let mut tools = Vec::with_capacity(4);
+fn filter_tools(websearch: bool, webfetch: bool, notify: bool) -> Vec<Tool> {
+    let mut tools = Vec::with_capacity(3);
     if websearch {
         tools.push(web_search_tool());
     }
@@ -97,9 +95,6 @@ fn filter_tools(websearch: bool, webfetch: bool, vision: bool, notify: bool) -> 
     }
     if notify {
         tools.push(notify_tool());
-    }
-    if vision {
-        tools.push(web_vision_tool());
     }
     tools
 }
@@ -171,40 +166,6 @@ fn notify_tool() -> Tool {
         ),
     )
     .with_title("Notify")
-    .with_annotations(ToolAnnotations::new().read_only(true))
-}
-
-fn web_vision_tool() -> Tool {
-    Tool::new(
-        "web_vision",
-        "IMPORTANT: The current conversation model CANNOT see images directly. \
-         You MUST call this tool for ANY image in the conversation — including \
-         http(s) URLs, file:// paths, or any image attachment — before you can \
-         discuss its content. Without calling this tool, images are completely \
-         invisible to you. Do NOT attempt to describe or analyze images without \
-         using this tool first.",
-        Arc::new(
-            json!({
-                "type": "object",
-                "properties": {
-                    "image_url": {
-                        "type": "string",
-                        "description": "Image source: http(s) URL or local absolute path / file:// URL"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Optional instruction for the vision model (default: describe the image)"
-                    }
-                },
-                "required": ["image_url"],
-                "additionalProperties": false
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )
-    .with_title("Web Vision")
     .with_annotations(ToolAnnotations::new().read_only(true))
 }
 
@@ -350,77 +311,6 @@ fn tool_unavailable() -> CallToolResponse {
     .into()
 }
 
-/// web_vision 执行：取图 → 配置的视觉模型识别 → 返回描述文本。
-async fn run_web_vision(args: &JsonObject) -> CallToolResponse {
-    let image_url = match args
-        .get("image_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        Some(u) => u.to_string(),
-        None => {
-            return CallToolResult::error(vec![ContentBlock::text(
-                "Error: missing required argument `image_url`".to_string(),
-            )])
-            .into()
-        }
-    };
-    let prompt = args
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-
-    let Some(state) = app_state() else {
-        return tool_unavailable();
-    };
-
-    info!(image = %image_url, "mcp: web_vision executing");
-    match super::vision::describe_image(&state, &image_url, prompt).await {
-        Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]).into(),
-        Err(e) => {
-            tracing::warn!(image = %image_url, error = %e, "mcp: web_vision failed");
-            CallToolResult::error(vec![ContentBlock::text(vision_error_text(&e))]).into()
-        }
-    }
-}
-
-/// 把 VisionError 映射为工具级错误文本（与 web_search/web_fetch 的英文风格一致）。
-fn vision_error_text(e: &super::vision::VisionError) -> String {
-    match e {
-        super::vision::VisionError::NotConfigured => {
-            "Vision model is not configured. Enable MCP Vision and choose a provider/model in Settings."
-                .to_string()
-        }
-        super::vision::VisionError::ProviderNotFound(id) => {
-            format!("Vision provider not found: {id}. Reconfigure it in Settings.")
-        }
-        super::vision::VisionError::ProviderDisabled(name) => {
-            format!("Vision provider is disabled: {name}. Enable it in Settings.")
-        }
-        super::vision::VisionError::KeyMissing(name) => {
-            format!("No available API key for provider: {name}. Add a key in Settings.")
-        }
-        super::vision::VisionError::ImageFetch(msg) => {
-            format!("Failed to load image: {msg}. Use an http(s) URL or a local absolute path / file:// URL.")
-        }
-        super::vision::VisionError::ImageTooLarge(n) => {
-            format!("Image exceeds the 8 MiB limit ({n} bytes).")
-        }
-        super::vision::VisionError::UnsupportedMedia(m) => {
-            format!("Unsupported image type: {m}. Supported: png, jpeg, gif, webp, bmp.")
-        }
-        super::vision::VisionError::UnsupportedSource => {
-            "Unsupported image source. Use an http(s) URL or a local absolute path / file:// URL.".to_string()
-        }
-        super::vision::VisionError::Upstream { status, message } => {
-            format!("Vision API error (HTTP {status}): {message}. The model may not support image input.")
-        }
-        super::vision::VisionError::Other(msg) => format!("Vision request failed: {msg}"),
-    }
-}
-
 /// 把 Bing 结果格式化成喂给 LLM 的文本（与旧劫持循环同款格式）。
 fn format_search_text(results: &[crate::search::SearchResult]) -> String {
     results
@@ -437,25 +327,21 @@ mod tests {
 
     #[test]
     fn test_filter_tools_by_switches() {
-        assert_eq!(filter_tools(false, false, false, false).len(), 0);
-        let ws = filter_tools(true, false, false, false);
+        assert_eq!(filter_tools(false, false, false).len(), 0);
+        let ws = filter_tools(true, false, false);
         assert_eq!(ws.len(), 1);
         assert_eq!(ws[0].name.as_ref(), "web_search");
-        let wf = filter_tools(false, true, false, false);
+        let wf = filter_tools(false, true, false);
         assert_eq!(wf.len(), 1);
         assert_eq!(wf[0].name.as_ref(), "web_fetch");
-        let v = filter_tools(false, false, true, false);
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].name.as_ref(), "web_vision");
-        let n = filter_tools(false, false, false, true);
+        let n = filter_tools(false, false, true);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].name.as_ref(), "notify");
-        let all = filter_tools(true, true, true, true);
-        assert_eq!(all.len(), 4);
+        let all = filter_tools(true, true, true);
+        assert_eq!(all.len(), 3);
         assert_eq!(all[0].name.as_ref(), "web_search");
         assert_eq!(all[1].name.as_ref(), "web_fetch");
         assert_eq!(all[2].name.as_ref(), "notify");
-        assert_eq!(all[3].name.as_ref(), "web_vision");
     }
 
     #[test]
@@ -466,17 +352,6 @@ mod tests {
             let required = schema["required"].as_array().unwrap();
             assert_eq!(required.len(), 1);
         }
-    }
-
-    #[test]
-    fn test_web_vision_schema() {
-        let schema = &web_vision_tool().input_schema;
-        let required = schema["required"].as_array().unwrap();
-        assert_eq!(required.len(), 1);
-        assert_eq!(required[0].as_str(), Some("image_url"));
-        // prompt 可选：不在 required 里
-        assert!(schema["properties"]["prompt"]["type"].as_str() == Some("string"));
-        assert!(schema["properties"]["image_url"]["type"].as_str() == Some("string"));
     }
 
     #[test]
