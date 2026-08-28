@@ -10,11 +10,3 @@ export function useWebSocket(event: string, handler: (data: WsEvent) => void) {
     };
   }, [event, handler]);
 }
-
-export function useKeyHealth(providerId: string, updateKeyHealth: (keyId: string, status: string) => void) {
-  useWebSocket('key_health', (data) => {
-    if (data.type === 'key_health' && data.provider_id === providerId) {
-      updateKeyHealth(data.key_id, data.status);
-    }
-  });
-}

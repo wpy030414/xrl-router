@@ -1,6 +1,5 @@
 export type WsEvent =
   | { type: 'key_stats'; provider_id: string; green: number; total: number }
-  | { type: 'key_health'; provider_id: string; key_id: string; status: string; timestamp: number }
   | { type: 'request_metrics'; provider_id: string; model: string; latency_ms: number; tokens: number }
   | { type: 'balance_update'; provider_id: string; key_id: string; balance: number }
   | { type: 'provider_status'; provider_id: string; status: string; latency_ms: number }

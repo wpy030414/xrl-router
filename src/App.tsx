@@ -18,10 +18,7 @@ export function App() {
 
     // Tauri 事件监听
     if (isTauri()) {
-      listen('plugin-register', (payload: any) => {
-        console.log('[Plugin] Register event:', payload);
-        // TODO: 触发 PluginRegisterDialog
-      });
+      // plugin-register 由 PluginRegisterDialog 自监听处理
 
       listen('plugin-offline', (payload: any) => {
         console.log('[Plugin] Offline:', payload);

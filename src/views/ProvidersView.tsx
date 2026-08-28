@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Inbox, GripVertical, MoreVertical, Pencil, Trash2, ArrowUpDown, Check, Loader2 } from 'lucide-react';
 import {
@@ -36,7 +36,7 @@ import {
 import { useProvidersStore } from '@/stores/providers';
 import { useKeysStore } from '@/stores/keys';
 import { useModelsStore } from '@/stores/models';
-import { providersApi, type Provider, type Model, type ApiKey } from '@/lib/api';
+import { providersApi, pluginsApi, type Provider, type Model, type ApiKey } from '@/lib/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -122,12 +122,15 @@ function ProviderCard({
           {isPlugin ? (
             <span
               className={cn(
-                'text-xs italic shrink-0',
-                pluginOnline ? 'text-muted-foreground' : 'text-muted-foreground/50'
+                'text-xs shrink-0',
+                // 在线：常规样式（不斜体）；离线：淡化 + 斜体提示，不另标文字
+                pluginOnline
+                  ? 'text-muted-foreground'
+                  : 'text-muted-foreground/50 italic'
               )}
               title={t('providers.plugin_delegated')}
             >
-              {pluginOnline ? t('providers.plugin_online') : t('providers.plugin_offline')}
+              {t('providers.plugin_badge')}
             </span>
           ) : provider.base_url ? (
             <span
@@ -228,12 +231,20 @@ export function ProvidersView() {
     return map;
   }, [keys]);
 
-  // WebSocket listener for key stats updates
-  useWebSocket('key_stats', (event) => {
-    if (event.type === 'key_stats') {
+  // WebSocket listener for key stats updates (debounced — 后端高频推送时只触发一次重拉)
+  const keyStatsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleKeyStats = useCallback(() => {
+    if (keyStatsTimer.current) clearTimeout(keyStatsTimer.current);
+    keyStatsTimer.current = setTimeout(() => {
       fetchKeys();
-    }
-  });
+    }, 300);
+  }, [fetchKeys]);
+  useWebSocket('key_stats', handleKeyStats);
+  useEffect(() => {
+    return () => {
+      if (keyStatsTimer.current) clearTimeout(keyStatsTimer.current);
+    };
+  }, []);
 
   // Tauri event listeners for plugin status
   useEffect(() => {
@@ -282,15 +293,12 @@ export function ProvidersView() {
         // Load plugin statuses
         if (isTauri()) {
           try {
-            const resp = await fetch('/api/plugins');
-            if (resp.ok) {
-              const plugins = await resp.json();
-              const map: Record<string, boolean> = {};
-              for (const p of plugins) {
-                if (p.provider_id) map[p.provider_id] = !!p.connected;
-              }
-              setPluginOnlineMap(map);
+            const plugins = await pluginsApi.list();
+            const map: Record<string, boolean> = {};
+            for (const p of plugins) {
+              if (p.provider_id) map[p.provider_id] = !!p.connected;
             }
+            setPluginOnlineMap(map);
           } catch {
             // ignore
           }
@@ -447,3 +455,5 @@ export function ProvidersView() {
     </div>
   );
 }
+
+export default ProvidersView;

@@ -4,7 +4,7 @@ import { ArrowLeft, Loader2, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProvidersStore } from '@/stores/providers';
 import { useKeysStore } from '@/stores/keys';
-import { providersApi, modelsApi, keysApi, type Provider } from '@/lib/api';
+import { providersApi, pluginsApi, modelsApi, keysApi, type Provider, type PluginDetail } from '@/lib/api';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -61,14 +61,6 @@ function parseKeysText(text: string): string[] {
     .filter(Boolean);
 }
 
-interface PluginInfo {
-  plugin_id: string;
-  provider_id: string;
-  name?: string;
-  kind?: string;
-  base_url?: string;
-}
-
 export function ProviderFormView() {
   const t = useT();
   const navigate = useNavigate();
@@ -78,8 +70,10 @@ export function ProviderFormView() {
   const { keys, fetchKeys, createKey } = useKeysStore();
 
   const isEdit = !!id;
-  const pluginId = searchParams.get('plugin_id');
-  const pluginProviderId = searchParams.get('provider_id');
+  const queryPluginId = searchParams.get('plugin_id');
+  // 编辑已有插件供应商时同样进入插件模式（config.plugin_id 识别）
+  const [editPluginId, setEditPluginId] = useState<string | null>(null);
+  const pluginId = queryPluginId ?? editPluginId;
   const isPlugin = !!pluginId;
 
   // Form state
@@ -93,7 +87,7 @@ export function ProviderFormView() {
   // 仅在需要拉取远端数据（编辑 / 插件预填）时进入加载态；新建直接渲染表单。
   const [loading, setLoading] = useState(isEdit || isPlugin);
   const [error, setError] = useState<string | null>(null);
-  const [pluginInfo, setPluginInfo] = useState<PluginInfo | null>(null);
+  const [pluginInfo, setPluginInfo] = useState<PluginDetail | null>(null);
 
   // Load existing provider data for edit mode
   useEffect(() => {
@@ -103,6 +97,10 @@ export function ProviderFormView() {
       setLoading(true);
       try {
         const provider = await providersApi.get(id);
+        // 插件供应商（config_json 含 plugin_id）：同样进入插件模式——
+        // 隐藏 API Key 输入、禁用 kind/base_url；名字保持可编辑
+        const cfgPluginId = provider.config?.plugin_id as string | undefined;
+        if (cfgPluginId) setEditPluginId(cfgPluginId);
         setName(provider.name);
         setKind(provider.kind);
         setBaseUrl(provider.base_url);
@@ -131,37 +129,26 @@ export function ProviderFormView() {
     load();
   }, [id, isEdit, fetchKeys]);
 
-  // Load plugin info for plugin mode
+  // Load plugin info for plugin mode（仅弹窗跳转的查询串模式触发；
+  // 编辑模式的数据由上方编辑 effect 从 provider + models 表回填）
   useEffect(() => {
-    if (!isPlugin) return;
+    if (!queryPluginId) return;
 
     const load = async () => {
       setLoading(true);
       try {
-        const resp = await fetch(`/api/plugins`);
-        if (resp.ok) {
-          const plugins = await resp.json();
-          const plugin = plugins.find((p: any) => p.plugin_id === pluginId);
-          if (plugin) {
-            setPluginInfo({
-              plugin_id: plugin.plugin_id,
-              provider_id: pluginProviderId || plugin.provider_id || '',
-              name: plugin.provider_name || plugin.plugin_id,
-              kind: plugin.kind || 'chat_completions',
-              base_url: plugin.base_url || '',
-            });
-            setName(plugin.provider_name || plugin.plugin_id);
-            setKind(plugin.kind || 'chat_completions');
-            setBaseUrl(plugin.base_url || '');
-            setApiPath(plugin.api_path || DEFAULT_PATHS[plugin.kind || 'chat_completions']);
-            // 插件自带模型列表（注册时已写入 models 表），预填进编辑区
-            setModelsText(
-              ((plugin.models || []) as { model_id: string; display_name: string }[])
-                .map((m) => (m.display_name && m.display_name !== m.model_id ? `${m.model_id}<-${m.display_name}` : m.model_id))
-                .join('\n')
-            );
-          }
-        }
+        const data = await pluginsApi.get(queryPluginId);
+        setPluginInfo(data);
+        setName(data.provider.name || queryPluginId);
+        setKind((data.provider.kind as Provider['kind']) || 'chat_completions');
+        setBaseUrl(data.provider.base_url || '');
+        setApiPath(data.provider.api_path || DEFAULT_PATHS[data.provider.kind] || '');
+        // 插件自带模型列表（注册时已写入 models 表），预填进编辑区
+        setModelsText(
+          (data.models || [])
+            .map((m) => (m.display_name && m.display_name !== m.model_id ? `${m.model_id}<-${m.display_name}` : m.model_id))
+            .join('\n')
+        );
       } catch (e: any) {
         setError(t('providerNew.plugin_load_failed', { msg: e.message }));
       } finally {
@@ -170,7 +157,7 @@ export function ProviderFormView() {
     };
 
     load();
-  }, [pluginId, isPlugin]);
+  }, [queryPluginId]);
 
   // Update default URL and path when kind changes (only in create mode)
   const handleKindChange = (newKind: Provider['kind']) => {
@@ -183,9 +170,12 @@ export function ProviderFormView() {
 
   // Count synced keys
   const syncedKeysCount = useMemo(() => {
-    if (!isEdit) return 0;
+    if (!isPlugin) return 0;
+    // 新插件模式：注册时同步的密钥数来自插件详情
+    if (pluginInfo?.key_count != null) return pluginInfo.key_count;
+    // 编辑插件模式：从 keys store 按 provider 过滤（编辑时已 fetchKeys(id)）
     return keys.filter((k) => k.provider_id === id).length;
-  }, [keys, id, isEdit]);
+  }, [pluginInfo, keys, id, isPlugin]);
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -195,11 +185,11 @@ export function ProviderFormView() {
 
     try {
       const models = parseModelsText(modelsText);
-      const config: Record<string, any> = { models };
-
-      if (isPlugin && pluginInfo) {
-        config.plugin_id = pluginInfo.plugin_id;
-      }
+      // 插件模式：config 与注册时保持一致（PUT 整包替换 config，必须带全）；
+      // models 以表为准，config.models 已是旧版遗留（Vue 版同样不带）
+      const config: Record<string, any> = isPlugin
+        ? { plugin_id: pluginId!, delegated: true }
+        : { models };
 
       const data: Partial<Provider> = {
         name: name.trim(),
@@ -211,8 +201,14 @@ export function ProviderFormView() {
       };
 
       let savedProvider: Provider;
+      let needConfirm = false;
 
-      if (isEdit) {
+      if (isPlugin && !isEdit) {
+        // 插件模式：provider 已在注册时创建，不重复创建，只更新
+        if (!pluginInfo?.provider.id) throw new Error('plugin info missing');
+        savedProvider = await providersApi.update(pluginInfo.provider.id, data);
+        needConfirm = true;
+      } else if (isEdit) {
         savedProvider = await providersApi.update(id, data);
       } else {
         savedProvider = await providersApi.create(data);
@@ -270,6 +266,11 @@ export function ProviderFormView() {
         }
       }
 
+      // 插件模式首次添加：确认激活插件供应商（编辑模式不重复确认）
+      if (needConfirm) {
+        await pluginsApi.confirm(pluginId!);
+      }
+
       await fetchProviders();
       navigate('/providers');
     } catch (e: any) {
@@ -279,7 +280,9 @@ export function ProviderFormView() {
     }
   };
 
-  const title = isPlugin
+  const title = isEdit && isPlugin
+    ? t('providerNew.title.plugin_edit')
+    : isPlugin
     ? t('providerNew.title.plugin')
     : isEdit
     ? t('providerNew.title.edit')
@@ -322,7 +325,6 @@ export function ProviderFormView() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            disabled={isPlugin}
             className={cn(
               'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm',
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -371,6 +373,7 @@ export function ProviderFormView() {
             type="url"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
+            disabled={isPlugin}
             className={cn(
               'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono',
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -447,3 +450,5 @@ export function ProviderFormView() {
     </div>
   );
 }
+
+export default ProviderFormView;

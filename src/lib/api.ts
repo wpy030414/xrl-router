@@ -138,7 +138,7 @@ export interface ServiceKeyUsage {
 
 export const serviceKeysApi = {
   list: () => request<(ServiceKey & ServiceKeyUsage)[]>('/api/service-keys'),
-  create: (data: { name: string }) =>
+  create: (data: { name: string; allowed_models?: string[] }) =>
     request<{ id: string; name: string; key: string; key_masked: string }>('/api/service-keys', { method: 'POST', body: data }),
   update: (id: string, data: { name?: string; allowed_models?: string[]; quota_5h?: number; quota_7d?: number }) =>
     request<{ ok: boolean }>(`/api/service-keys/${id}`, { method: 'PUT', body: data }),
@@ -278,10 +278,7 @@ export const requestLogApi = {
 export interface AppSettings {
   mcp_websearch: boolean;
   mcp_webfetch: boolean;
-  mcp_vision: boolean;
   mcp_notify: boolean;
-  mcp_vision_provider: string;
-  mcp_vision_model: string;
   failover_enabled: boolean;
   theme: string;
   hue: number;
@@ -290,7 +287,7 @@ export interface AppSettings {
 
 export const settingsApi = {
   get: () => request<AppSettings>('/api/settings'),
-  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_vision?: boolean; mcp_notify?: boolean; mcp_vision_provider?: string; mcp_vision_model?: string; failover_enabled?: boolean; theme?: string; hue?: number; locale?: string }) =>
+  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; failover_enabled?: boolean; theme?: string; hue?: number; locale?: string }) =>
     request<{ status: string }>('/api/settings', { method: 'PUT', body: data }),
 };
 
@@ -315,4 +312,35 @@ export const dataApi = {
 // --- Install（局域网分发）---
 export const installApi = {
   localIp: () => request<{ ip: string | null; port: number }>('/api/install/local-ip'),
+};
+
+// --- Plugins（委托供应商注册；注册事件走 Tauri 桌面端，LAN 浏览器无此列表使用场景）---
+export interface PluginListItem {
+  id: string;
+  provider_id: string | null;
+  status: string;
+  last_heartbeat_at: number | null;
+  connected: boolean;
+}
+
+export interface PluginDetail {
+  plugin_id: string;
+  status: string;
+  connected: boolean;
+  provider: {
+    id: string;
+    name: string;
+    kind: string;
+    base_url: string;
+    api_path: string;
+  };
+  models: { model_id: string; display_name: string; tier: string }[];
+  key_count: number;
+}
+
+export const pluginsApi = {
+  list: () => request<PluginListItem[]>('/api/plugins'),
+  get: (pluginId: string) => request<PluginDetail>(`/api/plugins/${pluginId}`),
+  confirm: (pluginId: string) => request<{ status: string }>(`/api/plugins/${pluginId}/confirm`, { method: 'POST' }),
+  remove: (pluginId: string) => request<{ status: string }>(`/api/plugins/${pluginId}`, { method: 'DELETE' }),
 };
