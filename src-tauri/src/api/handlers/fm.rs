@@ -33,7 +33,7 @@
 
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
@@ -95,6 +95,9 @@ pub struct FmPlaybackState {
     pub artist: String,
     pub title: String,
     pub index: usize,
+    /// 像素场景动画时钟（秒）：仅播放（未静音）时按真实流逝累计，暂停冻结。
+    /// 主窗口与壁纸窗口统一经 `fm_scene_t` 采样，保证两处画面严格同步。
+    pub scene_t: f64,
 }
 
 // ── 引擎 ────────────────────────────────────────────────────────────────────
@@ -130,6 +133,7 @@ impl FmEngine {
                 artist: String::new(),
                 title: String::new(),
                 index: 0,
+                scene_t: 0.0,
             })),
             http_client,
         }
@@ -155,6 +159,11 @@ impl FmEngine {
         (*self.control_tx).clone()
     }
 
+    /// 返回当前像素场景动画时钟（秒；引擎未就绪时 0.0）。
+    pub fn scene_t(&self) -> f64 {
+        self.state.lock().map(|s| s.scene_t).unwrap_or(0.0)
+    }
+
     /// 返回当前播放状态快照。
     pub fn get_state(&self) -> FmPlaybackState {
         self.state
@@ -166,6 +175,7 @@ impl FmEngine {
                 artist: String::new(),
                 title: String::new(),
                 index: 0,
+                scene_t: 0.0,
             })
     }
 
@@ -272,6 +282,9 @@ fn engine_loop(
     let mut pending_seek: Option<u64> = Some(seed_offset);
     let mut next_preload: Option<Preload> = None;
 
+    // 像素场景时钟的上一采样时刻（真实流逝累计，暂停/静音冻结）。
+    let mut last_tick = Instant::now();
+
     // 初始曲目状态（引擎就绪但未播放）。
     {
         let track = &TRACKS[idx];
@@ -293,6 +306,9 @@ fn engine_loop(
 
     'outer: loop {
         let track = &TRACKS[idx];
+
+        // 场景时钟按真实流逝推进（切曲下载/解码的静默间隙照走，与音频一致）。
+        tick_scene_t(&state, muted, &mut last_tick);
 
         // ── 获取音频字节：优先使用预加载结果，否则实时下载 ──
 
@@ -464,6 +480,9 @@ fn engine_loop(
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
 
+            // 场景时钟：每 100ms 轮询迭代表推进一次（取控制消息之后的 muted 值）。
+            tick_scene_t(&state, muted, &mut last_tick);
+
             if sink.empty() {
                 break 'wait;
             }
@@ -512,6 +531,17 @@ fn resume_playback_if_muted(
     update_playback(app_handle, true, Some(new_offset));
     let _ = app_handle.emit("fm-state-changed", true);
     false
+}
+
+/// 推进像素场景动画时钟：仅未静音（播放中）时按真实流逝累计，暂停/静音冻结。
+fn tick_scene_t(state: &Arc<Mutex<FmPlaybackState>>, muted: bool, last: &mut Instant) {
+    let now = Instant::now();
+    if !muted {
+        if let Ok(mut s) = state.lock() {
+            s.scene_t += now.duration_since(*last).as_secs_f64();
+        }
+    }
+    *last = now;
 }
 
 /// 当前墙钟秒（epoch）。

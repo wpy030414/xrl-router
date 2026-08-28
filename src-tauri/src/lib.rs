@@ -24,6 +24,8 @@ mod providers;
 // pub：MCP 工具模块复用 SearchHttp / search()
 pub mod search;
 mod types;
+// 桌面壁纸劫持（FM 像素艺术 → 桌面层；透明 WebView + 社区插件挂载）
+mod wallpaper;
 
 // SDK 合规验证（fixtures 导出 + Python 官方 SDK 校验脚本）。
 // 本目录仅 test 构建；正式构建不编译任何测试代码。
@@ -168,8 +170,7 @@ fn fm_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
 /// 前端 Claude FM 预热完成时调用：把 FM 勾选项加入托盘菜单。
 /// 预热完成前 FM 菜单项隐藏，避免在音源未就绪时误操作。
 #[tauri::command]
-fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {
-    let state_guard = app.state::<std::sync::Mutex<TrayMenuState>>();
+fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {    let state_guard = app.state::<std::sync::Mutex<TrayMenuState>>();
     let mut state = state_guard.lock().map_err(|e| e.to_string())?;
     if state.fm_item.is_some() {
         return Ok(()); // 已加入过，幂等
@@ -197,8 +198,71 @@ fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ── 像素场景动画时钟（主窗口与壁纸窗口共用采样源） ──
+
+/// 当前像素场景动画时钟（秒）。`PixelScene` 的 `sampleT` 每帧采样，
+/// 保证主窗口与桌面壁纸窗口的动画相位完全一致。
+#[tauri::command]
+fn fm_scene_t(app: tauri::AppHandle) -> Result<f64, String> {
+    let state = app.state::<Arc<AppState>>();
+    Ok(state.fm.scene_t())
+}
+
+// ── 桌面壁纸劫持（FM 像素艺术 → 桌面层） ──
+
+/// 启用/禁用桌面壁纸劫持：动态创建/销毁 "wallpaper" 窗口并写入 DB 供重启恢复。
+/// 返回实际状态（前端据此设置勾选态）。
+#[tauri::command]
+async fn wallpaper_set(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    {
+        let state = app.state::<wallpaper::WallpaperState>();
+        if enabled {
+            match state.enable(&app) {
+                Ok(()) => info!("wallpaper: enabled"),
+                Err(e) => {
+                    tracing::warn!("wallpaper: enable failed: {e}");
+                    return Err(e);
+                }
+            }
+        } else {
+            info!("wallpaper: disabled");
+            state.disable();
+        }
+    }
+    // 持久化：窗口已生效，DB 写失败仅告警（避免把实际状态回滚成冲突）。
+    let state = app.state::<Arc<AppState>>();
+    if let Err(e) = state.database.set_setting(
+        wallpaper::SETTING_KEY,
+        if enabled { "true" } else { "false" },
+    ) {
+        tracing::warn!("wallpaper_set: failed to persist setting: {e}");
+    }
+    Ok(app.state::<wallpaper::WallpaperState>().is_enabled())
+}
+
+/// 桌面壁纸劫持状态（勾选态 + 平台支持情况，前端据此决定菜单可见性）。
+#[tauri::command]
+fn wallpaper_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let state = app.state::<wallpaper::WallpaperState>();
+    Ok(serde_json::json!({
+        "enabled": state.is_enabled(),
+        "supported": wallpaper::supported(),
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 全进程统一 WebView2 浏览器参数：关闭 Chromium 原生窗口遮挡检测。
+    // Windows 壁纸已改 GDI 直绘（无 WebView），此参数仅为存在 WebView 的
+    // 场景兜底（macOS 壁纸 WebView 方案在 WorkerW/桌面层同样会被误判遮挡）。
+    // 必须经环境变量在任何 WebView 创建前注入——同一 user data folder 的
+    // 环境共享浏览器进程，不同参数会冲突（0x8007139F）。
+    #[cfg(target_os = "windows")]
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-features=CalculateNativeWinOcclusion",
+    );
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -240,6 +304,9 @@ pub fn run() {
             fm_get_state,
             fm_ready,
             get_gateway_base,
+            fm_scene_t,
+            wallpaper_set,
+            wallpaper_get_state,
         ])
         .setup(move |app| {
             // Resolve data directory using Tauri's path API:
@@ -258,6 +325,14 @@ pub fn run() {
                     let _ = w.hide();
                     info!("Window hidden (silent start)");
                 }
+            }
+
+            // ── 移除窗口装饰（Windows/macOS 去标题栏） ──
+            // macOS: titleBarStyle: "Overlay" 已足够，但调用 set_decorations(false) 可确保无边框
+            // Windows: 必须调用 set_decorations(false) 才能移除原生标题栏
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_decorations(false);
+                info!("Window decorations removed");
             }
 
             let db_path = data_dir.join("xrl-router.db");
@@ -288,6 +363,40 @@ pub fn run() {
             // Create shared application state with all registries
             let app_state = Arc::new(AppState::new(config.clone(), database.clone(), master_key));
             app.manage(app_state.clone());
+
+            // ── 桌面壁纸劫持（FM 像素艺术 → 桌面层）──
+            // 状态管理 + 启动恢复：上次勾选过则重建壁纸窗口。
+            app.manage(wallpaper::WallpaperState::default());
+            if database
+                .get_setting(wallpaper::SETTING_KEY)
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("true")
+            {
+                info!("Restoring desktop wallpaper (wallpaper_enabled=true)");
+                // 惰性恢复：setup 期间事件循环尚未泵送，建窗必须在循环就绪后。
+                // 主窗口 WebView2 初始化未完成时第二 webview 会报 0x8007139F
+                // （组/资源状态错误）——延迟 2s + 重试 3 次兜底。
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    for attempt in 1..=3 {
+                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                        let Some(state) = app_handle.try_state::<wallpaper::WallpaperState>() else {
+                            return;
+                        };
+                        match state.enable(&app_handle) {
+                            Ok(()) => {
+                                info!("Restored desktop wallpaper");
+                                return;
+                            }
+                            Err(e) => {
+                                error!("Failed to restore desktop wallpaper (attempt {attempt}): {e}");
+                            }
+                        }
+                    }
+                });
+            }
 
             // MCP 工具模块需要全局 AppState 引用（SearchHttp / 开关 / 渲染层），
             // ServerHandler 深处拿不到 axum State，启动时注入一次。

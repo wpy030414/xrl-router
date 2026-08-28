@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Play, Pause } from 'lucide-react';
 import { useT } from '@/i18n';
-import { isTauri, invoke, listen } from '@/lib/tauri';
+import { useFm } from '@/hooks/useFm';
+import { invoke, isTauri } from '@/lib/tauri';
 import { cn } from '@/lib/utils';
 import { PixelScene } from '@/components/PixelScene';
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 
-interface FmMeta {
-  artist: string;
-  title: string;
-  index: number;
-}
-
-interface FmState {
-  ready: boolean;
-  playing: boolean;
-  track: FmMeta;
+interface WallpaperInfo {
+  enabled: boolean;
+  supported: boolean;
 }
 
 /**
@@ -26,112 +26,107 @@ interface FmState {
  * 窗口底部以等宽字体展示当前「标题 - 歌手」。暂停只是静音（radio 模式），
  * 曲目信息照常跟随轮播。
  *
+ * 右击像素艺术画面可勾选「设置为桌面背景」：Rust 侧动态创建 wallppaper
+ * 窗口挂到桌面壁纸层，两处画面共用引擎权威时钟（`fm_scene_t`），严格同步；
+ * 壁纸画面不显示播放按钮与歌曲信息。
+ *
  * 本视图不做 relative 定位：场景与底栏 absolute 锚定到最近的定位祖先
  * （SidebarInset 的 <main>，自带 relative），铺满侧边栏右侧整个可视区；
  * 按钮在文档流里居中，保证页面高度 = 视口（无滚动）。
  */
 export function ClaudeFmView() {
   const t = useT();
-  const [fmState, setFmState] = useState<FmState>({
-    ready: false,
-    playing: false,
-    track: { artist: '', title: '', index: 0 },
+  const fm = useFm();
+  const [wallpaper, setWallpaper] = useState<WallpaperInfo>({
+    enabled: false,
+    supported: false,
   });
 
-  // Initialize FM: get initial state + listen for Tauri events
+  // 桌面壁纸劫持状态（勾选态 + 平台支持情况，来自后端）
   useEffect(() => {
     if (!isTauri()) return;
-
-    let unlisteners: (() => void)[] = [];
     let mounted = true;
-
-    const init = async () => {
-      // Get initial state
-      try {
-        const ps = await invoke<FmMeta & { playing: boolean; ready: boolean }>('fm_get_state');
-        if (ps && mounted) {
-          setFmState({
-            ready: ps.ready,
-            playing: ps.playing,
-            track: { artist: ps.artist, title: ps.title, index: ps.index },
-          });
-        }
-      } catch {
-        // Backend not ready yet
-      }
-
-      // Listen for track changes
-      const unlistenMeta = await listen<FmMeta>('fm-meta', (payload) => {
-        if (!mounted) return;
-        setFmState((prev) => ({
-          ...prev,
-          track: {
-            artist: payload.artist,
-            title: payload.title,
-            index: payload.index,
-          },
-        }));
-      });
-
-      const unlistenReady = await listen<void>('fm-ready', () => {
-        if (!mounted) return;
-        setFmState((prev) => ({ ...prev, ready: true }));
-        invoke('fm_ready').catch(() => {});
-      });
-
-      const unlistenStateChanged = await listen<boolean>('fm-state-changed', (payload) => {
-        if (!mounted) return;
-        setFmState((prev) => ({ ...prev, playing: payload }));
-        invoke('fm_set_playing', { playing: payload }).catch(() => {});
-      });
-
-      unlisteners = [unlistenMeta, unlistenReady, unlistenStateChanged];
-    };
-
-    init();
-
+    void invoke<WallpaperInfo>('wallpaper_get_state').then((s) => {
+      if (s && mounted) setWallpaper(s);
+    });
     return () => {
       mounted = false;
-      unlisteners.forEach((fn) => fn());
     };
   }, []);
+
+  // 动画时钟采样（两窗口统一用引擎权威值）；非 Tauri（浏览器调试）为 undefined
+  const sampleT = useMemo(
+    () => (isTauri() ? () => invoke<number>('fm_scene_t') : undefined),
+    []
+  );
 
   const handleToggle = useCallback(async () => {
     if (!isTauri()) return;
     await invoke('fm_toggle');
   }, []);
 
-  const caption = [fmState.track.title, fmState.track.artist].filter(Boolean).join(' - ');
+  const handleWallpaperToggle = useCallback(async (checked: boolean) => {
+    if (!isTauri()) return;
+    setWallpaper((prev) => ({ ...prev, enabled: checked })); // 乐观更新
+    // 直连 @tauri-apps/api/core：失败时拿到真实错误（lib/tauri.ts 的 invoke 会吞掉错误信息）
+    try {
+      const { invoke: invokeCore } = await import('@tauri-apps/api/core');
+      const ok = await invokeCore<boolean>('wallpaper_set', { enabled: checked });
+      setWallpaper((prev) => ({ ...prev, enabled: !!ok }));
+    } catch (e) {
+      console.error('[wallpaper] wallpaper_set failed:', e);
+      window.alert(`wallpaper_set failed:\n${e}`);
+      setWallpaper((prev) => ({ ...prev, enabled: !checked })); // 回滚
+    }
+  }, []);
+
+  const caption = [fm.track.title, fm.track.artist].filter(Boolean).join(' - ');
 
   return (
     <div className="flex min-h-[calc(100vh_-_4rem)] items-center justify-center">
-      {/* 像素艺术背景：未播放/暂停时全黑白 + 静止，播放时彩色 + 动画 */}
-      <div
-        className={cn(
-          // duration-700 同时作用于入场 fade-in 与 grayscale 过渡
-          'absolute inset-0 animate-in fade-in duration-700 transition-[filter]',
-          !fmState.playing && 'grayscale'
-        )}
-        aria-hidden
-      >
-        <PixelScene seed={fmState.track.index} playing={fmState.playing} />
-      </div>
+      {/* 像素艺术背景：未播放/暂停时全黑白 + 静止，播放时彩色 + 动画。
+          右击（ContextMenu）可勾选「设置为桌面背景」——桌面被劫持为与
+          应用内严格同步的像素艺术动画（无按钮、无歌曲信息）。 */}
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            className={cn(
+              // duration-700 同时作用于入场 fade-in 与 grayscale 过渡
+              'absolute inset-0 animate-in fade-in duration-700 transition-[filter]',
+              !fm.playing && 'grayscale'
+            )}
+            aria-hidden
+          >
+            <PixelScene seed={fm.track.index} playing={fm.playing} sampleT={sampleT} />
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          {wallpaper.supported && (
+            <ContextMenuCheckboxItem
+              checked={wallpaper.enabled}
+              onCheckedChange={handleWallpaperToggle}
+            >
+              {wallpaper.enabled ? t('fm.unsetWallpaper') : t('fm.setWallpaper')}
+            </ContextMenuCheckboxItem>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
 
       {/* 播放按钮（居中） */}
       <button
         type="button"
-        aria-label={fmState.playing ? t('fm.pause') : t('fm.play')}
-        disabled={!fmState.ready}
+        aria-label={fm.playing ? t('fm.pause') : t('fm.play')}
+        disabled={!fm.ready}
         onClick={handleToggle}
         className={cn(
           'relative z-10 flex h-16 w-16 items-center justify-center rounded-full bg-white text-zinc-900 ring-1 ring-black/10',
           'shadow-[0_10px_32px_rgba(0,0,0,0.35)] transition-all duration-300',
           'hover:scale-105 hover:bg-zinc-100',
           'disabled:cursor-default disabled:opacity-40 disabled:hover:scale-100',
-          fmState.playing && 'shadow-[0_0_44px_rgba(255,255,255,0.4)]'
+          fm.playing && 'shadow-[0_0_44px_rgba(255,255,255,0.4)]'
         )}
       >
-        {fmState.playing ? <Pause className="h-6 w-6" /> : <Play className="ml-0.5 h-6 w-6" />}
+        {fm.playing ? <Pause className="h-6 w-6" /> : <Play className="ml-0.5 h-6 w-6" />}
       </button>
 
       {/* 窗口底部：当前「标题 - 歌手」 */}
@@ -145,3 +140,5 @@ export function ClaudeFmView() {
     </div>
   );
 }
+
+export default ClaudeFmView;

@@ -7134,6 +7134,7 @@ dependencies = [
  "futures",
  "htmd",
  "include_dir",
+ "objc2",
  "rand 0.8.7",
  "reqwest 0.12.28",
  "rmcp",
@@ -7160,6 +7161,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]

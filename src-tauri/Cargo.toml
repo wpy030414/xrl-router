@@ -14,7 +14,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri
+# Tauri（透明窗口在 v2 无需 feature，WebviewWindowBuilder::transparent 直接可用）
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 
@@ -79,12 +79,21 @@ rmcp = { version = "3", features = ["server", "macros", "transport-streamable-ht
 # 渲染后的 HTML → Markdown（喂给模型前压缩体积、保留结构）
 htmd = "0.2"
 
+# 桌面壁纸劫持（FM 像素艺术 → 桌面层）：
+# - Windows：透明 WebView 窗口 + tauri-plugin-desktop-underlay 挂载
+#   （DWM 视觉合成路径——桌面 WorkerW 层唯一可靠渲染路径）
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 # block 0.1.6（souvlaki → cocoa 的 macOS 传递依赖）触发 future-incompat lint
 # uninhabited-static（rust-lang/rust#74840），上游 2016 年后无新版，故 vendor 打补丁。
-# 详见 vendor/block/Cargo.toml 说明。
+# 详见 vendor/block/README.md 说明。
 [patch.crates-io]
 block = { path = "vendor/block" }

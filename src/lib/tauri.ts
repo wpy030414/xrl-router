@@ -11,6 +11,16 @@ export function isTauri(): boolean {
   return '__TAURI_INTERNALS__' in window;
 }
 
+/** 检测是否为 Windows 平台（同步版本，用 UA 检测） */
+export function isWindows(): boolean {
+  if (!isTauri()) return false;
+  const ua = navigator.userAgent.toLowerCase();
+  return ua.includes('win');
+}
+
+/** 重新导出 getCurrentWindow 供前端窗口控制使用 */
+export { getCurrentWindow };
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   if (!isTauri()) return null;
   try {
