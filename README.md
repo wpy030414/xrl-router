@@ -9,32 +9,26 @@ xrl-router 是一个运行在本地的 LLM API 统一网关。客户端通过 An
 <table>
   <tr>
     <td width="50%">
-      <strong>Claude FM 播放器</strong><br>
-      <img src="docs/assets/fm.png" alt="Claude FM">
+      <img src="docs/assets/fm.png" alt="FM">
     </td>
     <td width="50%">
-      <strong>供应商管理</strong><br>
-      <img src="docs/assets/provider.png" alt="Providers">
+      <img src="docs/assets/cloud.ai.png" alt="Cloud AI">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <strong>组合别名</strong><br>
-      <img src="docs/assets/combo.png" alt="Combos">
+      <img src="docs/assets/local.ai.png" alt="Local AI">
     </td>
     <td width="50%">
-      <strong>密钥管理</strong><br>
-      <img src="docs/assets/secret.png" alt="Secrets">
+      <img src="docs/assets/combos.png" alt="Combos">
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <strong>用量统计</strong><br>
+      <img src="docs/assets/secrets.png" alt="Secrets">
+    </td>
+    <td width="50%">
       <img src="docs/assets/stat.png" alt="Stats">
-    </td>
-    <td width="50%">
-      <strong>设置</strong><br>
-      <img src="docs/assets/setting.png" alt="Settings">
     </td>
   </tr>
 </table>
@@ -80,7 +74,7 @@ pnpm build
 
 ### 局域网分发
 
-把本机变成局域网 API 网关：在「密钥管理」页创建密钥后，弹窗里复制「分发链接」，发给局域网设备打开。Install 页面支持 Claude Code 和 ChatGPT/Codex 两种消费端，按平台生成单行命令。详见 [docs/specs/spec-lan-deploy.md](docs/specs/spec-lan-deploy.md)。
+把本机变成局域网 API 网关：在「密钥管理」页创建密钥后，弹窗里复制「分发链接」，发给局域网设备打开。Install 页面支持 Claude Code 和 ChatGPT/Codex 两种消费端，按平台生成单行命令。详见 [docs/specs/module-lan-deploy.md](docs/specs/module-lan-deploy.md)。
 
 ## Current status
 

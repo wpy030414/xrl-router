@@ -25,7 +25,7 @@
 ```
 
 **职责分工**:
-- **公开路径**：`/health`、`/ws`、`/ws/plugin`、`/api/ui-settings`（主题/令牌色/语言）、`/v1/*` 代理（需 service key 鉴权）、`/assets/*`（前端构建产物，`tower_http::ServeDir`）、SPA fallback（`index.html`，Vue Router 处理前端路由如 `/install`）。局域网设备可访问。
+- **公开路径**：`/health`、`/ws`、`/ws/plugin`、`/api/ui-settings`（主题/令牌色/语言）、`/v1/*` 代理（需 service key 鉴权）、`/assets/*`（前端构建产物，`tower_http::ServeDir`）、SPA fallback（`index.html`，React Router 处理前端路由如 `/install`）。局域网设备可访问。
 - **管理路径**：`/api/*` CRUD + `/api/install/local-ip` + `/api/data/*` + `/api/settings`（UI 设置写入）。仅 loopback IP（`127.0.0.1` / `::1`）可访问，非本机返回 403。
 
 `/v1/*` 由 `proxy_routes(state)` 构建（套 `rate_limit_middleware` + 64MiB body limit）。
@@ -53,11 +53,11 @@
 - 管理（IP 限制）：`/api/providers`、`/api/keys`、`/api/models`、`/api/stats`、`/api/settings`、`/api/plugins`、`/api/install/local-ip`、`/api/data/*`
 - 代理：`/v1/chat/completions`、`/v1/messages`、`/v1/models`、`/v1/user/balance`（套 `rate_limit_middleware`）
 
-SPA fallback（`spa_fallback()`）：所有未匹配 axum 路由的 GET 请求返回 `dist/index.html`（`DIST_DIR` 环境变量或 `../dist` 默认），由 Vue Router 接管前端路由。
+SPA fallback（`spa_fallback()`）：所有未匹配 axum 路由的 GET 请求返回 `dist/index.html`（`DIST_DIR` 环境变量或 `../dist` 默认），由 React Router 接管前端路由。
 
-## install 页面契约 — `src/views/InstallView.vue`
+## install 页面契约 — `src/views/InstallView.tsx`
 
-Vue SPA 组件，通过 Vue Router `/install` 路由访问。LAN 浏览器打开分发链接时，后端 SPA fallback 返回 `index.html`，前端 Vue Router 匹配 `/install` 路由渲染 InstallView。
+React SPA 组件，通过 React Router `/install` 路由访问。LAN 浏览器打开分发链接时，后端 SPA fallback 返回 `index.html`，前端 React Router 匹配 `/install` 路由渲染 InstallView。
 
 **输入**：URL query `?t=<明文 service key>`。无 `t` → 显示"请从密钥管理页获取分发链接"占位。
 
@@ -152,7 +152,7 @@ Windows PowerShell 用 `Set-Content` 写文件；macOS/Linux 用 `cat >` heredoc
 
 ## 分发链接 — 密钥管理页
 
-`KeysView.vue`「密钥已创建」dialog（创建 key 后弹出，明文仅此一次）:
+`KeysView`「密钥已创建」dialog（创建 key 后弹出，明文仅此一次）:
 - 内容区：明文密钥框 + 分发链接框（`http://<本机IP>:<端口>/install?t=<明文key>`）。
 - actions：「复制」+「复制分发链接」+「完成」。
 - 本机 IP + 端口由 `GET /api/install/local-ip` 返回。端口从接口动态获取（不再硬编码 `19069`）。
@@ -179,11 +179,11 @@ Claude Code 用 `ANTHROPIC_AUTH_TOKEN` 走 `Authorization: Bearer`，网关已�
 - **Tauri/localhost**（hostname 为 `localhost`/`127.0.0.1` 或 protocol 为 `tauri:`）→ `http://127.0.0.1:19068`
 - **LAN 浏览器**（hostname 为本机局域网 IP）→ 使用当前 origin（`${protocol}//${hostname}:${port}`），避免 CORS
 
-前端代码（`App.vue`、`theme.ts`、`fm/player.ts`）通过动态 `import()` 延迟加载 Tauri API（`@tauri-apps/api/*`），LAN 浏览器访问时不触发 Tauri 依赖报错。`App.vue` 在 `/install` 路由时隐藏 AppShell + ConnectionStatus，install 页面全屏展示。
+前端代码（`App.tsx`、`theme.ts`、`fm/player.ts`）通过动态 `import()` 延迟加载 Tauri API（`@tauri-apps/api/*`），LAN 浏览器访问时不触发 Tauri 依赖报错。`App.tsx` 在 `/install` 路由时隐藏 AppShell + ConnectionStatus，install 页面全屏展示。
 
 ## 完成条件
 
-1. `cargo build` 通过；`vue-tsc --noEmit` 通过。
+1. `cargo build` 通过；`tsc --noEmit` 通过。
 2. 本机 `curl 127.0.0.1:19068/health` → 200；局域网 `curl <本机IP>:19068/health` → 200（公开路径不限 IP）。
 3. 局域网 `curl <本机IP>:19068/api/providers` → 403（admin_ip_guard 拦截）。
 4. 局域网 `curl <本机IP>:19068/api/ui-settings` → 200（公开端点，返回 theme/hue/locale）。

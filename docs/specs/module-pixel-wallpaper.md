@@ -9,24 +9,24 @@
 ## 架构
 
 ```
-┌─ 主窗口 "main"(ClaudeFmView) ──┐   ┌─ 壁纸引擎（Windows GDI / macOS WebView）──┐
-│ PixelScene(seed,playing,sampleT)│   │ Win: painter 线程 → WorkerW 子窗 GDI 5fps │
-│ ContextMenu: 设置为/取消桌面背景 │   │ mac: WallpaperScene(黑底全屏+grayscale)    │
-└──────────────┬──────────────────┘   └────────────────┬───────────────────────┘
-    invoke: wallpaper_set /           listen: fm-meta / fm-ready /
-    wallpaper_get_state / fm_scene_t  fm-state-changed（进程级广播）
-               ▼                                     ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │ FmEngine（std::thread，'wait 100ms 轮询 + 'outer 每轮）      │
-   │   FmPlaybackState.scene_t: f64（仅 !muted 按 Instant 流逝累加）│
-   │   FmEngine::state_arc() → 共享 Arc（壁纸线程零 IPC 直读）     │
-   └──────────────────────────────────────────────────────────┘
-   ┌──────────────────────────────────────────────────────────┐
-   │ wallpaper::WallpaperState（app.manage）                    │
-   │   enable：Win 起 painter 线程（幂等）/ mac 建窗主线程挂载     │
-   │   disable：旗标 → Win 线程销毁窗口退出 / mac 销窗            │
-   │   DB settings.wallpaper_enabled；Win 外部销毁 1s 自愈重建    │
-   └──────────────────────────────────────────────────────────┘
+┌─ 主窗口 "main"(ClaudeFmView) ──┐   ┌─ 壁纸引擎（双平台透明 WebView）──────────┐
+│ PixelScene(seed,playing,sampleT)│   │ Win: transparent WebView + desktop-underlay│
+│ ContextMenu: 设置为/取消桌面背景 │   │      插件 SetParent 进 WorkerW             │
+└──────────────┬──────────────────┘   │ mac: WebviewWindow kCGDesktopIconWindow…   │
+    invoke: wallpaper_set /           └────────────────┬───────────────────────┘
+    wallpaper_get_state / fm_scene_t                   ▼
+               ▼                    listen: fm-meta / fm-ready /
+   ┌──────────────────────────────────────fm-state-changed（进程级广播）──────────┐
+   │ FmEngine（std::thread，'wait 100ms 轮询 + 'outer 每轮）                      │
+   │   FmPlaybackState.scene_t: f64（仅 !muted 按 Instant 流逝累加）               │
+   │   FmEngine::state_arc() → 共享 Arc（壁纸零 IPC 直读）                         │
+   └──────────────────────────────────────────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────────────────────┐
+   │ wallpaper::WallpaperState（app.manage）                                       │
+   │   enable：Win/mac 建透明 WebviewWindow + 挂载                                  │
+   │   disable：置 enabled=false → 销毁窗口                                         │
+   │   DB settings.wallpaper_enabled；Win 外部销毁 1s 自愈重建                       │
+   └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Windows 渲染**：透明 WebviewWindow（`transparent(true)`——关键词，
@@ -70,10 +70,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 1. **平台**：仅 Windows / macOS（`wallpaper_supported` 为 false 时前端隐藏
    菜单项）；v1 仅主显示器。
-2. **Windows 壁纸窗**：普通 `WS_CHILD` 窗口（无浏览器进程），创建时带
-   `WS_EX_TRANSPARENT|WS_EX_LAYERED|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW`
-   （点击穿透 + 不聚焦 + 不进任务栏/切换器）；WndProc 仅 DefWindowProc，
-   内容直绘进 DC，不依赖 WM_PAINT/消息泵。
+2. **Windows 壁纸窗**：透明 `WebviewWindow`（`transparent(true)`，DWM 视觉合成上屏），
+   `tauri-plugin-desktop-underlay` 的 `set_desktop_underlay(true)` 把窗口 SetParent
+   进壁纸 WorkerW；WebView2 显式 `--disable-features=CalculateNativeWinOcclusion`
+   （避免遮挡检测暂停合成）+ 独立 user data directory（避免与主窗口环境
+   参数冲突 0x8007139F）；点击穿透 `WS_EX_TRANSPARENT`（顶层 + 递归子窗
+   1s 补轮，**禁用 WS_EX_LAYERED**——分层窗口不设属性不显示内容）。
+   画面仍由前端同一份 `pixelart.ts` 渲染（`WallpaperScene` 黑底全屏）。
 3. **macOS 壁纸窗**：WebviewWindow 无装饰、`focused(false)`、`skip_taskbar`、
    不可见创建 + 黑底；`orderFront:` 呈现（禁止 tao `show()`——抢焦点）。
 4. **同步一致性**：同一时刻两处渲染同一帧（同 seed/playing/t）；暂停 →
@@ -102,7 +105,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 - `src-tauri/src/wallpaper/mod.rs` — WallpaperState + 建窗/挂载/自愈重建
   （挂载经 `tauri-plugin-desktop-underlay`，双平台）
-- `src-tauri/src/wallpaper/win.rs` — Windows GDI 直绘（WorkerW 子窗 + StretchDIBits）
+- `src-tauri/src/wallpaper/win.rs` — Windows 透明 WebView + tauri-plugin-desktop-underlay（WorkerW 挂载）
 - `src-tauri/src/wallpaper/macos.rs` — macOS kCGDesktopIconWindowLevel
 - `src-tauri/src/api/handlers/fm.rs` — `scene_t` 引擎权威时钟 + `state_arc()`
 - `src-tauri/src/lib.rs` — `wallpaper_set` / `wallpaper_get_state` / `fm_scene_t`

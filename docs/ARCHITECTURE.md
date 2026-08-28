@@ -4,12 +4,12 @@
 
 ## 1. 系统总览
 
-xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`0.0.0.0:19068`），前端 React 18 SPA 运行在 Tauri WebView 中。
+xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTTP 服务（`0.0.0.0:19068`），前端 React 19 SPA 运行在 Tauri WebView 中。
 
 ```
 ┌─── Tauri 桌面应用 ───────────────────────────────────────────────────────┐
 │                                                                           │
-│  WebView (React 18 SPA)                 Rust 后端 (axum + tokio)          │
+│  WebView (React 19 SPA)                 Rust 后端 (axum + tokio)          │
 │  ┌───────────────────┐                  ┌──────────────────────────────┐ │
 │  │ ProvidersView     │  HTTP (无认证)   │ /api/providers,keys,models   │ │
 │  │ KeysView          │────────────────▶│ /api/stats,settings,plugins  │ │
@@ -75,7 +75,8 @@ main.rs
             │    ├─ install.rs  (本机出口 IP 检测)
             │    ├─ websocket.rs  (/ws 端点)
             │    ├─ plugin.rs     (插件 REST + WS)
-            │    └─ fm.rs         Claude FM 播放引擎 (含 scene_t 时钟)
+            │    ├─ fm.rs         Claude FM 播放引擎 (含 scene_t 时钟)
+            │    └─ local.rs      本地模型管理 (CRUD + 引擎生命周期 + HF 浏览)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备
                  ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn
@@ -114,6 +115,11 @@ main.rs
   │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建
   │    ├─ win.rs              Windows 透明 WebView + tauri-plugin-desktop-underlay
   │    └─ macos.rs            macOS kCGDesktopIconWindowLevel（objc2）
+  ├─ local/                   本地模型管理（私有化部署）
+  │    ├─ mod.rs              LocalManager（下载/启动/停止/删除/自启动/崩溃重启）
+  │    ├─ engine.rs           llama-server 引擎二进制管理 + 健康检查
+  │    ├─ backend.rs          GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
+  │    └─ hf.rs               HuggingFace API 客户端（搜索/仓库详情/文件下载）
   └─ types/                   数据结构定义
 ```
 
@@ -205,6 +211,8 @@ src/
 │    InstallView.tsx       局域网分发页
 │    CombosView.tsx        组合列表
 │    ComboFormView.tsx     组合创建/编辑
+│    LocalModelsView.tsx   本地模型管理（下载/启动/停止/编辑）
+│    HfBrowseView.tsx      HuggingFace 模型浏览（搜索/仓库/文件选择）
 │
 ├── components/
 │    AppShell.tsx              导航抽屉 + Windows 自定义窗口控制
@@ -220,6 +228,7 @@ src/
      models.ts       Model 列表
      settings.ts     应用设置
      combos.ts       组合管理
+     localModels.ts  本地模型状态
      ui.ts           UI 状态
 ```
 
@@ -268,6 +277,7 @@ Windows 平台去除原生标题栏，自定义红绿灯风格窗口控制按钮
 │  plugins          插件注册记录                     │
 │  schema_version   迁移版本跟踪                     │
 │                                                   │
+│  local_models     本地模型注册（GGUF 引擎参数）      │
 │  routes           路由规则 (预留, 未使用)           │
 └───────────────────────────────────────────────────┘
 
@@ -283,6 +293,7 @@ Windows 平台去除原生标题栏，自定义红绿灯风格窗口控制按钮
 │  ModelRegistry    DashMap 缓存                     │
 │  RateLimiter      令牌桶状态                       │
 │  PluginManager    插件连接状态                     │
+│  LocalManager     本地模型引擎句柄 + 下载状态       │
 │  mcp_websearch    AtomicBool                      │
 │  mcp_webfetch     AtomicBool                      │
 │  mcp_notify       AtomicBool                      │
@@ -355,6 +366,7 @@ xrl-router
   ├── tauri-plugin-fs         读写 .sql 备份文件
   ├── tauri-plugin-shell      外链打开
   ├── tauri-plugin-desktop-underlay  Windows 壁纸劫持（WorkerW 挂载）
+  ├── llama-server (外部二进制)     本地 GGUF 模型推理引擎
   ├── axum 0.7         HTTP 框架
   ├── tokio            异步运行时
   ├── rusqlite 0.32    SQLite (bundled)
@@ -370,7 +382,7 @@ xrl-router
   ├── souvlaki 0.8     系统媒体控制
   ├── windows 0.61     Windows API（壁纸穿透样式）
   ├── objc2            macOS API（壁纸层级）
-  ├── React 18         UI 框架
+  ├── React 19         UI 框架
   ├── Zustand          状态管理
   ├── shadcn/ui        UI 组件（基于 Radix UI + Tailwind CSS）
   ├── lucide-react     图标库

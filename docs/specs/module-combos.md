@@ -67,7 +67,7 @@ CREATE TABLE combo_members (
 
 ### 服务密钥白名单（零后端改动）
 
-`api/proxy/handler.rs` 白名单是纯字符串比对：**授予组合名 = 授予其全部成员**；只授予成员名而调用组合 → 403。前端 `KeysView.vue` 权限对话框把组合列为独立分组。
+`api/proxy/handler.rs` 白名单是纯字符串比对：**授予组合名 = 授予其全部成员**；只授予成员名而调用组合 → 403。前端 `KeysView` 权限对话框把组合列为独立分组。
 
 ### GET /v1/models
 
@@ -104,9 +104,9 @@ CREATE TABLE combo_members (
 ## 管理 UI
 
 - 侧边栏「供应商」下方新增「组合」入口（`nav.combos`，mdiSetMerge）。
-- `CombosView.vue`：卡片列表（组合名 + 禁用 chip + 带序号成员 chips + 编辑/删除菜单）。
-- `ComboNewView.vue`：名称 + 按 provider 分组的成员多选（勾选顺序 = 尝试顺序，可上移/下移/移除）+ 启用开关。
-- `KeysView.vue` 权限对话框：组合独立分组。
+- `CombosView.tsx`：卡片列表（组合名 + 禁用 chip + 带序号成员 chips + 编辑/删除菜单）。
+- `ComboFormView.tsx`：名称 + 按 provider 分组的成员多选（勾选顺序 = 尝试顺序，可上移/下移/移除）+ 启用开关。
+- `KeysView` 权限对话框：组合独立分组。
 
 ## 测试矩阵
 
@@ -136,7 +136,7 @@ CREATE TABLE combo_members (
 - `src-tauri/src/api/proxy/stream.rs` - 解析段组合优先 + 普通 400 `break 'provider`
 - `src-tauri/src/api/handlers/combos.rs` - 管理 API + 校验
 - `src-tauri/src/api/handlers/models.rs` - display_name 反向冲突校验
-- `src-tauri/src/views/CombosView.vue` / `ComboNewView.vue` - 管理 UI
+- `src/views/CombosView.tsx` / `ComboFormView.tsx` - 管理 UI
 - `src-tauri/src/gateway/server.rs` - `test_combo_end_to_end` E2E
 
 ## 完成标准

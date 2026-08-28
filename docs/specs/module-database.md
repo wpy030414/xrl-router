@@ -60,8 +60,9 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V17 | MCP 视觉工具设置键：`mcp_vision` / `mcp_vision_provider` / `mcp_vision_model` 默认行 |
 | V18 | 新增 combos / combo_members 表 + 索引（组合别名：多个模型别名按顺序捆绑，路由时依次尝试直到可用） |
 | V19 | MCP 桌面通知工具 notify 的设置键：`mcp_notify` 默认行 |
+| V20 | 新增 local_models 表（本地模型私有化：GGUF 权重 + llama-server 引擎运行时元数据） |
 
-## 当前表结构（V19 最终状态）
+## 当前表结构（V20 最终状态）
 
 ### providers
 
@@ -244,6 +245,30 @@ CREATE TABLE plugins (
 
 **注意**: `provider_id` 使用 `ON DELETE SET NULL`（非 CASCADE），删除 provider 时插件记录保留但 provider_id 置空。
 
+### local_models（V20：本地模型）
+
+```sql
+CREATE TABLE local_models (
+    id TEXT PRIMARY KEY,                -- lm-{uuid}
+    repo_id TEXT NOT NULL,              -- HuggingFace 仓库 ID
+    filename TEXT NOT NULL,             -- GGUF 文件名
+    format TEXT NOT NULL DEFAULT 'gguf',
+    backend TEXT NOT NULL DEFAULT 'auto',  -- auto/metal/cuda/vulkan/rocm/cpu
+    status TEXT NOT NULL DEFAULT 'downloaded',  -- downloading/downloaded/running/error
+    model_id TEXT NOT NULL,             -- 用户命名（display_name）
+    ctx_size INTEGER NOT NULL DEFAULT 32768,
+    n_gpu_layers INTEGER NOT NULL DEFAULT 99,
+    autostart INTEGER NOT NULL DEFAULT 1,
+    file_size INTEGER,
+    local_path TEXT NOT NULL,
+    port INTEGER,                       -- 引擎运行端口（运行时才有值）
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_local_models_status ON local_models(status);
+```
+
 ### schema_version
 
 ```sql
@@ -335,7 +360,7 @@ db.execute(
 - `src-tauri/src/db/service_keys.rs` - Service Key CRUD
 - `src-tauri/src/db/usage.rs` - Usage Log 查询 + 请求日志分页
 - `src-tauri/src/db/settings.rs` - Settings CRUD + 导出/导入/重置
-- `src-tauri/src/db/combos.rs` - Combo CRUD（V18）
+- `src-tauri/src/db/local_models.rs` - Local Model CRUD（V20）
 
 ## 测试要求
 
@@ -345,7 +370,7 @@ db.execute(
 
 ## 完成标准
 
-- [x] 19 版增量迁移（V1→V19）
+- [x] 20 版增量迁移（V1→V20）
 - [x] 迁移按序执行，跳过已应用的版本
 - [x] UPSERT 使用 `ON CONFLICT DO UPDATE`
 - [x] `usage_log` 自包含快照（无外键）

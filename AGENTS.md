@@ -24,6 +24,7 @@ xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应�
 - 国际化（zh-CN / en）
 - 数据导出/导入/重置
 - Claude FM 桌面壁纸劫持（Windows/macOS）
+- 本地模型管理（HuggingFace 浏览 + GGUF 下载 + llama-server 引擎生命周期）
 
 ### Non-Goals（明确不做的事）
 
@@ -153,6 +154,11 @@ src-tauri/src/
 ├── providers/                 Provider 适配器
 ├── search/bing.rs             Bing 搜索
 ├── wallpaper/                 桌面壁纸劫持（FM 像素艺术 → 桌面层）
+├── local/                     本地模型管理（HF 浏览 + GGUF 下载 + llama-server 引擎）
+│    ├─ mod.rs                 LocalManager（下载/启动/停止/删除/自启动/崩溃重启）
+│    ├─ engine.rs              llama-server 引擎二进制管理 + 健康检查
+│    ├─ backend.rs             GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
+│    └─ hf.rs                  HuggingFace API 客户端（搜索/仓库详情/文件下载）
 └── types/                     数据结构定义
 
 src/
@@ -161,7 +167,11 @@ src/
 ├── hooks/                     自定义 hooks（useTheme, useWebSocket, useFm）
 ├── i18n/                      国际化（zh-CN / en）
 ├── stores/                    Zustand stores（providers, keys, models, settings, combos, ui）
-├── views/                     9 个页面视图（.tsx）
+├── views/                     11 个页面视图（.tsx）
+│    ├─ ProvidersView / ProviderFormView / KeysView / StatsView
+│    ├─ SettingsView / InstallView / ClaudeFmView
+│    ├─ CombosView / ComboFormView
+│    └─ LocalModelsView / HfBrowseView
 ├── components/                AppShell / ConnectionStatus / PluginRegisterDialog / PixelScene / WallpaperScene + ui/（shadcn/ui 组件）
 └── lib/                       工具函数（utils.ts, tauri.ts）
 
@@ -169,8 +179,8 @@ docs/
 ├── PRD.md                     产品需求文档
 ├── ARCHITECTURE.md            架构地图
 ├── DECISIONS.md               架构决策记录
-├── assets/                    界面截图（fm.png, provider.png, secret.png, setting.png）
-└── specs/                     代码生成契约（11 个 spec 文件）
+├── assets/                    界面截图（fm, cloud.ai, local.ai, combos, secrets, stat）
+└── specs/                     代码生成契约（14 个 module-*.md 文件）
 ```
 
 ## 修改前必读的文件
@@ -178,12 +188,13 @@ docs/
 | 改动类型 | 必读文件 |
 |---------|---------|
 | 新增 API 端点 | `api/router.rs` + `api/handlers/` 任一文件 |
-| 修改 install 页面 | `src/views/InstallView.tsx` + `api/router.rs` + `docs/specs/spec-lan-deploy.md` |
+| 修改 install 页面 | `src/views/InstallView.tsx` + `api/router.rs` + `docs/specs/module-lan-deploy.md` |
 | 修改网关启动 | `gateway/server.rs` + `config.rs` + `middleware/admin_guard.rs` |
 | 新增 DB 表/列 | `db/schema.rs`（追加迁移）+ `db/mod.rs` |
 | 修改代理逻辑 | `api/proxy/stream.rs` + `handler.rs` + `ir/` |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
 | 修改前端 | `src/main.tsx` + `src/index.css` |
-| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` + `src/hooks/useFm.ts` |
+| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` + `src/hooks/useFm.ts` + `docs/specs/module-claude-fm.md` |
 | 修改协议转换 | `api/proxy/ir/types.rs` + `from_*.rs` + `to_*.rs` |
 | 修改桌面壁纸 | `wallpaper/mod.rs` + `wallpaper/win.rs` / `wallpaper/macos.rs` + `src/components/WallpaperScene.tsx` |
+| 修改本地模型 | `src-tauri/src/local/{mod,engine,backend,hf}.rs` + `api/handlers/local.rs` + `docs/specs/module-local-models.md` |

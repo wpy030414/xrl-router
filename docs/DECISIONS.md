@@ -723,3 +723,37 @@ Tauri 默认使用系统原生标题栏。Windows 11 的原生标题栏与自定
 
 - `PluginRegisterDialog` 从受控组件变为非受控组件（父组件无法主动控制显示）
 
+---
+
+## ADR-048: 本地模型管理（HuggingFace + llama-server）
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+用户希望在本地运行开源模型（Llama、Qwen 等），不经过云端 API。需要一个从模型发现、下载、引擎启动到自动注册为 Provider 的完整流程。
+
+### 决策
+
+1. **引擎 = llama-server（GGUF）**：自动下载对应平台/后端的预编译二进制，不捆绑在应用内
+2. **模型来源 = HuggingFace Hub**：搜索 + 仓库详情 + 文件下载，支持 HF Mirror 切换
+3. **自动注册 Provider**：每台本地模型注册一个 Chat Completions provider（id = `local-{model_id}`）+ 一条模型 + 一条随机密钥（AES 加密入库、同步进 KeyPool）
+4. **崩溃自重启**：120s 启动健康检查；退出后按 5s/15s/45s 退避重启，最多 3 次
+5. **自启动**：`autostart=1` 的模型在应用启动时自动拉起
+6. **GPU 后端检测**：Metal/CUDA/Vulkan/ROCm/CPU 自动检测 + 手动选择，启动序列首选后端 → CPU 兜底
+7. **事件广播**：下载进度（`local_progress`）和状态变更（`local_status`）经 `AppState.events_tx` 推送前端
+
+### 原因
+
+1. **零配置体验**：用户不需要手动安装 llama.cpp 或配置 Provider
+2. **统一接入**：本地模型与云端 Provider 共用同一套路由/密钥/统计管线
+3. **GGUF 生态成熟**：HuggingFace 上 GGUF 量化模型丰富，llama-server 是事实标准
+4. **不捆绑引擎**：应用安装包保持 < 10MB，引擎按需下载
+
+### 代价
+
+- 引擎二进制由社区维护，版本更新不可控
+- 首次启动需下载引擎（~50MB），需要网络连接
+- GPU 后端依赖系统驱动（CUDA/Vulkan/ROCm 需预装）
+
