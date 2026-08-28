@@ -54,6 +54,7 @@ pnpm build
   - 仅支持流式响应（强制 `stream=true`）
   - 不支持 Google Gemini 等新协议（需走插件系统）
   - 单用户本地桌面应用，不支持多租户/云端部署
+  - Claude FM 桌面壁纸劫持仅支持 Windows 11 / macOS，且仅主显示器（分辨率/DPI 变化后需重新勾选恢复）
 
 ## Core tech
 

@@ -415,6 +415,8 @@ Service Key（客户端访问令牌）如何存储？
 
 - 客户端需一次性注册 MCP（设置页提供可复制的命令）
 
+> **2026-08-28 变更**：`web_vision` 随 MCP Vision 功能整体移除（设置页「路由」Tab 不再提供视觉能力开关与视觉模型配置，`mcp/vision.rs` 删除，代理侧不再剥离图片内容块）。本 ADR 其余决策仍然有效。
+
 ---
 
 ## ADR-040: 组合别名（Combo）
@@ -445,3 +447,149 @@ Service Key（客户端访问令牌）如何存储？
 ### 代价
 
 - 组合解析是 N+1 查询（1 次组合 + 每成员 1 次候选查询）
+
+---
+
+## ADR-041: FM 像素艺术桌面壁纸（WorkerW 劫持 + 引擎权威时钟）
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+用户希望右击 FM 像素艺术画面勾选「设置为桌面背景」后，桌面壁纸被劫持为与
+应用程序内像素艺术**严格同步**的动画（但壁纸上不显示播放/暂停按钮与歌曲
+信息），暂停/切歌时两处画面一致。
+
+### 决策
+
+1. **渲染面 = 第二个 WebviewWindow**（label=`wallpaper`）：注入
+   `__WALLPAPER_MODE__` 走 `WallpaperScene` 分支（黑底全屏像素），复用整套
+   前端像素渲染管线（`pixelart.ts` 确定性生成），不做 Rust 侧重绘。
+2. **Windows = WorkerW 劫持（双布局探测）**：Progman `0x052C` 唤醒壁纸宿主；
+   优先取 **Progman 的直接子窗 WorkerW**（Win10/11 实测布局：`SHELLDLL_DefView`
+   直接挂 Progman 下，壁纸 WorkerW 为 Progman 子窗），兜底经典布局（含
+   `SHELLDLL_DefView` 的 WorkerW 之后的顶层兄弟 WorkerW）；`SetParent` 挂入 +
+   递归 `WS_EX_TRANSPARENT` 点击穿透（WebView2 子窗口异步创建，1s 后补一轮）。
+   取消勾选/进程退出 = 销毁窗口，WorkerW 自动重绘原壁纸——无需显式还原。
+3. **macOS = `kCGDesktopIconWindowLevel`**：NSWindow 降到壁纸图与桌面图标
+   之间；`orderFront:` 呈现（tao 的 `show()` 走 makeKeyAndOrderFront 抢
+   焦点，禁用）；`setIgnoresMouseEvents` 穿透。
+4. **同步 = 引擎权威时钟**：动画时钟从本地累计改为 `fm.rs` 的 `scene_t`
+   （仅播放时按真实流逝累计、暂停冻结），两窗口 `PixelScene` 均以
+   `invoke('fm_scene_t')` 采样——不引入新的广播事件，天然严格同步，
+   且顺带修复了主窗口路由返回到 /fm 时动画相位重置的问题。
+5. **穿透方式 = 手动 Win32 样式**（非 `set_ignore_cursor_events`）：后者仅
+   作用于顶层 HWND，不覆盖 WebView2 子窗口。
+6. **持久化 + 自愈**：勾选态写 DB `wallpaper_enabled`，启动延迟 500ms 惰性
+   恢复（setup 期间事件循环未泵送，主线程屏障会死锁）；`Destroyed` 后清槽
+   1s 复查重建。
+
+### 备选与权衡
+
+- **定时截图刷新系统壁纸**（`SystemParametersInfo` 轮换 PNG）：5fps 下
+  壁纸刷新延迟/闪烁不可接受，且无法严格同步 → 否决。
+- **全屏置底普通窗口**（不挂 WorkerW）：会被其他窗口覆盖，不是真壁纸 →
+  仅作 WorkerW 失效时的回退。
+- **URL query 区分壁纸入口**：`WebviewUrl::App` 带 query 属未固定行为 →
+  用 `initialization_script`（WebView2/WKWebView 均在页面脚本前注入）。
+- **`transparent` 窗口特性**：Windows 上 tauri 的 transparent 实为无效
+  （tao 源码注明），且像素画本身铺满全屏 → 纯 CSS 黑底，不启用。
+
+### 代价
+
+- 仅在 Windows（WorkerW 配方随系统版本可能变化）/ macOS 两级平台实现；
+  多显示器下 v1 仅主显示器，分辨率/DPI 变化后需重新勾选（已知限制）。
+- `win.rs`/`macos.rs` 是平台专用 unsafe 代码（Win32 / objc2），macOS 侧
+  编译验证需在 macOS 上完成（CI macos-14 job 兜底）。
+
+---
+
+## ADR-042: Windows 壁纸改为 Rust GDI 直绘（放弃 WebView2）
+
+**日期**: 2026-08-28  
+**状态**: 已接受（Windows 部分；macOS 暂保留 ADR-041 的 WebView 方案）
+
+### 背景
+
+ADR-041 的 WebView 方案在 Windows 11（2024+ Explorer）上连环受阻：
+1. WorkerW 双布局 → 已适配；
+2. `FindWindowW` 空字符串 ≠ NULL 的坑 → 已修；
+3. SetParent 后必须转 `WS_CHILD`（Win8+ 会把 popup 扔到顶层 Z 序最底）→ 已修；
+4. `additional_browser_args` 与主窗口环境参数冲突（0x8007139F）→ 改环境变量；
+5. **最终死结**：即便窗口/渲染树全部健在（WS_CHILD + 可见 + 全屏），
+   Chromium 的`CalculateNativeWinOcclusion` 把挂在 WorkerW 下的窗口判为
+   「完全遮挡」→ 合成暂停 → **一个像素都不画**（显式 flag + 独立
+   user data folder 均已尝试）。WebView2 在桌面劫持场景不可靠。
+
+### 决策
+
+1. **Windows = Rust GDI 直绘**（`wallpaper/win.rs` 重写 + `pixelart.rs` 移植）：
+   - `pixelart.rs` 是 `src/lib/pixelart.ts` 的**逐位一致**移植（mulberry32 用
+     u32 包装运算复刻 JS 位语义；`Math.round` 用 `floor(x+0.5)`；canvas
+     小数坐标抗锯齿按覆盖率 alpha 混合；随机数调用顺序逐行对应；seed 的
+     f64 精度陷阱按 JS 语义复算）——前端与壁纸仍然同一幅画；
+   - 窗口：`RegisterClassW` + `CreateWindowExW` 以 `WS_CHILD` **一步创建**
+     进壁纸 WorkerW（穿透/无焦点/不进任务栏的 EX_STYLE 建窗时带齐，
+     无需 SetParent 与样式补丁），独立 `wallpaper-painter` 线程每 200ms
+     渲染 160×90 逻辑帧 → `StretchDIBits` 最近邻放大上屏；
+   - 时钟：直接读 `FmPlaybackState`（`fm.state_arc()`，零 IPC），
+     引擎权威 `scene_t` 与主窗口前端采样同源，严格同步；
+   - 自愈：线程循环发现窗口被外部销毁（Explorer 重启）→ 睡 1s 重建；
+     禁用 = 置旗标 → 线程销毁窗口退出。
+2. **macOS 暂保留 WebView 方案**（`kCGDesktopIconWindowLevel`），后续可用
+   同思路改 CG 直绘（不同窗口体系，另行 ADR）。
+
+### 原因
+
+1. **零依赖零坑**：不经过浏览器/合成器，GDI 子窗是世界公认的壁纸层画法
+   （Wallpaper Engine 自绘壁纸同款），不存在"窗口活着但不画"的状态；
+2. **性能**：160×90×5fps 的 CPU/内存占用可忽略（远低于一个常驻的
+   WebView2 浏览器进程）——壁纸不应成为耗电大户；
+3. **前端像素管线零改动**：生成算法仍是同一份 TS 源码的权威实现，
+   移植版按黄金值校验锁死一致性。
+
+### 代价
+
+- 维护两份像素渲染器（TS 与 Rust），后续调色/加元素需双改——靠
+  golden 值单测 + 视觉对照兜住；
+- macOS 仍走 WebView（后续需真机验证 ADR-041 的层级方案）。
+
+---
+
+## ADR-043: Windows 壁纸改回 WebView + 社区插件挂载（弃 GDI 直绘）
+
+**日期**: 2026-08-28  
+**状态**: 已接受（Windows 部分；GDI 直绘方案回退存档）
+
+### 背景
+
+ADR-042 的 Rust GDI 直绘在真机上也未能上屏（窗口结构完全正确——
+WS_CHILD、可见、父链正确、WM_PAINT 正规绘制——桌面依旧无变化）。
+检索社区 [tauri-plugin-desktop-underlay](https://github.com/Charlie-XIAO/tauri-plugin-desktop-underlay)
+（把窗口挂到桌面 WorkerW 层的 Tauri 插件）发现其真实用户能看到 WebView
+内容，而我们的 WebView 尝试（多轮配置）看不见。核心差异：**窗口透明度**。
+
+### 决策
+
+1. **Windows = 透明 WebView 窗口 + 社区插件挂载**：
+   - `transparent(true)` 的 WebviewWindow 走 **DWM 视觉合成**渲染——桌面
+     WorkerW 层唯一可靠的内容上屏路径（经典 GDI/重定向表面在桌面层
+     不被 DWM 呈现——这同时解释了 GDI 直绘版为何"什么都对但看不见"）；
+   - `set_desktop_underlay(true)`（插件）负责 SetParent 进 WorkerW，
+     不再自研挂载（其配方 = 我们的双布局 + `(0x052C, 0xD, 0x1)`）；
+   - WebView2 配置：显式 `additional_browser_args(--disable-features=
+     CalculateNativeWinOcclusion)`（WorkerW 子窗会被判"完全遮挡"暂停合成）
+     + 独立 user data directory（否则与主窗口环境参数冲突 0x8007139F）——
+     即在 ADR-041 链条里从未实际合并部署过的那组修复；
+   - 点击穿透：`WS_EX_TRANSPARENT`（顶层 + 递归子窗，1s 补轮）；
+     **全程严禁 `WS_EX_LAYERED`**——分层窗口不调 SetLayeredWindowAttributes
+     即不显示内容（WebView 版与 GDI 版两次"看不见"的公共元凶）。
+2. **GDI 直绘退役**：`pixelart.rs` 移植与画家线程删除（保留在 git 历史）；
+   前端 `WallpaperScene` / `sampleT` 引擎时钟方案复用（macOS 同款）。
+3. **macOS 不变**（objc2 层级方案；后续真机验证）。
+
+### 代价
+
+- WebView 方案的固有成本（一个浏览器进程）重新回来；
+- 依赖社区插件的 Windows 实现（其维护节奏不可控，但配方公开可自行顶替）。

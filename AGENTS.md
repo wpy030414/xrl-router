@@ -20,7 +20,7 @@ xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应�
 - 密钥池管理（轮询 + 健康监控 + 持久化）
 - 插件系统（委托供应商，WebSocket 注册）
 - 局域网分发（install 页面 + 分发链接）
-- MCP 工具服务器（web_search / web_fetch / web_vision）
+- MCP 工具服务器（web_search / web_fetch / notify）
 - 国际化（zh-CN / en）
 - 数据导出/导入/重置
 

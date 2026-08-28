@@ -97,7 +97,7 @@ main.rs
 独立模块：
   ├─ mcp/               MCP 工具服务器 (/mcp 端点)
   │    ├─ mod.rs        /mcp handler + 全局服务单例
-  │    ├─ tools.rs      ServerHandler 实现 (web_search / web_fetch / web_vision)
+  │    ├─ tools.rs      ServerHandler 实现 (web_search / web_fetch / notify)
   │    └─ fetch.rs      WebFetch 渲染层 (WebView + 静态回退)
   ├─ providers/          Provider 适配器
   │    ├─ adapter.rs     Adapter async trait
@@ -108,6 +108,10 @@ main.rs
   ├─ plugin/             PluginManager
   ├─ middleware/rate_limit.rs  令牌桶
   ├─ search/bing.rs           Bing 搜索
+  ├─ wallpaper/               桌面壁纸劫持（FM 像素艺术 → 桌面层）
+  │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建（社区插件挂载）
+  │    ├─ win.rs              点击穿透样式包（WS_EX_TRANSPARENT，禁 LAYERED）
+  │    └─ macos.rs            macOS kCGDesktopIconWindowLevel（objc2）
   └─ types/                   数据结构定义
 ```
 
@@ -180,7 +184,7 @@ SSE 流返回客户端
 
 ```
 src/
-├── main.tsx           React 入口 + initI18n
+├── main.tsx           React 入口 + initI18n（壁纸窗口按 __WALLPAPER_MODE__ 分支）
 ├── App.tsx            根组件: RouterProvider + WebSocket 连接
 ├── router.tsx         React Router v6 路由配置
 ├── api.ts             REST 客户端 (动态 BASE_URL)
@@ -188,11 +192,11 @@ src/
 ├── index.css          Tailwind CSS + CSS 变量
 ├── i18n/              Zustand + useT hook: zh-CN.ts / en.ts
 ├── lib/               工具函数 (utils.ts, tauri.ts)
-├── hooks/             自定义 hooks (useTheme, useWebSocket)
+├── hooks/             自定义 hooks (useTheme, useWebSocket, useFm)
 ├── fm/                Claude FM 前端（纯命令/事件）
 │
 ├── views/
-│    ClaudeFmView.tsx      Claude FM 视图
+│    ClaudeFmView.tsx      Claude FM 视图（右键菜单：设置为桌面背景）
 │    ProvidersView.tsx     供应商列表（拖拽排序）
 │    ProviderFormView.tsx  供应商创建/编辑
 │    KeysView.tsx          Service Key 管理（虚拟滚动）
@@ -206,7 +210,9 @@ src/
 │    AppShell.tsx              导航抽屉（侧边栏）
 │    ConnectionStatus.tsx      离线横幅
 │    PluginRegisterDialog.tsx  插件注册确认
-│    ui/                       shadcn/ui 组件
+│    WallpaperScene.tsx        壁纸窗口入口（黑底全屏像素，无按钮）
+│    PixelScene.tsx            像素画布（sampleT 引擎时钟采样）
+│    ui/                       shadcn/ui 组件（含 context-menu）
 │
 └── stores/ (Zustand)
      providers.ts    Provider 列表
@@ -216,6 +222,32 @@ src/
      combos.ts       组合管理
      ui.ts           UI 状态
 ```
+
+### 4.1 Claude FM 桌面壁纸（wallpaper 引擎）
+
+FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
+
+- **Windows（GDI 直绘，见 ADR-042）**：Rust 像素渲染器 `pixelart.rs`
+  （`pixelart.ts` 逐位移植，节点种子逐位一致）。`wallpaper-painter` 线程
+  自持窗口：`RegisterClassW` + `CreateWindowExW` 以 `WS_CHILD` **一步创建**
+  进壁纸 WorkerW（点击穿透/无焦点样式建窗带齐），每 200ms 读引擎
+  `FmPlaybackState`（种子/播放态/`scene_t`，零 IPC）渲染 160×90 逻辑帧 →
+  `StretchDIBits` 最近邻放大上屏。窗口被外部销毁（Explorer 重启）→ 1s 自愈
+  重建；禁用 = 旗标 → 线程销毁窗口退出。
+- **macOS（WebView 方案，ADR-041）**：动态创建第二个 WebviewWindow
+  （`initialization_script` 注入 `__WALLPAPER_MODE__`，前端分支渲染
+  `WallpaperScene`——黑底全屏像素、无按钮/歌曲信息），
+  `NSWindow.setLevel(kCGDesktopIconWindowLevel)` + `orderFront:` 呈现，
+  `setIgnoresMouseEvents` 穿透。
+
+**同步机制**：像素场景动画时钟为**引擎权威**（`fm.rs` 的 `scene_t`，仅
+播放时按真实流逝累计、暂停冻结）；主窗口前端（`fm_scene_t` 采样）与
+壁纸渲染（同一共享状态）取同一值——两处画面严格同步。seed（曲目 index）
+与 playing 沿用既有全窗口广播事件（`fm-meta` / `fm-state-changed`）。
+
+**生命周期**：勾选态持久化于 DB `settings.wallpaper_enabled`，应用重启
+（含 `--minimized` 静默启动）延迟 2s 惰性恢复（+重试，避开主窗口 WebView2
+初始化竞态）；进程退出由 OS 销毁子窗口，原壁纸自动恢复。
 
 ## 5. 存储架构
 
@@ -250,7 +282,6 @@ src/
 │  PluginManager    插件连接状态                     │
 │  mcp_websearch    AtomicBool                      │
 │  mcp_webfetch     AtomicBool                      │
-│  mcp_vision       AtomicBool                      │
 │  http_client      reqwest::Client                  │
 │  search_http      SearchHttp (搜索专用, 直连)       │
 └───────────────────────────────────────────────────┘
