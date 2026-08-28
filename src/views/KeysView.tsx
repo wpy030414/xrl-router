@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Search, Copy, Check, Trash2, Pencil, Shield, Gauge, Key as KeyIcon, Loader2 } from 'lucide-react';
+import { Plus, Search, Copy, Check, Trash2, Pencil, Shield, Gauge, Key as KeyIcon, Loader2, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -86,6 +86,7 @@ export function KeysView() {
   // Create
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newName, setNewName] = useState('');
+  const [createSet, setCreateSet] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [createdKey, setCreatedKey] = useState<{ key: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -160,7 +161,10 @@ export function KeysView() {
   const handleCreate = async () => {
     setCreating(true);
     try {
-      const r = await serviceKeysApi.create({ name: newName.trim() || t('common.unnamed') });
+      const r = await serviceKeysApi.create({
+        name: newName.trim() || t('common.unnamed'),
+        allowed_models: [...createSet],
+      });
       setCreatedKey({ key: r.key, name: r.name });
       setNewName('');
       await fetchServiceKeys(true);
@@ -169,6 +173,21 @@ export function KeysView() {
     } finally {
       setCreating(false);
     }
+  };
+
+  const openCreate = () => {
+    setNewName('');
+    setCreateSet(new Set());
+    setCreateDialogOpen(true);
+    loadPermOptions();
+  };
+
+  const toggleCreatePerm = (model: string) => {
+    setCreateSet((prev) => {
+      const s = new Set(prev);
+      s.has(model) ? s.delete(model) : s.add(model);
+      return s;
+    });
   };
 
   const handleRename = async () => {
@@ -289,7 +308,7 @@ export function KeysView() {
       {/* Header */}
       <div className="flex justify-between items-start gap-4 flex-wrap">
         <h2 className="text-3xl font-normal m-0">{t('keys.title')}</h2>
-        <Button onClick={() => { setNewName(''); setCreateDialogOpen(true); }}>
+        <Button onClick={openCreate}>
           <Plus className="w-4 h-4 mr-2" />
           {t('keys.create')}
         </Button>
@@ -388,7 +407,7 @@ export function KeysView() {
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="w-9 h-9">
-                            <Pencil className="w-4 h-4" />
+                            <MoreVertical className="w-4 h-4" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
@@ -430,7 +449,7 @@ export function KeysView() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t('keys.create')}</DialogTitle>
             <DialogDescription>{t('keys.perm_desc')}</DialogDescription>
@@ -476,16 +495,57 @@ export function KeysView() {
               </div>
             </div>
           ) : (
-            <div>
-              <label className="text-sm font-medium">{t('keys.rename_label')}</label>
-              <input
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                autoFocus
-                placeholder="my-claude-code"
-                className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium">{t('keys.rename_label')}</label>
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  autoFocus
+                  placeholder="my-claude-code"
+                  className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </div>
+
+              {/* 可用模型：创建时即可限定白名单（不勾选 = 全部） */}
+              <div>
+                <label className="text-sm font-medium">{t('keys.col_models')}</label>
+                {modelsLoading ? (
+                  <div className="flex justify-center py-6">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : permGroups.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-3">{t('keys.perm_no_models')}</p>
+                ) : (
+                  <div className="max-h-[32vh] overflow-y-auto space-y-4 pr-2 mt-2 border border-border rounded-md p-3">
+                    {permGroups.map((g) => (
+                      <div key={g.name}>
+                        <p className="text-xs font-medium text-muted-foreground mb-1.5">{g.name}</p>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5">
+                          {g.models.map((m) => {
+                            const checked = createSet.has(m);
+                            return (
+                              <label
+                                key={m}
+                                className="flex items-center gap-2 text-sm cursor-pointer select-none"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleCreatePerm(m)}
+                                  className="h-4 w-4 rounded border-input accent-primary"
+                                />
+                                <span className="font-mono text-xs truncate">{m}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -661,3 +721,5 @@ export function KeysView() {
     </div>
   );
 }
+
+export default KeysView;

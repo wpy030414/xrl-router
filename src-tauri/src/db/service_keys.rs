@@ -1,17 +1,17 @@
 //! service_keys 表 CRUD（argon2 哈希存储，哈希函数见 `crypto`）。
 
 impl super::Database {
-    pub fn save_service_key(&self, id: &str, name: &str, key_hash: &str, key_masked: &str) -> anyhow::Result<()> {
+    pub fn save_service_key(&self, id: &str, name: &str, key_hash: &str, key_masked: &str, allowed_models: Option<&str>) -> anyhow::Result<()> {
         let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
         // UPSERT 而非 INSERT OR REPLACE：REPLACE 会触发 usage_log.service_key_id 的 FK 清理。
         conn.execute(
-            "INSERT INTO service_keys (id, name, key_hash, key_masked, total_requests, total_tokens, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, ?6)
+            "INSERT INTO service_keys (id, name, key_hash, key_masked, allowed_models, total_requests, total_tokens, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, key_hash=excluded.key_hash,
                 key_masked=excluded.key_masked, updated_at=excluded.updated_at",
-            rusqlite::params![id, name, key_hash, key_masked, now, now],
+            rusqlite::params![id, name, key_hash, key_masked, allowed_models.unwrap_or("[]"), now, now],
         )?;
         Ok(())
     }
@@ -130,7 +130,7 @@ mod tests {
         let db = crate::db::Database::open_in_memory().unwrap();
         db.migrate().unwrap();
 
-        db.save_service_key("sk1", "测试", "hash", "mask").unwrap();
+        db.save_service_key("sk1", "测试", "hash", "mask", None).unwrap();
         let now = chrono::Utc::now().timestamp();
         // 5h 内 100；5h~7d 之间 200；7d 外 400
         for (ts, tokens) in [
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(keys[0]["used_5h"], 100, "5h 窗口应只计 5h 内的用量");
         assert_eq!(keys[0]["used_7d"], 300, "7d 窗口应计 7d 内（含 5h 内）用量");
         // 无用量 key 应为 0 而非 null
-        db.save_service_key("sk2", "空", "hash2", "mask2").unwrap();
+        db.save_service_key("sk2", "空", "hash2", "mask2", None).unwrap();
         let keys = db.list_service_keys().unwrap();
         let sk2 = keys.iter().find(|k| k["id"] == "sk2").unwrap();
         assert_eq!(sk2["used_5h"], 0);

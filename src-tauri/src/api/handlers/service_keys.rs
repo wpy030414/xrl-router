@@ -13,6 +13,7 @@ use crate::gateway::server::AppState;
 #[derive(Deserialize)]
 pub(crate) struct CreateServiceKeyRequest {
     name: String,
+    allowed_models: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -51,8 +52,16 @@ pub(crate) async fn create_service_key(
 
     let id = uuid::Uuid::new_v4().to_string();
 
+    let allowed_json = req
+        .allowed_models
+        .as_ref()
+        .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
+
     // Save to database
-    if let Err(e) = state.database.save_service_key(&id, &req.name, &key_hash, &key_masked) {
+    if let Err(e) = state
+        .database
+        .save_service_key(&id, &req.name, &key_hash, &key_masked, allowed_json.as_deref())
+    {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

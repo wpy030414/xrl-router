@@ -317,7 +317,7 @@ mod tests {
         // 配额 429：创建 service key（quota_5h=10）→ 写入 15 tokens 用量 → 请求应 429。
         let raw_key = "xrl-test-quota-key";
         let key_hash = crate::crypto::hash_service_key(raw_key).unwrap();
-        state.database.save_service_key("sk-quota", "限额测试", &key_hash, "****uota").unwrap();
+        state.database.save_service_key("sk-quota", "限额测试", &key_hash, "****uota", None).unwrap();
         let now = chrono::Utc::now().timestamp();
         state.database.insert_usage_log(
             now,
@@ -485,7 +485,7 @@ mod tests {
         // service key（分发密钥）——空 allowed_models = 允许全部
         let raw_service_key = "xrl-test-failover-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
-        db.save_service_key("sk-failover", "故障转移测试", &sk_hash, "***key").unwrap();
+        db.save_service_key("sk-failover", "故障转移测试", &sk_hash, "***key", None).unwrap();
 
         // 开关开：AppState 构造前写入 settings（AppState::new 读取）
         db.set_setting("failover_enabled", "true").unwrap();
@@ -686,7 +686,7 @@ mod tests {
         // service key——空 allowed_models = 允许全部
         let raw_service_key = "xrl-test-combo-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
-        db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key").unwrap();
+        db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key", None).unwrap();
         // 不写 failover_enabled setting：保持默认关闭，证明组合强制回退
         let config = Config {
             port: 0,
