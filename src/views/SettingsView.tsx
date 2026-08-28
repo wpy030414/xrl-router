@@ -192,8 +192,8 @@ export function SettingsView() {
     setResetDialogOpen(false);
   };
 
-  // MCP endpoint info
-  const mcpEndpoint = typeof window !== 'undefined' ? `http://${window.location.hostname}:19068/mcp` : '';
+  // MCP endpoint info — always local, use 127.0.0.1 to avoid Tauri's tauri.localhost hostname
+  const mcpEndpoint = 'http://127.0.0.1:19068/mcp';
   const mcpCmd = `claude mcp add --scope user --transport http xrl-router ${mcpEndpoint} --header "Authorization: Bearer <SERVICE_KEY>"`;
   const [copied, setCopied] = useState<'endpoint' | 'cmd' | null>(null);
 

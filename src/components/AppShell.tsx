@@ -1,4 +1,4 @@
-import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { Outlet, NavLink, useLocation } from 'react-router';
 import { Radio, Cloud, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { ConnectionStatus } from './ConnectionStatus';
