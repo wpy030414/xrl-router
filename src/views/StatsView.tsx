@@ -298,8 +298,9 @@ export function StatsView() {
     }
   };
 
-  const fetchLog = async (page: number) => {
-    setLogLoading(true);
+  // silent = true：后台定时刷新用，不置 logLoading，避免表格每 5s 闪一次半透明。
+  const fetchLog = async (page: number, silent = false) => {
+    if (!silent) setLogLoading(true);
     try {
       // 与统计同源的时间范围：日志也跟随「当天/一天内/…」与密钥筛选
       const { from, to } = getTimeBounds(timeRange);
@@ -315,15 +316,29 @@ export function StatsView() {
     } catch (e: any) {
       console.error('Failed to fetch request log:', e);
     } finally {
-      setLogLoading(false);
+      if (!silent) setLogLoading(false);
     }
   };
 
-  // Real-time refresh via WebSocket
+  // Real-time refresh via WebSocket：统计与请求日志同源时间范围，一起刷新。
+  // 后端每 5s 广播一次 usage_stats_changed。
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, []);
   useWebSocket('usage_stats_changed', useCallback(() => {
-    // Debounce refresh
-    fetchStats(timeRange);
-  }, [timeRange, keyFilter]));
+    // Debounce：5s 一次的广播足够密，没必要每次都打接口，1s 内合并。
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      fetchStats(timeRange);
+      // 只刷第一页：第 N 页在刷新时会把最新记录顶进前面几页，只有第一页
+      // 内容稳定变化；老页刷新反而会因插入导致重复/漏行。
+      if (logPage === 1) fetchLog(1, true);
+    }, 1000);
+  }, [timeRange, keyFilter, logPage]));
 
   // Load stats on range / key change；切换时间范围时日志回到第一页
   useEffect(() => {
