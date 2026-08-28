@@ -3,13 +3,14 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, ChevronUp, ChevronDown, X, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCombosStore } from '@/stores/combos';
+import { useModelsStore } from '@/stores/models';
 import { useProvidersStore } from '@/stores/providers';
 import { combosApi, type Combo } from '@/lib/api';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 
 interface ModelOption {
-  model_id: string;
+  id: string;
   display_name: string;
   provider_name: string;
 }
@@ -21,6 +22,7 @@ export function ComboFormView() {
   const isEdit = !!id;
 
   const { fetchCombos } = useCombosStore();
+  const { models, fetchModels } = useModelsStore();
   const { providers, fetchProviders } = useProvidersStore();
 
   // 仅在编辑（需拉取远端数据）时进入加载态；新建直接渲染表单。
@@ -58,27 +60,26 @@ export function ComboFormView() {
   // Load available models from all providers
   useEffect(() => {
     const loadModels = async () => {
-      await fetchProviders();
+      // 并行拉取 models 和 providers
+      await Promise.all([fetchModels(), fetchProviders()]);
+      // 从 store 最新状态读取，闭包里的值仍是旧值（首次渲染为空数组）
+      const currentModels = useModelsStore.getState().models;
+      const currentProviders = useProvidersStore.getState().providers;
 
-      const models: ModelOption[] = [];
-      for (const provider of providers) {
-        const providerModels = (provider.config?.models || []) as {
-          model_id: string;
-          display_name: string;
-        }[];
-        providerModels.forEach((m) => {
-          models.push({
-            model_id: m.model_id,
-            display_name: m.display_name || m.model_id,
-            provider_name: provider.name,
-          });
-        });
-      }
-      setAvailableModels(models);
+      // 构建 provider id -> name 映射
+      const providerMap = new Map(currentProviders.map((p) => [p.id, p.name]));
+
+      // 组合成 ModelOption，用 display_name 作为成员标识（后端校验用 display_name）
+      const options: ModelOption[] = currentModels.map((m) => ({
+        id: m.display_name, // combo members 存的是 display_name
+        display_name: m.display_name,
+        provider_name: providerMap.get(m.provider_id) || 'Unknown',
+      }));
+      setAvailableModels(options);
     };
 
     loadModels();
-  }, [providers.length]);
+  }, [fetchModels, fetchProviders]);
 
   // Add model to selected members
   const handleAddModel = (modelId: string) => {
@@ -220,7 +221,7 @@ export function ComboFormView() {
           ) : (
             <div className="space-y-2">
               {selectedMembers.map((memberId, index) => {
-                const model = availableModels.find((m) => m.model_id === memberId);
+                const model = availableModels.find((m) => m.id === memberId);
                 return (
                   <div
                     key={memberId}
@@ -282,12 +283,12 @@ export function ComboFormView() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto border rounded-lg p-3">
               {availableModels.map((model) => {
-                const isSelected = selectedMembers.includes(model.model_id);
+                const isSelected = selectedMembers.includes(model.id);
                 return (
                   <button
-                    key={model.model_id}
+                    key={model.id}
                     type="button"
-                    onClick={() => handleAddModel(model.model_id)}
+                    onClick={() => handleAddModel(model.id)}
                     disabled={isSelected}
                     className={cn(
                       'flex items-center gap-2 p-2 rounded-md text-left transition-colors',
@@ -331,3 +332,5 @@ export function ComboFormView() {
     </div>
   );
 }
+
+export default ComboFormView;

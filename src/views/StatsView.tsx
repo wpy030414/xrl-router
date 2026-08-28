@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   AreaChart,
   Area,
@@ -50,7 +50,9 @@ function formatBucket(label: string): string {
   const m = label.match(/^([hd])(\d+)$/);
   if (!m) return label;
   const step = m[1] === 'h' ? 3600 : 86400;
-  const secs = parseInt(m[2], 10) * step - getTzOffset();
+  // getTimezoneOffset() 返回分钟（UTC+8 = -480），转为秒并取负（与 Vue 版一致）
+  const tzOffsetSec = -getTzOffset() * 60;
+  const secs = parseInt(m[2], 10) * step - tzOffsetSec;
   const d = new Date(secs * 1000);
   if (m[1] === 'h') return `${String(d.getHours()).padStart(2, '0')}:00`;
   return `${d.getMonth() + 1}/${d.getDate()}`;
@@ -61,7 +63,9 @@ function formatBucketLong(label: string): string {
   const m = label.match(/^([hd])(\d+)$/);
   if (!m) return label;
   const step = m[1] === 'h' ? 3600 : 86400;
-  const secs = parseInt(m[2], 10) * step - getTzOffset();
+  // getTimezoneOffset() 返回分钟（UTC+8 = -480），转为秒并取负（与 Vue 版一致）
+  const tzOffsetSec = -getTzOffset() * 60;
+  const secs = parseInt(m[2], 10) * step - tzOffsetSec;
   const d = new Date(secs * 1000);
   if (m[1] === 'h') return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00`;
   return `${d.getMonth() + 1}/${d.getDate()}`;
@@ -102,6 +106,105 @@ function getTimeBounds(range: TimeRange): { from: number; to: number; granularit
 /** Get timezone offset in minutes */
 function getTzOffset(): number {
   return new Date().getTimezoneOffset();
+}
+
+// ── Animated Stats Hook ──
+// 数字翻动动画：与 Vue 版 useAnimatedNumber 同策略
+// - requestAnimationFrame + easeOutSine 缓动，2400ms 内从旧值平滑翻动到新值
+// - 缓存命中率基于动画中的 input/output/cache 值实时计算，而非直接用聚合值
+interface AnimatedStats {
+  totalTokens: number;
+  totalRequests: number;
+  totalInput: number;
+  totalOutput: number;
+  totalCache: number;
+  cacheHitRate: string;
+}
+
+function useAnimatedStats(aggregated: {
+  totalTokens: number;
+  totalRequests: number;
+  totalInput: number;
+  totalOutput: number;
+  totalCache: number;
+}): AnimatedStats {
+  const DURATION = 2400; // ms，与 Vue 版一致
+
+  const totalTokensRef = useRef(0);
+  const totalRequestsRef = useRef(0);
+  const totalInputRef = useRef(0);
+  const totalOutputRef = useRef(0);
+  const totalCacheRef = useRef(0);
+
+  const [display, setDisplay] = useState<AnimatedStats>({
+    totalTokens: 0,
+    totalRequests: 0,
+    totalInput: 0,
+    totalOutput: 0,
+    totalCache: 0,
+    cacheHitRate: '0.0',
+  });
+
+  const animationIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (animationIdRef.current) {
+      cancelAnimationFrame(animationIdRef.current);
+    }
+
+    const startTotalTokens = totalTokensRef.current;
+    const startTotalRequests = totalRequestsRef.current;
+    const startTotalInput = totalInputRef.current;
+    const startTotalOutput = totalOutputRef.current;
+    const startTotalCache = totalCacheRef.current;
+    const startTime = performance.now();
+
+    function tick(now: number) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / DURATION, 1);
+      // easeOutSine: 前 1/3 快速翻动，后 2/3 缓慢趋近目标值
+      const ease = Math.sin(progress * Math.PI / 2);
+
+      const curTotalTokens = Math.round(startTotalTokens + (aggregated.totalTokens - startTotalTokens) * ease);
+      const curTotalRequests = Math.round(startTotalRequests + (aggregated.totalRequests - startTotalRequests) * ease);
+      const curTotalInput = Math.round(startTotalInput + (aggregated.totalInput - startTotalInput) * ease);
+      const curTotalOutput = Math.round(startTotalOutput + (aggregated.totalOutput - startTotalOutput) * ease);
+      const curTotalCache = Math.round(startTotalCache + (aggregated.totalCache - startTotalCache) * ease);
+
+      // 缓存命中率基于动画中的值实时计算（与 Vue 版一致）
+      const base = curTotalInput + curTotalCache;
+      const cacheHitRate = base > 0 ? ((curTotalCache / base) * 100).toFixed(1) : '0.0';
+
+      totalTokensRef.current = curTotalTokens;
+      totalRequestsRef.current = curTotalRequests;
+      totalInputRef.current = curTotalInput;
+      totalOutputRef.current = curTotalOutput;
+      totalCacheRef.current = curTotalCache;
+
+      setDisplay({
+        totalTokens: curTotalTokens,
+        totalRequests: curTotalRequests,
+        totalInput: curTotalInput,
+        totalOutput: curTotalOutput,
+        totalCache: curTotalCache,
+        cacheHitRate,
+      });
+
+      if (progress < 1) {
+        animationIdRef.current = requestAnimationFrame(tick);
+      }
+    }
+
+    animationIdRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (animationIdRef.current) {
+        cancelAnimationFrame(animationIdRef.current);
+      }
+    };
+  }, [aggregated]);
+
+  return display;
 }
 
 // ── Stat Tile Component ──
@@ -175,12 +278,6 @@ export function StatsView() {
   const [logLoading, setLogLoading] = useState(true);
   const LOG_PAGE_SIZE = 15;
 
-  // Real-time refresh via WebSocket
-  useWebSocket('usage_stats_changed', useCallback(() => {
-    // Debounce refresh
-    fetchStats(timeRange);
-  }, [timeRange, keyFilter]));
-
   const fetchStats = async (range: TimeRange) => {
     const { from, to, granularity } = getTimeBounds(range);
     try {
@@ -188,7 +285,8 @@ export function StatsView() {
         from,
         to,
         granularity,
-        tz_offset: getTzOffset(),
+        // getTimezoneOffset() 返回分钟（UTC+8 = -480），转为秒并取负（与 Vue 版一致）
+        tz_offset: -getTzOffset() * 60,
         service_key_id: keyFilter || undefined,
       });
       setRows(result.data || []);
@@ -220,6 +318,12 @@ export function StatsView() {
       setLogLoading(false);
     }
   };
+
+  // Real-time refresh via WebSocket
+  useWebSocket('usage_stats_changed', useCallback(() => {
+    // Debounce refresh
+    fetchStats(timeRange);
+  }, [timeRange, keyFilter]));
 
   // Load stats on range / key change；切换时间范围时日志回到第一页
   useEffect(() => {
@@ -254,17 +358,66 @@ export function StatsView() {
     return { totalTokens, totalRequests, totalInput, totalOutput, totalCache, cacheHitRate };
   }, [rows]);
 
-  // Chart data
+  // 数字翻动动画：与 Vue 版同策略，平滑过渡到新值
+  const anim = useAnimatedStats(aggregated);
+
+  // Chart data：生成完整的时间序列，没有数据的桶填0
   const chartData = useMemo(() => {
-    return rows.map((r) => ({
-      time: r.day,
-      input: r.prompt_tokens,
-      output: r.completion_tokens,
-      cache: r.cache_read_input_tokens,
-    }));
-  }, [rows]);
+    const { from, to, granularity } = getTimeBounds(timeRange);
+    const step = granularity === 'hour' ? 3600 : 86400;
+    const prefix = granularity === 'hour' ? 'h' : 'd';
+    // 后端 bucket = floor((utc_timestamp + tz_offset) / step)，前端也要加 tz_offset 才能匹配
+    const tzOffsetSec = -getTzOffset() * 60; // getTimezoneOffset() 返回分钟（UTC+8 = -480），转为秒并取负
+
+    // 生成完整的时间桶序列
+    const start = Math.floor((from + tzOffsetSec) / step);
+    const end = Math.floor((to + tzOffsetSec) / step);
+    const buckets: string[] = [];
+    for (let b = start; b <= end; b++) {
+      buckets.push(`${prefix}${b}`);
+    }
+
+    // 把后端数据按 bucket 分组
+    const dataMap = new Map<string, { input: number; output: number; cache: number }>();
+    for (const r of rows) {
+      const existing = dataMap.get(r.day) || { input: 0, output: 0, cache: 0 };
+      existing.input += r.prompt_tokens;
+      existing.output += r.completion_tokens;
+      existing.cache += r.cache_read_input_tokens;
+      dataMap.set(r.day, existing);
+    }
+
+    // 生成完整序列，没有数据的桶填0
+    return buckets.map((bucket) => {
+      const data = dataMap.get(bucket) || { input: 0, output: 0, cache: 0 };
+      return {
+        time: bucket,
+        input: data.input,
+        output: data.output,
+        cache: data.cache,
+      };
+    });
+  }, [rows, timeRange]);
 
   const logTotalPages = Math.max(1, Math.ceil(logTotal / LOG_PAGE_SIZE));
+
+  // 键盘左右键翻页请求日志（仅在非输入焦点时生效）
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 输入框 / 下拉框聚焦时不拦截，避免影响正常输入
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) {
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        setLogPage((p) => Math.max(1, p - 1));
+      } else if (e.key === 'ArrowRight') {
+        setLogPage((p) => Math.min(logTotalPages, p + 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [logTotalPages]);
 
   return (
     <div className="space-y-6">
@@ -314,8 +467,8 @@ export function StatsView() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatTile
           label={t('stats.tile.total_tokens')}
-          value={formatTokens(aggregated.totalTokens)}
-          sub={`≈${formatTokensAuto(aggregated.totalTokens, t)}`}
+          value={formatTokens(anim.totalTokens)}
+          sub={`≈${formatTokensAuto(anim.totalTokens, t)}`}
           className="sm:col-span-2"
         />
         <StatTile
@@ -324,23 +477,23 @@ export function StatsView() {
         />
         <StatTile
           label={t('stats.tile.total_requests')}
-          value={formatTokens(aggregated.totalRequests)}
+          value={formatTokens(anim.totalRequests)}
         />
         <StatTile
           label={t('stats.tile.input_tokens')}
-          value={formatTokensAuto(aggregated.totalInput, t)}
+          value={formatTokensAuto(anim.totalInput, t)}
         />
         <StatTile
           label={t('stats.tile.output_tokens')}
-          value={formatTokensAuto(aggregated.totalOutput, t)}
+          value={formatTokensAuto(anim.totalOutput, t)}
         />
         <StatTile
           label={t('stats.tile.cache_tokens')}
-          value={formatTokensAuto(aggregated.totalCache, t)}
+          value={formatTokensAuto(anim.totalCache, t)}
         />
         <StatTile
           label={t('stats.tile.cache_hit_rate')}
-          value={`${aggregated.cacheHitRate.toFixed(1)}%`}
+          value={`${anim.cacheHitRate}%`}
         />
       </div>
 
@@ -527,3 +680,5 @@ export function StatsView() {
     </div>
   );
 }
+
+export default StatsView;

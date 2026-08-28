@@ -8,16 +8,16 @@ import {
   Power,
   Search,
   FileText,
-  Eye,
   Bell,
   Download,
   Upload,
-  Trash2,
   RotateCcw,
   Copy,
   Check,
   Loader2,
   Zap,
+  Info,
+  Database,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -194,7 +194,7 @@ export function SettingsView() {
 
   // MCP endpoint info
   const mcpEndpoint = typeof window !== 'undefined' ? `http://${window.location.hostname}:19068/mcp` : '';
-  const mcpCmd = `claude mcp add --scope user --transport http xrl-router ${mcpEndpoint}`;
+  const mcpCmd = `claude mcp add --scope user --transport http xrl-router ${mcpEndpoint} --header "Authorization: Bearer <SERVICE_KEY>"`;
   const [copied, setCopied] = useState<'endpoint' | 'cmd' | null>(null);
 
   const handleCopyMcp = async (text: string, which: 'endpoint' | 'cmd') => {
@@ -241,7 +241,15 @@ export function SettingsView() {
         <div className="space-y-6">
           {/* About */}
           <section className="space-y-2">
-            <h3 className="text-lg font-semibold">{t('settings.about.title', { version })}</h3>
+            <div className="flex items-center gap-2">
+              <Info className="w-5 h-5" />
+              <h3 className="text-lg font-semibold">{t('settings.about.title')}</h3>
+            </div>
+            {version && (
+              <p className="text-sm text-muted-foreground">
+                {t('settings.about.version', { version })}
+              </p>
+            )}
             <p className="text-sm text-muted-foreground">{t('settings.about.desc')}</p>
             <a
               href="https://github.com/wpy030414/xrl-router"
@@ -492,31 +500,6 @@ export function SettingsView() {
               </button>
             </div>
 
-            {/* Vision */}
-            <div className="flex items-center justify-between py-3 border-b">
-              <div className="flex items-center gap-2">
-                <Eye className="w-5 h-5" />
-                <div>
-                  <p className="font-medium">{t('settings.mcp_vision.title')}</p>
-                  <p className="text-sm text-muted-foreground">{t('settings.mcp_vision.desc')}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => handleSettingToggle('mcp_vision', !settings.mcp_vision)}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  settings.mcp_vision ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    settings.mcp_vision ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
-            </div>
-
             {/* Notify */}
             <div className="flex items-center justify-between py-3 border-b">
               <div className="flex items-center gap-2">
@@ -545,39 +528,30 @@ export function SettingsView() {
         </div>
       )}
 
-      {/* Data Tab */}
+      {/* Privacy Tab */}
       {activeTab === 'data' && (
         <div className="space-y-6">
-          {/* Export/Import */}
+          {/* Export/Import/Reset */}
           <section className="space-y-3">
             <div className="flex items-center gap-2">
-              <Download className="w-5 h-5" />
+              <Database className="w-5 h-5" />
               <h3 className="text-lg font-semibold">{t('settings.data.title')}</h3>
             </div>
             <p className="text-sm text-muted-foreground">{t('settings.data.desc')}</p>
             <div className="flex gap-3">
-              <Button onClick={handleExport}>
+              <Button variant="outline" onClick={handleExport}>
                 <Download className="w-4 h-4 mr-2" />
                 {t('settings.data.export.button')}
               </Button>
-              <Button variant="outline" onClick={() => setImportDialogOpen(true)}>
+              <Button onClick={() => setImportDialogOpen(true)}>
                 <Upload className="w-4 h-4 mr-2" />
                 {t('settings.data.import.button')}
               </Button>
+              <Button variant="destructive" onClick={() => setResetDialogOpen(true)}>
+                <RotateCcw className="w-4 h-4 mr-2" />
+                {t('settings.data.reset.button')}
+              </Button>
             </div>
-          </section>
-
-          {/* Reset */}
-          <section className="space-y-3 pt-4 border-t">
-            <div className="flex items-center gap-2">
-              <Trash2 className="w-5 h-5 text-destructive" />
-              <h3 className="text-lg font-semibold text-destructive">{t('settings.data.reset.title')}</h3>
-            </div>
-            <p className="text-sm text-muted-foreground">{t('settings.data.reset.desc')}</p>
-            <Button variant="destructive" onClick={() => setResetDialogOpen(true)}>
-              <RotateCcw className="w-4 h-4 mr-2" />
-              {t('settings.data.reset.button')}
-            </Button>
           </section>
         </div>
       )}
@@ -620,3 +594,5 @@ export function SettingsView() {
     </div>
   );
 }
+
+export default SettingsView;

@@ -169,3 +169,5 @@ export function CombosView() {
     </div>
   );
 }
+
+export default CombosView;

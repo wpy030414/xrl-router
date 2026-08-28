@@ -11,6 +11,8 @@ export default {
   // ── Claude FM ──
   'fm.play': '播放',
   'fm.pause': '暂停',
+  'fm.setWallpaper': '设置为桌面背景',
+  'fm.unsetWallpaper': '取消桌面背景',
 
   // ── 通用 ──
   'common.cancel': '取消',
@@ -34,10 +36,11 @@ export default {
   'settings.title': '设置',
   'settings.tab.general': '通用',
   'settings.tab.routing': '路由',
-  'settings.tab.data': '数据',
+  'settings.tab.data': '隐私',
 
-  'settings.about.title': '关于 (v{version})',
+  'settings.about.title': '关于',
   'settings.about.desc': 'XRL Router 是一个多 Provider AI LLM API 路由网关，支持跨 Provider 的模型层级调度和协议翻译。',
+  'settings.about.version': '版本 {version}',
   'settings.about.github': 'github.com/wpy030414/xrl-router',
 
   'settings.language.title': '语言',
@@ -73,15 +76,6 @@ export default {
   'settings.mcp_webfetch.on': '已开启',
   'settings.mcp_webfetch.off': '已关闭',
 
-  'settings.mcp_vision.title': '视觉能力支持',
-  'settings.mcp_vision.desc': '开启后，模型会单独使用视觉模型解析图片',
-  'settings.mcp_vision.on': '已开启',
-  'settings.mcp_vision.off': '已关闭',
-  'settings.mcp_vision.provider_label': '供应商',
-  'settings.mcp_vision.model_label': '视觉模型',
-  'settings.mcp_vision.provider_empty': '未选择供应商',
-  'settings.mcp_vision.model_empty': '先选择供应商',
-
   'settings.mcp_info.title': 'MCP 接入信息',
   'settings.mcp_info.desc': '在客户端注册本地 MCP 端点后，模型即可调用下述工具。鉴权使用 Service Key（Bearer）',
   'settings.mcp_info.endpoint': '端点',
@@ -100,8 +94,7 @@ export default {
   'settings.data.import.confirm': '确定要导入数据吗？这将覆盖当前所有数据。',
 
   'settings.data.reset.title': '重置所有数据',
-  'settings.data.reset.desc': '清除所有本地存储的数据，此操作不可恢复',
-  'settings.data.reset.button': '清除所有本地数据',
+  'settings.data.reset.button': '重置',
   'settings.data.reset.confirm': '确定清除所有本地存储的数据吗？此操作不可恢复。',
 
   'settings.cancel': '取消',
@@ -115,8 +108,7 @@ export default {
   'providers.sort_save': '保存',
   'providers.sort_failed': '排序保存失败，请重试',
   'providers.keys_available': '{green}/{total} 可用密钥',
-  'providers.plugin_online': '插件（在线）',
-  'providers.plugin_offline': '插件（离线）',
+  'providers.plugin_badge': '插件',
   'providers.plugin_delegated': '由插件委托接入',
   'providers.delete_title': '删除供应商',
   'providers.delete_confirm': '确定要删除「{name}」吗？此操作不可撤销。',
@@ -125,6 +117,7 @@ export default {
   // ── 供应商编辑 ──
   'providerNew.title.edit': '维护供应商',
   'providerNew.title.plugin': '添加委托供应商',
+  'providerNew.title.plugin_edit': '维护委托供应商',
   'providerNew.title.create': '添加供应商',
   'providerNew.name_label': '供应商名称',
   'providerNew.kind_label': 'API 格式',
@@ -254,6 +247,10 @@ export default {
   'plugin.dialog.desc': '是否将该插件添加为供应商？',
   'plugin.dialog.ignore': '忽略',
   'plugin.dialog.add': '添加供应商',
+  'plugin.dialog.kind': 'API 格式：{kind}',
+  'plugin.dialog.base_url': 'Base URL：{url}',
+  'plugin.dialog.models': '{count} 个模型',
+  'plugin.dialog.keys': '{count} 把密钥',
 
 
   // ── Install 页面 ──

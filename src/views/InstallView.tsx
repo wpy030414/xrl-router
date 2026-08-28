@@ -222,3 +222,5 @@ export function InstallView() {
     </div>
   );
 }
+
+export default InstallView;

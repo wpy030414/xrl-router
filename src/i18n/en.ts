@@ -11,6 +11,8 @@ export default {
   // ── Claude FM ──
   'fm.play': 'Play',
   'fm.pause': 'Pause',
+  'fm.setWallpaper': 'Set as desktop background',
+  'fm.unsetWallpaper': 'Remove desktop background',
 
   // ── Common ──
   'common.cancel': 'Cancel',
@@ -34,10 +36,11 @@ export default {
   'settings.title': 'Settings',
   'settings.tab.general': 'General',
   'settings.tab.routing': 'Routing',
-  'settings.tab.data': 'Data',
+  'settings.tab.data': 'Privacy',
 
-  'settings.about.title': 'About (v{version})',
+  'settings.about.title': 'About',
   'settings.about.desc': 'XRL Router is a multi-provider AI LLM API routing gateway with cross-provider model tier scheduling and protocol translation.',
+  'settings.about.version': 'Version {version}',
   'settings.about.github': 'github.com/wpy030414/xrl-router',
 
   'settings.language.title': 'Language',
@@ -73,15 +76,6 @@ export default {
   'settings.mcp_webfetch.on': 'Enabled',
   'settings.mcp_webfetch.off': 'Disabled',
 
-  'settings.mcp_vision.title': 'Vision Support',
-  'settings.mcp_vision.desc': 'When enabled, the model uses a dedicated vision model to analyze images',
-  'settings.mcp_vision.on': 'Enabled',
-  'settings.mcp_vision.off': 'Disabled',
-  'settings.mcp_vision.provider_label': 'Provider',
-  'settings.mcp_vision.model_label': 'Vision model',
-  'settings.mcp_vision.provider_empty': 'No provider selected',
-  'settings.mcp_vision.model_empty': 'Select a provider first',
-
   'settings.mcp_info.title': 'MCP Connection Info',
   'settings.mcp_info.desc': 'Register the local MCP endpoint in your client so the model can call the tools above. Auth uses a Service Key (Bearer)',
   'settings.mcp_info.endpoint': 'Endpoint',
@@ -100,8 +94,7 @@ export default {
   'settings.data.import.confirm': 'Are you sure you want to import data? This will overwrite all current data.',
 
   'settings.data.reset.title': 'Reset All Data',
-  'settings.data.reset.desc': 'Clear all locally stored data. This action cannot be undone',
-  'settings.data.reset.button': 'Clear All Local Data',
+  'settings.data.reset.button': 'Reset',
   'settings.data.reset.confirm': 'Are you sure you want to clear all locally stored data? This action cannot be undone.',
 
   'settings.cancel': 'Cancel',
@@ -115,8 +108,7 @@ export default {
   'providers.sort_save': 'Save',
   'providers.sort_failed': 'Failed to save order, please retry',
   'providers.keys_available': '{green}/{total} keys available',
-  'providers.plugin_online': 'Plugin (online)',
-  'providers.plugin_offline': 'Plugin (offline)',
+  'providers.plugin_badge': 'Plugin',
   'providers.plugin_delegated': 'Delegated via plugin',
   'providers.delete_title': 'Delete Provider',
   'providers.delete_confirm': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
@@ -125,6 +117,7 @@ export default {
   // ── Provider edit ──
   'providerNew.title.edit': 'Maintain Provider',
   'providerNew.title.plugin': 'Add Delegated Provider',
+  'providerNew.title.plugin_edit': 'Maintain Delegated Provider',
   'providerNew.title.create': 'Add Provider',
   'providerNew.name_label': 'Provider Name',
   'providerNew.kind_label': 'API Format',
@@ -254,6 +247,10 @@ export default {
   'plugin.dialog.desc': 'Add this plugin as a provider?',
   'plugin.dialog.ignore': 'Ignore',
   'plugin.dialog.add': 'Add Provider',
+  'plugin.dialog.kind': 'API Format: {kind}',
+  'plugin.dialog.base_url': 'Base URL: {url}',
+  'plugin.dialog.models': '{count} models',
+  'plugin.dialog.keys': '{count} keys',
 
 
   // ── Install page ──
