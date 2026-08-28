@@ -206,7 +206,7 @@ fn show_wallpaper(_win: &WebviewWindow) -> Result<(), String> {
 
 /// 创建隐藏的壁纸 WebviewWindow（透明 + 壁纸模式标志，加载同一前端入口）。
 fn create_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    let mut builder = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         WALLPAPER_LABEL,
         WebviewUrl::App("index.html".into()),
@@ -225,11 +225,8 @@ fn create_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     // 注意：transparent() 是 Windows-only API（macOS WKWebView 默认透明，
     // Tauri v2 在 macOS 上未暴露该方法），必须 cfg 隔离。
     #[cfg(target_os = "windows")]
-    {
-        builder = builder.transparent(true);
-    }
-    let mut builder = builder
-    .initialization_script("window.__WALLPAPER_MODE__ = true;");
+    let builder = builder.transparent(true);
+    let builder = builder.initialization_script("window.__WALLPAPER_MODE__ = true;");
     #[cfg(target_os = "windows")]
     {
         // WebView2 专用配置：显式关闭 Chromium 原生遮挡检测（WorkerW 子窗会被
@@ -240,11 +237,15 @@ fn create_window(app: &AppHandle) -> Result<WebviewWindow, String> {
             .app_data_dir()
             .map(|d| d.join("wallpaper-webview2"))
             .unwrap_or_else(|_| std::path::PathBuf::from("wallpaper-webview2"));
-        builder = builder
+        let builder = builder
             .data_directory(data_dir)
             .additional_browser_args("--disable-features=CalculateNativeWinOcclusion");
+        builder.build().map_err(|e| format!("create wallpaper window: {e}"))
     }
-    builder.build().map_err(|e| format!("create wallpaper window: {e}"))
+    #[cfg(not(target_os = "windows"))]
+    {
+        builder.build().map_err(|e| format!("create wallpaper window: {e}"))
+    }
 }
 
 /// 窗口尺寸/位置 = 主显示器（物理像素，由 tauri 处理 DPI）。

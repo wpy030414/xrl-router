@@ -361,7 +361,7 @@ pub fn run() {
             })?;
 
             // Create shared application state with all registries
-            let app_state = Arc::new(AppState::new(config.clone(), database.clone(), master_key));
+            let app_state = Arc::new(AppState::new(config.clone(), database.clone(), master_key, &data_dir));
             app.manage(app_state.clone());
 
             // ── 桌面壁纸劫持（FM 像素艺术 → 桌面层）──
@@ -518,6 +518,19 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            // ── macOS Dock 图标点击：从托盘唤起主窗口 ──
+            // macOS 上窗口被 hide() 后点击 Dock 图标会触发 Reopen 事件，
+            // 但 Tauri 默认不处理；必须手动 show + set_focus。
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            _ => {}
+        });
 }
