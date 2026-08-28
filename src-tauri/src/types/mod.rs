@@ -99,3 +99,34 @@ pub struct Combo {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// 本地模型（私有化）：GGUF 权重 + llama-server 引擎运行时元数据。
+/// 契约见 docs/specs/spec-local-models.md。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalModel {
+    pub id: String,
+    /// HF 仓库 ID，如 "Qwen/Qwen3-8B-Instruct-GGUF"
+    pub repo_id: String,
+    /// 权重文件名（GGUF）
+    pub filename: String,
+    /// gguf
+    pub format: String,
+    /// auto | cpu | cuda | vulkan | rocm | metal（auto 表示检测后持久化的实际值）
+    pub backend: String,
+    /// downloading | downloaded | running | error
+    pub status: String,
+    /// 对外暴露的模型名（models.display_name）
+    pub model_id: String,
+    pub ctx_size: i64,
+    pub n_gpu_layers: i64,
+    /// 1 = 应用启动时自动启动引擎
+    pub autostart: i64,
+    /// 目标字节数（HF tree API），下载中/后非空
+    pub file_size: Option<i64>,
+    /// 权重文件绝对路径
+    pub local_path: String,
+    /// 引擎监听端口（运行中非空）
+    pub port: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

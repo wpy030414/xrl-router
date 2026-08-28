@@ -12,6 +12,7 @@ use tracing::info;
 
 pub mod api_keys;
 pub mod combos;
+pub mod local_models;
 pub mod models;
 pub mod providers;
 pub mod schema;

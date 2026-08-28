@@ -12,6 +12,7 @@ pub mod websocket;
 pub mod data;
 pub mod fm;
 pub mod combos;
+pub mod local;
 
 pub(crate) use health::health_check;
 pub(crate) use install::get_local_ip;

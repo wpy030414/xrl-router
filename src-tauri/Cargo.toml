@@ -68,6 +68,11 @@ tauri-plugin-notification = "2"
 # Audio playback
 rodio = "0.20"
 
+# llama.cpp 预编译二进制解压（本地模型引擎；macOS/Linux 为 .tar.gz，Windows 为 .zip）
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+
 # System media controls (macOS Now Playing / Windows SMTC / Linux MPRIS)
 souvlaki = "0.8"
 

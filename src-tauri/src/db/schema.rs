@@ -325,4 +325,26 @@ INSERT INTO settings (key, value) VALUES
   ('mcp_notify', 'false')
 ON CONFLICT(key) DO NOTHING;
 "#,
+    // V20: 本地模型（私有化）——GGUF 权重 + llama-server 引擎运行时元数据。
+    // 契约见 docs/specs/spec-local-models.md。
+    r#"
+CREATE TABLE IF NOT EXISTS local_models (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    format TEXT NOT NULL DEFAULT 'gguf',
+    backend TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'downloaded',
+    model_id TEXT NOT NULL,
+    ctx_size INTEGER NOT NULL DEFAULT 32768,
+    n_gpu_layers INTEGER NOT NULL DEFAULT 99,
+    autostart INTEGER NOT NULL DEFAULT 1,
+    file_size INTEGER,
+    local_path TEXT NOT NULL,
+    port INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_models_status ON local_models(status);
+"#,
 ];

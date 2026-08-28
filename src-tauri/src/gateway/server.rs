@@ -6,6 +6,7 @@ use crate::models::ModelRegistry;
 use crate::plugin::PluginManager;
 use crate::providers::ProviderRegistry;
 use crate::api::handlers::FmEngine;
+use crate::local::LocalManager;
 use anyhow::Result;
 use axum::http::HeaderValue;
 use std::sync::Arc;
@@ -43,10 +44,12 @@ pub struct AppState {
     pub fm: FmEngine,
     /// 搜索 HTTP 客户端（完整浏览器头 + cookie 复用 + 懒预热）。
     pub search_http: crate::search::bing::SearchHttp,
+    /// 本地模型管理（私有化）：下载/引擎/provider 注册。契约见 spec-local-models.md。
+    pub local: LocalManager,
 }
 
 impl AppState {
-    pub fn new(config: Config, database: Database, master_key: crate::crypto::MasterKey) -> Self {
+    pub fn new(config: Config, database: Database, master_key: crate::crypto::MasterKey, data_dir: &std::path::Path) -> Self {
         let providers = ProviderRegistry::new(database.clone());
         let _ = providers.load_from_db();
         let models = ModelRegistry::new(database.clone());
@@ -106,6 +109,17 @@ impl AppState {
         // FM 广播电台引擎：使用共享 http_client 复用连接池。
         let fm = FmEngine::new(http_client.clone());
 
+        // 本地模型管理（私有化）：下载目录 models/、引擎缓存 engines/ 都挂在 data_dir 下。
+        let local = LocalManager::new(
+            database.clone(),
+            master_key,
+            data_dir,
+            http_client.clone(),
+            providers.clone(),
+            keys.clone(),
+            key_stats_tx.clone(),
+        );
+
         Self {
             config,
             database,
@@ -124,6 +138,7 @@ impl AppState {
             http_client,
             fm,
             search_http: Default::default(),
+            local,
         }
     }
 }
@@ -255,7 +270,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             ..Default::default()
         };
-        let state = Arc::new(AppState::new(config, db, [7u8; 32]));
+        let state = Arc::new(AppState::new(config, db, [7u8; 32], &std::env::temp_dir()));
         let router = crate::api::build_router(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
