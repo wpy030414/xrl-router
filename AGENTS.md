@@ -23,6 +23,7 @@ xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应�
 - MCP 工具服务器（web_search / web_fetch / notify）
 - 国际化（zh-CN / en）
 - 数据导出/导入/重置
+- Claude FM 桌面壁纸劫持（Windows/macOS）
 
 ### Non-Goals（明确不做的事）
 
@@ -75,7 +76,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 #### 密钥双轨
 
 - **Provider API Key**：AES-256-GCM 加密存储，主密钥在 `master.key`
-- **Service Key**：Argon2 哈希存储，创建时仅返回一次明文
+- **Service Key**：Argon2 哈希存储，创建时仅返回一次明文，可设置 `allowed_models` 白名单
 - 不要混淆这两套
 
 #### 代理只支持流式
@@ -117,6 +118,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 - **非 Tauri 环境兼容**：前端代码通过动态 `import()` 延迟加载 Tauri API
 - 状态管理用 Zustand，**不要**用 Redux 或其他状态库
 - 路由用 react-router-dom v6
+- **插件对话框**：`PluginRegisterDialog` 自监听 `plugin-register` 事件，无需父组件传递
 
 #### HTTP 客户端
 
@@ -151,23 +153,25 @@ src-tauri/src/
 ├── plugin/                    插件系统（WebSocket 注册）
 ├── providers/                 Provider 适配器
 ├── search/bing.rs             Bing 搜索
+├── wallpaper/                 桌面壁纸劫持（FM 像素艺术 → 桌面层）
 └── types/                     数据结构定义
 
 src/
-├── main.tsx / App.tsx / router.tsx  前端入口
+├── main.tsx / App.tsx         前端入口（壁纸窗口按 __WALLPAPER_MODE__ 分支）
 ├── api.ts / ws.ts             REST + WebSocket 客户端
-├── hooks/                     自定义 hooks（useTheme, useWebSocket, useI18n）
+├── hooks/                     自定义 hooks（useTheme, useWebSocket, useFm）
 ├── i18n/                      国际化（zh-CN / en）
 ├── stores/                    Zustand stores（providers, keys, models, settings, combos, ui）
 ├── views/                     9 个页面视图（.tsx）
-├── components/                AppShell / ConnectionStatus / PluginRegisterDialog + ui/（shadcn/ui 组件）
-└── lib/                       工具函数（utils.ts）
+├── components/                AppShell / ConnectionStatus / PluginRegisterDialog / PixelScene / WallpaperScene + ui/（shadcn/ui 组件）
+└── lib/                       工具函数（utils.ts, tauri.ts）
 
 docs/
 ├── PRD.md                     产品需求文档
 ├── ARCHITECTURE.md            架构地图
 ├── DECISIONS.md               架构决策记录
-└── specs/                     代码生成契约（10 个 spec 文件）
+├── assets/                    界面截图（fm.png, provider.png, secret.png, setting.png）
+└── specs/                     代码生成契约（11 个 spec 文件）
 ```
 
 ## 修改前必读的文件
@@ -175,11 +179,12 @@ docs/
 | 改动类型 | 必读文件 |
 |---------|---------|
 | 新增 API 端点 | `api/router.rs` + `api/handlers/` 任一文件 |
-| 修改 install 页面 | `src/views/InstallView.vue` + `api/router.rs` + `docs/specs/spec-lan-deploy.md` |
+| 修改 install 页面 | `src/views/InstallView.tsx` + `api/router.rs` + `docs/specs/spec-lan-deploy.md` |
 | 修改网关启动 | `gateway/server.rs` + `config.rs` + `middleware/admin_guard.rs` |
 | 新增 DB 表/列 | `db/schema.rs`（追加迁移）+ `db/mod.rs` |
 | 修改代理逻辑 | `api/proxy/stream.rs` + `handler.rs` + `ir/` |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
 | 修改前端 | `src/main.tsx` + `src/index.css` |
-| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` |
+| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` + `src/hooks/useFm.ts` |
 | 修改协议转换 | `api/proxy/ir/types.rs` + `from_*.rs` + `to_*.rs` |
+| 修改桌面壁纸 | `wallpaper/mod.rs` + `wallpaper/win.rs` / `wallpaper/macos.rs` + `src/components/WallpaperScene.tsx` |

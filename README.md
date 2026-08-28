@@ -4,6 +4,41 @@
 
 xrl-router 是一个运行在本地的 LLM API 统一网关。客户端通过 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses API 三种端点访问所有大模型 Provider，网关负责路由解析、密钥轮换和用量统计。
 
+## 界面预览
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Claude FM 播放器</strong><br>
+      <img src="docs/assets/fm.png" alt="Claude FM">
+    </td>
+    <td width="50%">
+      <strong>供应商管理</strong><br>
+      <img src="docs/assets/provider.png" alt="Providers">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>组合别名</strong><br>
+      <img src="docs/assets/combo.png" alt="Combos">
+    </td>
+    <td width="50%">
+      <strong>密钥管理</strong><br>
+      <img src="docs/assets/secret.png" alt="Secrets">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>用量统计</strong><br>
+      <img src="docs/assets/stat.png" alt="Stats">
+    </td>
+    <td width="50%">
+      <strong>设置</strong><br>
+      <img src="docs/assets/setting.png" alt="Settings">
+    </td>
+  </tr>
+</table>
+
 ## What is this?
 
 - **定位**：本地优先的 LLM API 网关桌面应用
@@ -64,8 +99,6 @@ pnpm build
 - **协议转换**：IR（中间表示层）统一 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses API 三种格式
 - **安全**：AES-256-GCM 加密 Provider Key + Argon2 哈希 Service Key
 
-> Note: README 不承载项目的完整文档职责，详细信息见 [docs/](docs/)。
-
 ## 项目文档
 
 ```
@@ -79,3 +112,5 @@ docs/
 ## CI
 
 push 到 main 自动构建 macOS arm64 (.dmg) 和 Windows amd64 (.msi) 安装包，发布到 GitHub Releases。
+
+> Note: README 不承载项目的完整文档职责，详细信息见 [docs/](docs/)。

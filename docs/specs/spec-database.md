@@ -6,7 +6,7 @@
 
 ## 迁移架构
 
-所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **18**。
+所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **19**。
 
 ```rust
 // db/schema.rs
@@ -59,8 +59,9 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V16 | WebSearch 劫持开关迁移为 MCP 模式：`websearch_hijack` → `mcp_websearch`（旧键保留兼容） |
 | V17 | MCP 视觉工具设置键：`mcp_vision` / `mcp_vision_provider` / `mcp_vision_model` 默认行 |
 | V18 | 新增 combos / combo_members 表 + 索引（组合别名：多个模型别名按顺序捆绑，路由时依次尝试直到可用） |
+| V19 | MCP 桌面通知工具 notify 的设置键：`mcp_notify` 默认行 |
 
-## 当前表结构（V18 最终状态）
+## 当前表结构（V19 最终状态）
 
 ### providers
 
@@ -344,7 +345,7 @@ db.execute(
 
 ## 完成标准
 
-- [x] 18 版增量迁移（V1→V18）
+- [x] 19 版增量迁移（V1→V19）
 - [x] 迁移按序执行，跳过已应用的版本
 - [x] UPSERT 使用 `ON CONFLICT DO UPDATE`
 - [x] `usage_log` 自包含快照（无外键）

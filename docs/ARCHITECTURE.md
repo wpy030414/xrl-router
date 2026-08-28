@@ -1,4 +1,4 @@
-# xrl-router — 架构文档
+# ARCHITECTURE — xrl-router
 
 > 架构地图：描述稳定的结构关系，让 Agent 理解系统边界。
 
@@ -15,7 +15,8 @@ xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTT
 │  │ KeysView          │────────────────▶│ /api/stats,settings,plugins  │ │
 │  │ StatsView         │                  │ /health  /api/install/local-ip│ │
 │  │ SettingsView      │  WebSocket       │ /ws (实时推送)               │ │
-│  │                   │═════════════════▶│ /ws/plugin (插件注册)        │ │
+│  │ ClaudeFmView      │═════════════════▶│ /ws/plugin (插件注册)        │ │
+│  │                   │                  │ /mcp (MCP 工具服务器)        │ │
 │  └───────────────────┘                  └──────────────────────────────┘ │
 │                                        (同一进程, 单 listener :19068)   │
 └───────────────────────────────────────────────────────────────────────────┘
@@ -57,11 +58,11 @@ main.rs
        ├─ http.rs            统一 HTTP 客户端工厂（系统代理自动继承）
        ├─ db/                SQLite 封装
        │    ├─ mod.rs         Database 结构体 + WAL + migrate()
-       │    ├─ schema.rs      MIGRATIONS 数组 (V1→V15)
+       │    ├─ schema.rs      MIGRATIONS 数组 (V1→V16)
        │    ├─ providers.rs   Provider CRUD
        │    ├─ models.rs      Model CRUD
        │    ├─ api_keys.rs    API Key CRUD
-       │    ├─ service_keys.rs Service Key CRUD
+       │    ├─ service_keys.rs Service Key CRUD (含 allowed_models)
        │    ├─ usage.rs       usage_log 查询 + 统计聚合
        │    └─ settings.rs    key-value 设置表 + 导出/导入/重置
        ├─ gateway/server.rs  AppState + start_gateway (单 listener) + CORS
@@ -74,7 +75,7 @@ main.rs
             │    ├─ install.rs  (本机出口 IP 检测)
             │    ├─ websocket.rs  (/ws 端点)
             │    ├─ plugin.rs     (插件 REST + WS)
-            │    └─ fm.rs         Claude FM 播放引擎
+            │    └─ fm.rs         Claude FM 播放引擎 (含 scene_t 时钟)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备
                  ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn
@@ -98,7 +99,8 @@ main.rs
   ├─ mcp/               MCP 工具服务器 (/mcp 端点)
   │    ├─ mod.rs        /mcp handler + 全局服务单例
   │    ├─ tools.rs      ServerHandler 实现 (web_search / web_fetch / notify)
-  │    └─ fetch.rs      WebFetch 渲染层 (WebView + 静态回退)
+  │    ├─ fetch.rs      WebFetch 渲染层 (WebView + 静态回退)
+  │    └─ notify.rs     桌面通知工具
   ├─ providers/          Provider 适配器
   │    ├─ adapter.rs     Adapter async trait
   │    ├─ anthropic.rs   AnthropicAdapter
@@ -109,8 +111,8 @@ main.rs
   ├─ middleware/rate_limit.rs  令牌桶
   ├─ search/bing.rs           Bing 搜索
   ├─ wallpaper/               桌面壁纸劫持（FM 像素艺术 → 桌面层）
-  │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建（社区插件挂载）
-  │    ├─ win.rs              点击穿透样式包（WS_EX_TRANSPARENT，禁 LAYERED）
+  │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建
+  │    ├─ win.rs              Windows 透明 WebView + tauri-plugin-desktop-underlay
   │    └─ macos.rs            macOS kCGDesktopIconWindowLevel（objc2）
   └─ types/                   数据结构定义
 ```
@@ -186,30 +188,28 @@ SSE 流返回客户端
 src/
 ├── main.tsx           React 入口 + initI18n（壁纸窗口按 __WALLPAPER_MODE__ 分支）
 ├── App.tsx            根组件: RouterProvider + WebSocket 连接
-├── router.tsx         React Router v6 路由配置
 ├── api.ts             REST 客户端 (动态 BASE_URL)
 ├── ws.ts              WebSocket 客户端 (自动重连 3s)
 ├── index.css          Tailwind CSS + CSS 变量
 ├── i18n/              Zustand + useT hook: zh-CN.ts / en.ts
 ├── lib/               工具函数 (utils.ts, tauri.ts)
 ├── hooks/             自定义 hooks (useTheme, useWebSocket, useFm)
-├── fm/                Claude FM 前端（纯命令/事件）
 │
 ├── views/
 │    ClaudeFmView.tsx      Claude FM 视图（右键菜单：设置为桌面背景）
 │    ProvidersView.tsx     供应商列表（拖拽排序）
-│    ProviderFormView.tsx  供应商创建/编辑
-│    KeysView.tsx          Service Key 管理（虚拟滚动）
-│    StatsView.tsx         用量统计（Recharts 图表）
-│    SettingsView.tsx      设置 3 Tab
+│    ProviderFormView.tsx  供应商创建/编辑（支持插件供应商编辑）
+│    KeysView.tsx          Service Key 管理（创建时设置模型白名单）
+│    StatsView.tsx         用量统计（Recharts 图表 + 数字翻动动画）
+│    SettingsView.tsx      设置 3 Tab（通用/路由/隐私）
 │    InstallView.tsx       局域网分发页
 │    CombosView.tsx        组合列表
 │    ComboFormView.tsx     组合创建/编辑
 │
 ├── components/
-│    AppShell.tsx              导航抽屉（侧边栏）
+│    AppShell.tsx              导航抽屉 + Windows 自定义窗口控制
 │    ConnectionStatus.tsx      离线横幅
-│    PluginRegisterDialog.tsx  插件注册确认
+│    PluginRegisterDialog.tsx  插件注册确认（自监听事件）
 │    WallpaperScene.tsx        壁纸窗口入口（黑底全屏像素，无按钮）
 │    PixelScene.tsx            像素画布（sampleT 引擎时钟采样）
 │    ui/                       shadcn/ui 组件（含 context-menu）
@@ -227,13 +227,10 @@ src/
 
 FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
 
-- **Windows（GDI 直绘，见 ADR-042）**：Rust 像素渲染器 `pixelart.rs`
-  （`pixelart.ts` 逐位移植，节点种子逐位一致）。`wallpaper-painter` 线程
-  自持窗口：`RegisterClassW` + `CreateWindowExW` 以 `WS_CHILD` **一步创建**
-  进壁纸 WorkerW（点击穿透/无焦点样式建窗带齐），每 200ms 读引擎
-  `FmPlaybackState`（种子/播放态/`scene_t`，零 IPC）渲染 160×90 逻辑帧 →
-  `StretchDIBits` 最近邻放大上屏。窗口被外部销毁（Explorer 重启）→ 1s 自愈
-  重建；禁用 = 旗标 → 线程销毁窗口退出。
+- **Windows（透明 WebView + 社区插件，见 ADR-043）**：`tauri-plugin-desktop-underlay`
+  的 `set_desktop_underlay` 把透明 WebView 窗口 SetParent 进壁纸 WorkerW。
+  WebView2 内容经 DWM 视觉合成上屏，是桌面 WorkerW 层唯一可靠渲染路径。
+  点击穿透为 `WS_EX_TRANSPARENT`（禁 `WS_EX_LAYERED`），见 `wallpaper/win.rs`。
 - **macOS（WebView 方案，ADR-041）**：动态创建第二个 WebviewWindow
   （`initialization_script` 注入 `__WALLPAPER_MODE__`，前端分支渲染
   `WallpaperScene`——黑底全屏像素、无按钮/歌曲信息），
@@ -249,6 +246,11 @@ FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
 （含 `--minimized` 静默启动）延迟 2s 惰性恢复（+重试，避开主窗口 WebView2
 初始化竞态）；进程退出由 OS 销毁子窗口，原壁纸自动恢复。
 
+### 4.2 Windows 自定义窗口控制
+
+Windows 平台去除原生标题栏，自定义红绿灯风格窗口控制按钮（关闭/最小化/最大化），
+位于侧边栏左上角。拖拽区域高度 40px（macOS 保持 28px）。
+
 ## 5. 存储架构
 
 ```
@@ -260,6 +262,7 @@ FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
 │  combo_members    组合成员                         │
 │  api_keys         Provider Key (AES-256-GCM 加密) │
 │  service_keys     客户端 Key (Argon2 哈希)        │
+│                   (含 allowed_models JSON 白名单)  │
 │  usage_log        请求日志 (自包含快照)            │
 │  settings         key-value 设置 + 轮询指针        │
 │  plugins          插件注册记录                     │
@@ -282,6 +285,7 @@ FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
 │  PluginManager    插件连接状态                     │
 │  mcp_websearch    AtomicBool                      │
 │  mcp_webfetch     AtomicBool                      │
+│  mcp_notify       AtomicBool                      │
 │  http_client      reqwest::Client                  │
 │  search_http      SearchHttp (搜索专用, 直连)       │
 └───────────────────────────────────────────────────┘
@@ -339,6 +343,7 @@ FM 像素艺术可被劫持为桌面壁纸（关闭即恢复原壁纸）：
 | WebFetch 用内置 WebView 渲染 | 不自动下载浏览器，懒创建隐藏 WebView 窗口 |
 | failover 冷却纯内存 | 与密钥健康同一哲学，不持久化不广播 |
 | 数据导出用 SQL dump | SQLite 原生语句保真度高，导入即执行 |
+| 壁纸窗口用透明 WebView | DWM 视觉合成是桌面 WorkerW 层唯一可靠渲染路径（Windows） |
 
 ## 8. 外部依赖关系
 
@@ -349,6 +354,7 @@ xrl-router
   ├── tauri-plugin-dialog     导出/导入文件对话框
   ├── tauri-plugin-fs         读写 .sql 备份文件
   ├── tauri-plugin-shell      外链打开
+  ├── tauri-plugin-desktop-underlay  Windows 壁纸劫持（WorkerW 挂载）
   ├── axum 0.7         HTTP 框架
   ├── tokio            异步运行时
   ├── rusqlite 0.32    SQLite (bundled)
@@ -362,6 +368,8 @@ xrl-router
   ├── htmd 0.2         HTML → Markdown
   ├── rodio 0.20       音频播放
   ├── souvlaki 0.8     系统媒体控制
+  ├── windows 0.61     Windows API（壁纸穿透样式）
+  ├── objc2            macOS API（壁纸层级）
   ├── React 18         UI 框架
   ├── Zustand          状态管理
   ├── shadcn/ui        UI 组件（基于 Radix UI + Tailwind CSS）
@@ -390,3 +398,19 @@ xrl-router-plugin-wukong (外部进程)
 
 **Router 管**: 密钥轮换、健康监控、用量统计、路由解析  
 **Plugin 管**: 非标→标准协议转换、业务头注入、base_url/api_path 提供
+
+## 10. MCP 工具服务器
+
+网关内置 MCP（Streamable HTTP）端点 `/mcp`，提供三个工具：
+
+| 工具 | 功能 | 开关 |
+|------|------|------|
+| `web_search` | 本地 Bing 搜索 | `mcp_websearch` |
+| `web_fetch` | Tauri WebView 渲染页面后取正文 Markdown | `mcp_webfetch` |
+| `notify` | 发送系统桌面通知 | `mcp_notify` |
+
+**鉴权**：与 `/v1/*` 代理一致，`Authorization: Bearer <service-key>`（Argon2 校验）。
+
+**会话模式**：无状态（`NeverSessionManager`）——工具只有三个且无服务端推送。
+
+**代理侧配合**：`mcp_websearch` 开关开启时，剔除请求自带的搜索类工具（防上游官方搜索生效）。

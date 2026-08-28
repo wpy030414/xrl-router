@@ -593,3 +593,130 @@ WS_CHILD、可见、父链正确、WM_PAINT 正规绘制——桌面依旧无变
 
 - WebView 方案的固有成本（一个浏览器进程）重新回来；
 - 依赖社区插件的 Windows 实现（其维护节奏不可控，但配方公开可自行顶替）。
+
+---
+
+## ADR-044: 移除 MCP Vision 工具
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+MCP Vision（`web_vision` 工具）允许模型通过视觉专用模型识别图片。实现包括：
+- 设置页「路由」Tab 提供视觉能力开关与视觉模型配置
+- 代理侧自动剥离请求中的图片内容块，注入系统提示强制模型使用 `web_vision`
+- `mcp/vision.rs` 实现图片取图 + 视觉模型调用
+
+### 决策
+
+1. **删除 `web_vision` 工具**：`mcp/tools.rs` 移除工具定义与执行逻辑
+2. **删除 `mcp/vision.rs`**：整个模块删除
+3. **移除代理侧图片剥离**：`stream.rs` 不再注入 vision hint，不再剥离图片内容块
+4. **移除设置页配置**：SettingsView 不再提供 `mcp_vision` 开关与视觉模型选择
+5. **移除相关状态**：AppState 不再包含 `mcp_vision` AtomicBool，settings 表不再存储 `mcp_vision_provider` / `mcp_vision_model`
+
+### 原因
+
+1. **使用率低**：视觉模型配置复杂（需单独指定 provider/model），用户实际使用少
+2. **维护成本**：代理侧图片剥离 + 系统提示注入增加代码复杂度
+3. **客户端原生支持**：现代客户端（Claude Code、ChatGPT）已原生支持视觉，无需网关层中转
+4. **简化 MCP 工具集**：保留 `web_search` / `web_fetch` / `notify` 三个核心工具，职责更清晰
+
+### 代价
+
+- 依赖视觉能力的旧客户端需升级到支持原生视觉的版本
+- 部分用户可能需要切换到支持视觉的客户端
+
+---
+
+## ADR-045: Service Key 创建时设置模型白名单
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+旧方案中，Service Key 创建后需在编辑页单独设置 `allowed_models`。用户反馈：创建密钥时即知道要限制哪些模型，额外编辑步骤冗余。
+
+### 决策
+
+1. **创建时即可设置白名单**：`CreateServiceKeyRequest` 新增 `allowed_models: Option<Vec<String>>` 字段
+2. **数据库迁移**：`service_keys` 表新增 `allowed_models` 列（JSON 数组，默认 `"[]"`）
+3. **前端 UI**：KeysView 创建对话框增加模型选择区域（按 provider 分组，checkbox 多选）
+4. **语义不变**：空数组 = 允许全部模型（与编辑时一致）
+
+### 原因
+
+1. **减少操作步骤**：创建即配置，无需二次编辑
+2. **UX 一致性**：创建对话框与编辑页使用相同的模型选择 UI
+3. **向后兼容**：`allowed_models` 为可选字段，旧客户端不受影响
+
+### 代价
+
+- 创建对话框高度增加（模型列表可滚动）
+
+---
+
+## ADR-046: Windows 自定义窗口控制按钮
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+Tauri 默认使用系统原生标题栏。Windows 11 的原生标题栏与自定义 UI 风格不协调，且无法实现红绿灯风格的窗口控制按钮。
+
+### 决策
+
+1. **去除原生装饰**：`lib.rs` setup 阶段调用 `set_decorations(false)`
+2. **自定义拖拽区域**：`AppShell.tsx` 顶部 40px（Windows）/ 28px（macOS）透明区域设置 `data-tauri-drag-region`
+3. **红绿灯风格按钮**：`WindowControls` 组件（仅 Windows 渲染），关闭（红）/ 最小化（黄）/ 最大化（绿）
+4. **capabilities 更新**：`default.json` 新增 `core:window:allow-close` / `allow-minimize` / `allow-maximize` / `allow-unmaximize` / `allow-is-maximized`
+
+### 原因
+
+1. **视觉一致性**：红绿灯按钮与 macOS 风格统一，跨平台体验一致
+2. **自定义空间**：去除原生标题栏后，侧边栏可延伸到窗口顶部，视觉更沉浸
+3. **Windows 拖拽体验**：40px 拖拽区域比 28px 更易操作
+
+### 代价
+
+- Windows 需额外实现窗口控制逻辑（macOS 使用原生红绿灯）
+- 部分系统主题下自定义按钮可能与背景色冲突（通过 Tailwind 工具类适配）
+
+---
+
+## ADR-047: 插件系统改进（Dialog 自监听 + 编辑支持）
+
+**日期**: 2026-08-28  
+**状态**: 已接受
+
+### 背景
+
+旧方案中，`PluginRegisterDialog` 通过 `forwardRef` + `useImperativeHandle` 由父组件控制显示。插件注册事件（`plugin-register`）在 `App.tsx` 监听后手动调用 `dialog.current.show()`。
+
+问题：
+1. 事件监听与控制逻辑分散在两个文件
+2. 对话框无法显示插件详情（API 格式、模型数、密钥数）
+3. 编辑已注册的插件供应商需手动导航到 ProviderFormView，无法直接从插件列表进入
+
+### 决策
+
+1. **Dialog 自监听事件**：`PluginRegisterDialog` 内部 `useEffect` 监听 `plugin-register`，移除 `App.tsx` 的事件监听
+2. **显示更多详情**：对话框显示 API 格式、Base URL、模型数、密钥数（从 `PluginRegisterPayload` 读取）
+3. **支持编辑插件供应商**：`ProviderFormView` 检测 `provider.config.plugin_id`，自动进入插件模式（隐藏 API Key 输入、禁用 kind/base_url）
+4. **新增 `pluginsApi`**：`list` / `get` / `confirm` / `remove` 四个端点
+5. **ProvidersView 使用 `pluginsApi`**：替代直接 `fetch('/api/plugins')`
+
+### 原因
+
+1. **职责内聚**：对话框自己管理事件监听与显示逻辑
+2. **信息透明**：用户确认前可看到插件完整信息
+3. **编辑便捷**：插件供应商与普通供应商共用编辑页，体验一致
+4. **API 封装**：`pluginsApi` 统一插件相关请求，便于维护
+
+### 代价
+
+- `PluginRegisterDialog` 从受控组件变为非受控组件（父组件无法主动控制显示）
+
