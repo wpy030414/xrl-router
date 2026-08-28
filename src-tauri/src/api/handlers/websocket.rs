@@ -17,10 +17,21 @@ pub(crate) async fn ws_handler(
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
     let mut rx = state.key_stats_tx.subscribe();
-    while let Ok(msg) = rx.recv().await {
-        let text = msg.to_string();
-        if socket.send(Message::Text(text.into())).await.is_err() {
-            break;
+    loop {
+        match rx.recv().await {
+            Ok(msg) => {
+                if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            // 慢客户端积压溢出：丢弃积压、继续收后续事件。
+            // 若在此 break，这条连接余生再也收不到广播，而前端毫无察觉
+            // ——表现为「统计/日志偶尔永远不刷新」。
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!("WS subscriber lagged, dropped {skipped} events");
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 }
