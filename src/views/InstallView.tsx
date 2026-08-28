@@ -1,156 +1,391 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router';
-import { Download, Copy, Check, Loader2, Monitor, Laptop, Smartphone } from 'lucide-react';
+import { Download, Copy, Check, Loader2, Monitor, Laptop, User, Brain, Terminal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { installApi } from '@/lib/api';
-import { useT } from '@/i18n';
+import { uiSettingsApi } from '@/lib/api';
+import { useT, useI18nStore } from '@/i18n';
+import { useThemeStore } from '@/hooks/useTheme';
 import { cn } from '@/lib/utils';
 
-type Platform = 'macos' | 'windows' | 'linux';
+type Platform = 'macos' | 'windows';
+type Consumer = 'claude-code' | 'chatgpt';
 
-const PLATFORMS: { key: Platform; label: string; icon: typeof Monitor }[] = [
-  { key: 'macos', label: 'macOS', icon: Laptop },
-  { key: 'windows', label: 'Windows', icon: Monitor },
-  { key: 'linux', label: 'Linux', icon: Monitor },
-];
+interface ModelItem {
+  id: string;
+  owned_by: string;
+}
 
-/** 检测当前操作系统 */
+const SLOTS = ['FABLE', 'HAIKU', 'OPUS', 'SONNET'] as const;
+
 function detectPlatform(): Platform {
+  // 默认 macOS
   if (typeof navigator === 'undefined') return 'macos';
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('mac')) return 'macos';
-  if (ua.includes('win')) return 'windows';
-  return 'linux';
+  return /Windows/i.test(navigator.userAgent) ? 'windows' : 'macos';
+}
+
+// 兼容不安全上下文的复制（HTTP 环境 navigator.clipboard 不可用）
+function copyToClipboard(text: string): boolean {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+function q(v: string): string {
+  return `'${v}'`;
+}
+
+// ── Command generation ──
+
+function envModelLines(model: string): string[] {
+  const lines: string[] = [];
+  for (const slot of SLOTS) {
+    lines.push(`ANTHROPIC_DEFAULT_${slot}_MODEL=${q(model)}`);
+    lines.push(`ANTHROPIC_DEFAULT_${slot}_MODEL_NAME=${q(model)}`);
+  }
+  lines.push(`CLAUDE_CODE_SUBAGENT_MODEL=${q(model)}`);
+  return lines;
+}
+
+function buildClaudeCodeBash(token: string, base: string, model: string): string {
+  const envAssignments = [
+    `j.env.ANTHROPIC_AUTH_TOKEN=${q(token)};`,
+    `j.env.ANTHROPIC_BASE_URL=${q(base)};`,
+  ];
+  if (model) {
+    for (const line of envModelLines(model)) {
+      const [k, ...rest] = line.split('=');
+      envAssignments.push(`j.env.${k}=${rest.join('=')};`);
+    }
+  }
+  const nodeScript =
+    `const fs=require('fs'),p=process.env.HOME+'/.claude/settings.json';` +
+    `let j={};try{j=JSON.parse(fs.readFileSync(p))}catch{};` +
+    `j.env=j.env||{};` +
+    envAssignments.join('') +
+    `fs.writeFileSync(p,JSON.stringify(j,null,2))`;
+  return `mkdir -p ~/.claude && node -e "${nodeScript}"`;
+}
+
+function buildClaudeCodePS(token: string, base: string, model: string): string {
+  const parts = [
+    '$p="$env:USERPROFILE\\.claude\\settings.json"',
+    'New-Item -ItemType Directory -Force "$env:USERPROFILE\\.claude" | Out-Null',
+    '$j=@{}; if(Test-Path $p){ $j=Get-Content $p -Raw | ConvertFrom-Json }',
+    'if(-not $j.env){ $j.env=@{} }',
+    `$j.env.ANTHROPIC_AUTH_TOKEN='${token}'`,
+    `$j.env.ANTHROPIC_BASE_URL='${base}'`,
+  ];
+  if (model) {
+    for (const line of envModelLines(model)) {
+      const [k, ...rest] = line.split('=');
+      parts.push(`$j.env.${k}=${rest.join('=')}`);
+    }
+  }
+  parts.push('$j | ConvertTo-Json -Depth 10 | Set-Content $p');
+  return parts.join('; ');
+}
+
+function buildChatGPTBash(token: string, base: string, model: string): string {
+  const toml = [
+    `model = "${model}"`,
+    `model_provider = "xrl"`,
+    ``,
+    `[model_providers.xrl]`,
+    `name = "XRL Router"`,
+    `base_url = "${base}/v1"`,
+  ].join('\n');
+  return (
+    `mkdir -p ~/.codex && cat > ~/.codex/config.toml << 'CODEX_EOF'\n` +
+    toml +
+    `\nCODEX_EOF\n` +
+    `printf '{"OPENAI_API_KEY":"${token}"}\\n' > ~/.codex/auth.json`
+  );
+}
+
+function buildChatGPTPS(token: string, base: string, model: string): string {
+  const tomlLines = [
+    `model = '${model}'`,
+    `model_provider = 'xrl'`,
+    ``,
+    `[model_providers.xrl]`,
+    `name = 'XRL Router'`,
+    `base_url = '${base}/v1'`,
+  ].join('`n');
+  return [
+    '$d="$env:USERPROFILE\\.codex"',
+    'New-Item -ItemType Directory -Force $d | Out-Null',
+    `Set-Content "$d\\config.toml" "${tomlLines}"`,
+    `Set-Content "$d\\auth.json" '{"OPENAI_API_KEY":"${token}"}'`,
+  ].join('; ');
+}
+
+function buildCommand(
+  consumer: Consumer,
+  platform: Platform,
+  token: string,
+  base: string,
+  model: string,
+): string {
+  switch (consumer) {
+    case 'claude-code':
+      return platform === 'windows'
+        ? buildClaudeCodePS(token, base, model)
+        : buildClaudeCodeBash(token, base, model);
+    case 'chatgpt':
+      return platform === 'windows'
+        ? buildChatGPTPS(token, base, model)
+        : buildChatGPTBash(token, base, model);
+  }
 }
 
 export function InstallView() {
   const t = useT();
   const [searchParams] = useSearchParams();
 
-  const apiKey = searchParams.get('key');
+  const apiKey = searchParams.get('key') || '';
+  const base = window.location.origin;
+
   const [platform, setPlatform] = useState<Platform>(detectPlatform());
-  const [localIp, setLocalIp] = useState<string>('');
-  const [loading, setLoading] = useState(true);
+  const [consumer, setConsumer] = useState<Consumer>('claude-code');
+  const [models, setModels] = useState<ModelItem[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
   const [copied, setCopied] = useState(false);
 
-  // Load local IP
+  // Sync UI settings from host (theme/hue/locale)
   useEffect(() => {
-    const load = async () => {
-      setLoading(true);
+    const loadUi = async () => {
       try {
-        const result = await installApi.localIp();
-        setLocalIp(result.ip || window.location.hostname);
-      } catch (e) {
-        console.error('Failed to load local IP:', e);
-        setLocalIp(window.location.hostname);
-      } finally {
-        setLoading(false);
+        const settings = await uiSettingsApi.get();
+        if (settings.theme) {
+          useThemeStore.getState().setTheme(settings.theme as 'light' | 'dark' | 'system');
+        }
+        if (typeof settings.hue === 'number') {
+          useThemeStore.getState().setHue(settings.hue);
+        }
+        if (settings.locale === 'zh-CN' || settings.locale === 'en') {
+          useI18nStore.getState().setLocale(settings.locale);
+        }
+      } catch {
+        // fallback: URL ?lang= or browser language
+        const urlLang = searchParams.get('lang');
+        if (urlLang === 'zh-CN' || urlLang === 'en') {
+          useI18nStore.getState().setLocale(urlLang);
+        }
       }
     };
-    load();
-  }, []);
+    loadUi();
+  }, [searchParams]);
 
-  // Generate install command
-  const installCommand = (() => {
-    if (!apiKey) return '';
+  // Fetch models from gateway
+  const tRef = useRef(t);
+  tRef.current = t;
 
-    const endpoint = `http://${localIp}:19068`;
+  useEffect(() => {
+    if (!apiKey) return;
+    const fetchModels = async () => {
+      setModelsLoading(true);
+      setModelsError('');
+      try {
+        const r = await fetch(`${base}/v1/models`, {
+          headers: { 'x-api-key': apiKey },
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const list = (data?.data || []) as { id: string; owned_by?: string }[];
+        setModels(list.map((m) => ({ id: m.id, owned_by: m.owned_by || '' })));
+        if (list.length) setSelectedModel(list[0].id);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setModelsError(tRef.current('install.models_fetch_error', { msg }));
+      } finally {
+        setModelsLoading(false);
+      }
+    };
+    fetchModels();
+  }, [apiKey, base]);
 
-    switch (platform) {
-      case 'macos':
-      case 'linux':
-        return `curl -fsSL ${endpoint}/install.sh | bash -s -- --key ${apiKey}`;
-      case 'windows':
-        return `powershell -Command "Invoke-WebRequest -Uri ${endpoint}/install.ps1 -OutFile install.ps1; .\\install.ps1 -Key ${apiKey}"`;
+  const command = useMemo(
+    () => buildCommand(consumer, platform, apiKey, base, selectedModel),
+    [consumer, platform, apiKey, base, selectedModel],
+  );
+
+  const platformLabel = platform === 'windows' ? 'Windows (PowerShell)' : 'macOS (Bash)';
+
+  const handleCopy = async () => {
+    const ok = copyToClipboard(command);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
-  })();
-
-  // Deploy link
-  const deployLink = `${window.location.origin}/install?key=${apiKey}`;
-
-  const handleCopyCommand = async () => {
-    await navigator.clipboard.writeText(installCommand);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
-
-  const handleCopyLink = async () => {
-    await navigator.clipboard.writeText(deployLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
-      <div className="w-full max-w-2xl space-y-8">
+    <div className="min-h-screen bg-background flex flex-col items-center p-8">
+      <div className="w-full max-w-3xl space-y-6">
         {/* Header */}
-        <div className="text-center space-y-3">
-          <div className="flex justify-center">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
-              <Download className="w-8 h-8 text-primary" />
-            </div>
-          </div>
-          <h1 className="text-4xl font-bold">{t('install.title')}</h1>
-          <p className="text-muted-foreground">
-            {t('install.subtitle')}
-          </p>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold">{t('install.title')}</h2>
         </div>
 
-        {/* No API key warning */}
+        {/* No key placeholder */}
         {!apiKey && (
           <div className="rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-6 text-center space-y-2">
             <h3 className="text-lg font-semibold text-yellow-600 dark:text-yellow-400">
               {t('install.no_key_title')}
             </h3>
-            <p className="text-sm text-muted-foreground">
-              {t('install.no_key_desc')}
-            </p>
+            <p className="text-sm text-muted-foreground">{t('install.no_key_desc')}</p>
           </div>
         )}
 
         {apiKey && (
           <>
-            {/* Platform selector */}
-            <div className="space-y-3">
-              <label className="text-sm font-medium">{t('install.platform_label')}</label>
-              <div className="flex gap-3">
-                {PLATFORMS.map((p) => {
-                  const Icon = p.icon;
-                  return (
-                    <Button
-                      key={p.key}
-                      variant={platform === p.key ? 'default' : 'outline'}
-                      className="flex-1"
-                      onClick={() => setPlatform(p.key)}
-                    >
-                      <Icon className="w-4 h-4 mr-2" />
-                      {p.label}
-                    </Button>
-                  );
-                })}
+            {/* OS selector */}
+            <section className="rounded-lg border bg-card p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                  <Laptop className="w-5 h-5 text-muted-foreground" />
+                </div>
+                <h3 className="text-base font-medium">{t('install.platform_label')}</h3>
               </div>
-            </div>
+              <div className="flex gap-2">
+                {(['macos', 'windows'] as Platform[]).map((p) => (
+                  <Button
+                    key={p}
+                    variant={platform === p ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setPlatform(p)}
+                  >
+                    {p === 'macos' ? (
+                      <Laptop className="w-4 h-4 mr-1.5" />
+                    ) : (
+                      <Monitor className="w-4 h-4 mr-1.5" />
+                    )}
+                    {p === 'macos' ? 'macOS' : 'Windows'}
+                  </Button>
+                ))}
+              </div>
+            </section>
 
-            {/* Install command */}
-            <div className="space-y-3">
-              <label className="text-sm font-medium">{t('install.command_label')}</label>
+            {/* Consumer selector */}
+            <section className="rounded-lg border bg-card p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                  <User className="w-5 h-5 text-muted-foreground" />
+                </div>
+                <h3 className="text-base font-medium">{t('install.agent_label')}</h3>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant={consumer === 'claude-code' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setConsumer('claude-code')}
+                >
+                  {t('install.mode_claude_code')}
+                </Button>
+                <Button
+                  variant={consumer === 'chatgpt' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setConsumer('chatgpt')}
+                >
+                  {t('install.mode_chatgpt')}
+                </Button>
+              </div>
+            </section>
+
+            {/* Model selector */}
+            <section className="rounded-lg border bg-card p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                  <Brain className="w-5 h-5 text-muted-foreground" />
+                </div>
+                <h3 className="text-base font-medium">{t('install.model_label')}</h3>
+              </div>
+
+              {modelsLoading && (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">
+                    {t('install.models_loading')}
+                  </span>
+                </div>
+              )}
+
+              {modelsError && !modelsLoading && (
+                <div className="space-y-1">
+                  <p className="text-sm text-destructive">{modelsError}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t('install.models_error_ignore')}
+                  </p>
+                </div>
+              )}
+
+              {!modelsLoading && !modelsError && models.length === 0 && (
+                <p className="text-sm text-muted-foreground">{t('install.no_models')}</p>
+              )}
+
+              {!modelsLoading && !modelsError && models.length > 0 && (
+                <div className="relative">
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className={cn(
+                      'flex h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-2 pr-9 text-sm',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    )}
+                  >
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id}{m.owned_by ? ` · ${m.owned_by}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <svg
+                    className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </div>
+              )}
+            </section>
+
+            {/* Command output */}
+            <section className="rounded-lg border bg-card p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                  <Terminal className="w-5 h-5 text-muted-foreground" />
+                </div>
+                <h3 className="text-base font-medium">
+                  {t('install.command_title', { platform: platformLabel })}
+                </h3>
+              </div>
               <div className="relative">
-                <pre className="rounded-lg border bg-muted p-4 pr-12 overflow-x-auto">
-                  <code className="text-sm font-mono">{installCommand}</code>
+                <pre className="rounded-lg border bg-muted p-4 pr-12 overflow-x-auto text-sm font-mono whitespace-pre-wrap break-all">
+                  {command}
                 </pre>
                 <Button
                   size="icon"
                   variant="ghost"
                   className="absolute top-2 right-2"
-                  onClick={handleCopyCommand}
+                  onClick={handleCopy}
                 >
                   {copied ? (
                     <Check className="w-4 h-4 text-green-500" />
@@ -159,63 +394,7 @@ export function InstallView() {
                   )}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {t('install.command_hint')}
-              </p>
-            </div>
-
-            {/* Deploy link */}
-            <div className="space-y-3">
-              <label className="text-sm font-medium">{t('install.deploy_link_label')}</label>
-              <div className="relative">
-                <input
-                  type="text"
-                  readOnly
-                  value={deployLink}
-                  className="w-full rounded-lg border bg-muted px-4 py-2 pr-12 text-sm font-mono"
-                />
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="absolute top-1/2 -translate-y-1/2 right-2"
-                  onClick={handleCopyLink}
-                >
-                  {copied ? (
-                    <Check className="w-4 h-4 text-green-500" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t('install.deploy_link_hint')}
-              </p>
-            </div>
-
-            {/* Instructions */}
-            <div className="rounded-lg border bg-card p-6 space-y-4">
-              <h3 className="text-lg font-semibold">{t('install.instructions_title')}</h3>
-              <ol className="space-y-3 text-sm">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
-                    1
-                  </span>
-                  <span>{t('install.step1')}</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
-                    2
-                  </span>
-                  <span>{t('install.step2')}</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">
-                    3
-                  </span>
-                  <span>{t('install.step3')}</span>
-                </li>
-              </ol>
-            </div>
+            </section>
           </>
         )}
       </div>
