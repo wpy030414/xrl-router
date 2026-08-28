@@ -14,7 +14,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri（透明窗口在 v2 无需 feature，WebviewWindowBuilder::transparent 直接可用）
+# Tauri（透明窗口：Windows 走 WebviewWindowBuilder::transparent；macOS WKWebView 默认透明，
+# 该 API 在 macOS 上未暴露，须 cfg 隔离——见 src/wallpaper/mod.rs create_window）
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 

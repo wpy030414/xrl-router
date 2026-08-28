@@ -220,9 +220,15 @@ fn create_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .focused(false)
     .visible(false)
     .inner_size(8.0, 8.0)
-    .background_color(tauri::window::Color(0, 0, 0, 255))
-    // 透明窗口是桌面层渲染的关键：WebView 内容经 DWM 视觉合成上屏
-    .transparent(true)
+    .background_color(tauri::window::Color(0, 0, 0, 255));
+    // 透明窗口是桌面层渲染的关键：WebView 内容经 DWM 视觉合成上屏。
+    // 注意：transparent() 是 Windows-only API（macOS WKWebView 默认透明，
+    // Tauri v2 在 macOS 上未暴露该方法），必须 cfg 隔离。
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.transparent(true);
+    }
+    let mut builder = builder
     .initialization_script("window.__WALLPAPER_MODE__ = true;");
     #[cfg(target_os = "windows")]
     {
