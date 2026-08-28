@@ -1,8 +1,9 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { Radio, Cloud, GitMerge, Key, BarChart3, Settings, PanelLeft } from 'lucide-react';
+import { Radio, Cloud, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { ConnectionStatus } from './ConnectionStatus';
 import { PluginRegisterDialog } from './PluginRegisterDialog';
+import { isWindows, getCurrentWindow } from '@/lib/tauri';
 import {
   Sidebar,
   SidebarContent,
@@ -16,10 +17,65 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 
+// Windows 拖拽区域高度（更大，方便用户拖动窗口）
+const isWin = isWindows();
+const DRAG_HEIGHT = isWin ? 'h-10' : 'h-7';
+// Sidebar header 的 padding-top 也需要相应调整
+const HEADER_PT = isWin ? 'pt-[calc(40px+1.2rem)]' : 'pt-[calc(28px+1.2rem)]';
+
+/** 窗口控制按钮（红绿灯风格） */
+function WindowControls() {
+  const tauriWindow = getCurrentWindow();
+
+  if (!tauriWindow) return null;
+
+  return (
+    <div className="flex items-center gap-2 z-[51]">
+      {/* 关闭按钮（红色） */}
+      <button
+        type="button"
+        onClick={() => tauriWindow.close()}
+        className="group w-3 h-3 rounded-full bg-red-500/80 hover:bg-red-600 flex items-center justify-center transition-colors"
+        title="Close"
+      >
+        <X className="w-2.5 h-2.5 text-white/0 group-hover:text-white transition-opacity" />
+      </button>
+
+      {/* 最小化按钮（黄色） */}
+      <button
+        type="button"
+        onClick={() => tauriWindow.minimize()}
+        className="group w-3 h-3 rounded-full bg-yellow-500/80 hover:bg-yellow-600 flex items-center justify-center transition-colors"
+        title="Minimize"
+      >
+        <Minus className="w-2.5 h-2.5 text-white/0 group-hover:text-white transition-opacity" />
+      </button>
+
+      {/* 最大化/还原按钮（绿色） */}
+      <button
+        type="button"
+        onClick={() => {
+          tauriWindow.isMaximized().then((maximized) => {
+            if (maximized) {
+              tauriWindow.unmaximize();
+            } else {
+              tauriWindow.maximize();
+            }
+          });
+        }}
+        className="group w-3 h-3 rounded-full bg-green-500/80 hover:bg-green-600 flex items-center justify-center transition-colors"
+        title="Maximize"
+      >
+        <Square className="w-2 h-2 text-white/0 group-hover:text-white transition-opacity" />
+      </button>
+    </div>
+  );
+}
+
 const navItems = [
   { path: '/fm', labelKey: 'nav.fm', icon: Radio },
   { path: '/providers', labelKey: 'nav.providers', icon: Cloud },
-  { path: '/combos', labelKey: 'nav.combos', icon: GitMerge },
+  { path: '/combos', labelKey: 'nav.combos', icon: Combine },
   { path: '/keys', labelKey: 'nav.keys', icon: Key },
   { path: '/stats', labelKey: 'nav.stats', icon: BarChart3 },
   { path: '/settings', labelKey: 'nav.settings', icon: Settings },
@@ -54,9 +110,10 @@ export function AppShell() {
       <div className="relative">
         <SidebarProvider>
           <Sidebar collapsible="icon">
-          {/* 布局遵循 macOS 惯例：顶部 28px 透明标题栏带（红绿灯悬浮）
-              → 2rem 间距 → 2.5rem 标题 → 2rem 间距，内容整体为标题栏让位 */}
-          <SidebarHeader className="shrink-0 items-start border-b border-sidebar-border px-3 pt-[calc(28px+1.2rem)] pb-[1.2rem]">
+          {/* 布局遵循 macOS 惯例：顶部透明标题栏带
+              → 2rem 间距 → 2.5rem 标题 → 2rem 间距，内容整体为标题栏让位
+              Windows 使用更大拖拽区域（40px），方便窗口拖动 */}
+          <SidebarHeader className={`shrink-0 items-start border-b border-sidebar-border px-3 pb-[1.2rem] ${HEADER_PT}`}>
             <span className="block truncate pl-[0.2rem] text-[1.2rem] leading-none font-semibold select-none group-data-[collapsible=icon]:hidden">
               XRL Router
             </span>
@@ -99,12 +156,19 @@ export function AppShell() {
           </main>
         </SidebarInset>
         </SidebarProvider>
-        {/* 窗口顶部 28px 透明拖拽横条（= macOS 标题栏带），贯穿全宽。
-            仅此一条 drag region：侧边栏 header、main 内容及各处空白均不参与拖动 */}
+        {/* 窗口顶部透明拖拽横条，贯穿全宽。
+            macOS: 28px（匹配红绿灯按钮区域）
+            Windows: 40px（更大拖拽区域，便于窗口拖动） */}
         <div
           data-tauri-drag-region
-          className="absolute inset-x-0 top-0 z-50 h-7"
+          className={`fixed inset-x-0 top-0 z-50 ${DRAG_HEIGHT}`}
         />
+        {/* 红绿灯窗口控制按钮（仅 Windows 显示，macOS 使用原生） */}
+        {isWin && (
+          <div className="fixed top-4 left-4 z-[51]">
+            <WindowControls />
+          </div>
+        )}
       </div>
       <PluginRegisterDialog />
     </>
