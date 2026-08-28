@@ -95,7 +95,7 @@ pnpm build
 
 - **后端**：Rust + Tauri 2 + axum 0.7 + tokio
 - **数据库**：SQLite 3 (WAL 模式)
-- **前端**：React 18 + Zustand + shadcn/ui (Radix UI + Tailwind CSS)
+- **前端**：React 19 + Zustand + shadcn/ui (Radix UI + Tailwind CSS)
 - **协议转换**：IR（中间表示层）统一 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses API 三种格式
 - **安全**：AES-256-GCM 加密 Provider Key + Argon2 哈希 Service Key
 
