@@ -16,6 +16,7 @@ mod http;
 
 mod api;
 mod keys;
+mod local;
 mod mcp;
 mod middleware;
 mod models;
@@ -327,12 +328,14 @@ pub fn run() {
                 }
             }
 
-            // ── 移除窗口装饰（Windows/macOS 去标题栏） ──
-            // macOS: titleBarStyle: "Overlay" 已足够，但调用 set_decorations(false) 可确保无边框
-            // Windows: 必须调用 set_decorations(false) 才能移除原生标题栏
+            // ── 移除窗口装饰（Windows 去标题栏） ──
+            // macOS: titleBarStyle: "Overlay" 已保留红绿灯，不能调 set_decorations(false)
+            //        ——否则连圆角 + 红绿灯一起干掉（主人说窗口圆角消失了就是这个原因）
+            // Windows: 必须 set_decorations(false) 才能移除原生标题栏
+            #[cfg(target_os = "windows")]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_decorations(false);
-                info!("Window decorations removed");
+                info!("Window decorations removed (Windows)");
             }
 
             let db_path = data_dir.join("xrl-router.db");
@@ -501,10 +504,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Spawn FM radio engine before starting gateway (engine needs app_handle for fm-meta events)
-                state.fm.clone().spawn(app_handle);
-                if let Err(e) = gateway::server::start_gateway(state).await {
+                state.fm.clone().spawn(app_handle.clone());
+                if let Err(e) = gateway::server::start_gateway(state.clone()).await {
                     error!("Gateway server failed: {}", e);
                 }
+                // 本地模型 autostart：网关就绪后启动标记了自动启动的本地引擎
+                state.local.auto_start_all().await;
             });
 
             Ok(())

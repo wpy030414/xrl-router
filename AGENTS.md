@@ -7,7 +7,7 @@
 xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应用形式运行。
 
 - **后端**：Rust + axum HTTP 服务，单 listener 绑 `0.0.0.0:19068`
-- **前端**：React 18 SPA，跑在 Tauri WebView 里
+- **前端**：React 19 SPA，跑在 Tauri WebView 里
 - **数据库**：SQLite 本地文件
 - **核心功能**：客户端通过 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses API 三种端点访问所有大模型 Provider，网关经 IR 中间表示层统一协议转换，负责路由解析、密钥轮换和用量统计
 

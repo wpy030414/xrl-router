@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useLocation } from 'react-router';
-import { Radio, Cloud, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X } from 'lucide-react';
+import { Radio, Cloud, Server, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { ConnectionStatus } from './ConnectionStatus';
 import { PluginRegisterDialog } from './PluginRegisterDialog';
@@ -75,6 +75,7 @@ function WindowControls() {
 const navItems = [
   { path: '/fm', labelKey: 'nav.fm', icon: Radio },
   { path: '/providers', labelKey: 'nav.providers', icon: Cloud },
+  { path: '/local', labelKey: 'nav.local', icon: Server },
   { path: '/combos', labelKey: 'nav.combos', icon: Combine },
   { path: '/keys', labelKey: 'nav.keys', icon: Key },
   { path: '/stats', labelKey: 'nav.stats', icon: BarChart3 },
@@ -114,7 +115,7 @@ export function AppShell() {
               → 2rem 间距 → 2.5rem 标题 → 2rem 间距，内容整体为标题栏让位
               Windows 使用更大拖拽区域（40px），方便窗口拖动 */}
           <SidebarHeader className={`shrink-0 items-start border-b border-sidebar-border px-3 pb-[1.2rem] ${HEADER_PT}`}>
-            <span className="block truncate pl-[0.2rem] text-[1.2rem] leading-none font-semibold select-none group-data-[collapsible=icon]:hidden">
+            <span className="block truncate pl-[0.2rem] text-[1.2rem] leading-none font-semibold select-none group-data-[collapsible=icon]:invisible">
               XRL Router
             </span>
           </SidebarHeader>
