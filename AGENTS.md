@@ -43,7 +43,6 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 - ❌ **不做 LLM 模型微调 / 训练 / 评估**。项目是网关，不是 ML 平台
 - ❌ **不做 Agent 编排 / 工作流引擎**。项目转发请求，不编排调用链
 - ❌ **不做 RAG / 向量库 / 知识库**。不属于网关职责
-- ❌ **不支持非流式响应**。已在代码层强制 `stream: true`
 - ❌ **不支持 Google Gemini / 其他新协议**。目前内置三种格式（IR 层统一抽象），新协议走插件系统
 
 #### 安全层面
@@ -79,13 +78,13 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 - **Service Key**：Argon2 哈希存储，创建时仅返回一次明文，可设置 `allowed_models` 白名单
 - 不要混淆这两套
 
-#### 代理只支持流式
+#### 代理流式/非流式
 
-`api/proxy/handler.rs` 强制 `stream: true`。不要加非流式分支。
+上游**始终**走流式（`ir_request.stream = true`）。客户端 `stream: false` 时，引擎收集全部 SSE 事件后返回完整 JSON（`client_wants_stream` 标志控制）。非流式路径不引入额外逻辑，仅影响输出格式。
 
 #### 代理代码组织
 
-- **handler.rs**：薄入口层（认证 + 请求体准备），委托 stream.rs
+- **handler.rs**：薄入口层（认证 + 请求体准备 + 保存 `client_wants_stream`），委托 stream.rs
 - **stream.rs**：流式引擎核心（路由解析 → 立即返回 Response → 后台 spawn 双循环）
 - **forward.rs**：统一 IR 转发（上游字节 → IR 事件 → 客户端 SSE 字节）
 - **ir/**：协议转换核心（三种客户端格式 ↔ IR）

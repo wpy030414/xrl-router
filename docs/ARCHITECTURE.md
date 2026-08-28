@@ -153,7 +153,7 @@ main.rs
   │
   ▼
 [3d] IR → 上游格式渲染 (to_messages / to_chat_completions / to_responses)
-  │  强制 stream=true, model=real_model_id
+  │  上游强制 stream=true, model=real_model_id（客户端 stream: false 时收集 SSE → JSON）
   │
   ▼
 [3e] failover 双层重试循环 (stream.rs + key_rotation.rs + failover.rs)
@@ -331,7 +331,7 @@ Windows 平台去除原生标题栏，自定义红绿灯风格窗口控制按钮
 
 | 约束 | 原因 |
 |------|------|
-| 代理仅支持流式 | Claude Code 等客户端始终流式，加非流式增加复杂度无收益 |
+| 上游始终走流式 | 简化实现；客户端非流式时收集 SSE 事件后返回 JSON |
 | SQLite 单文件 | 本地单用户场景足够，WAL 模式缓解并发 |
 | 密钥状态纯内存 | 减少 DB 写入开销，启动全 green 可接受 |
 | 轮询指针持久化 | 重启后跳过已失效的 key |

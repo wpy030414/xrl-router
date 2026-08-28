@@ -130,7 +130,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 
 ## 关键约束
 
-1. **强制 stream=true**: 即使客户端发送 `stream=false`，也会被静默覆写为 `true` 后继续处理（不返回 400）
+1. **上游强制流式，客户端可选**: 上游始终走流式（`ir_request.stream = true`）；客户端 `stream: false` 时，引擎收集全部 SSE 事件后返回完整 JSON 响应（`client_wants_stream` 标志控制输出格式）
 2. **模型替换**: 将 `display_name` 替换为上游的 `model_id`
 3. **配额检查**: 认证后先查 5h/7d 滚动窗口配额（`quota.rs::check_quota`），任一窗口触顶返回 429（`quota_error` + `retry-after`，message 含重置时间）
 4. **密钥轮换**: 401/403 标红，402/429 标黄，自动切换下一个 key。**200 + 流内密钥级错误同样轮换**——上游以 HTTP 200 + SSE error event（或非 SSE JSON 错误体）表达欠费/限流/认证失败时，`forward.rs::extract_stream_error` 检测并按关键词推断 401/402/403/429，未向客户端发送任何内容前返回 `ForwardOutcome::UpstreamKeyError` 换 key 重试（详见 ADR-034）
@@ -177,7 +177,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 
 - [x] 支持 `/v1/messages`、`/v1/chat/completions`、`/v1/responses` 三种端点
 - [x] 支持 `GET /v1/models`（含 capabilities + max_output_tokens）
-- [x] 强制流式响应
+- [x] 上游强制流式 + 客户端非流式支持
 - [x] 5h/7d 滚动窗口配额检查（429 `quota_error` + `retry-after`）
 - [x] 密钥轮换（Red/Yellow/Green）
 - [x] IR 三协议转换（Messages ↔ Chat Completions ↔ Responses）
