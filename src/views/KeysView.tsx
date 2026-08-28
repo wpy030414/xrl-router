@@ -145,7 +145,7 @@ export function KeysView() {
     }
   }, [createdKey, localIp]);
 
-  const deployLink = createdKey && localIp ? `http://${localIp}:${localPort}/install?t=${createdKey.key}` : '';
+  const deployLink = createdKey && localIp ? `http://${localIp}:${localPort}/install?key=${createdKey.key}` : '';
 
   // Filtered keys
   const filteredKeys = useMemo(() => {

@@ -374,7 +374,7 @@ xrl-router
   ├── Zustand          状态管理
   ├── shadcn/ui        UI 组件（基于 Radix UI + Tailwind CSS）
   ├── lucide-react     图标库
-  ├── react-router-dom v6  路由
+  ├── react-router v8       路由
   ├── Recharts         统计图表
   ├── @dnd-kit/core    拖拽排序
   └── @tanstack/react-virtual  虚拟滚动

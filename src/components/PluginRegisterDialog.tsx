@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useT } from '@/i18n';
 import { pluginsApi } from '@/lib/api';
 import { listen } from '@/lib/tauri';

@@ -117,7 +117,7 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 - `api.ts` 的 `BASE_URL` 是动态解析的（Tauri/localhost vs LAN）
 - **非 Tauri 环境兼容**：前端代码通过动态 `import()` 延迟加载 Tauri API
 - 状态管理用 Zustand，**不要**用 Redux 或其他状态库
-- 路由用 react-router-dom v6
+- 路由用 react-router v8
 - **插件对话框**：`PluginRegisterDialog` 自监听 `plugin-register` 事件，无需父组件传递
 
 #### HTTP 客户端

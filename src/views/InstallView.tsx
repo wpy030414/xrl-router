@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Download, Copy, Check, Loader2, Monitor, Laptop, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { installApi } from '@/lib/api';

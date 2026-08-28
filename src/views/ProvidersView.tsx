@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Plus, Inbox, GripVertical, MoreVertical, Pencil, Trash2, ArrowUpDown, Check, Loader2 } from 'lucide-react';
 import {
   DndContext,
