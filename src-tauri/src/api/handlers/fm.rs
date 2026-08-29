@@ -232,11 +232,13 @@ fn engine_loop(
     // 用户点击播放时才恢复音量 + seek 到墙钟对齐位置。
     sink.set_volume(0.0);
 
-    // 引擎就绪 → 通知前端 + 托盘添加 FM 菜单项。
+    // 引擎就绪 → 通知前端 + Rust 侧直接添加托盘 FM 菜单项（不依赖前端中转）。
     {
         if let Ok(mut s) = state.lock() {
             s.ready = true;
         }
+        // Rust 侧直接更新托盘菜单：避免前端未加载时丢失菜单项。
+        let _ = crate::add_fm_menu_item(&app_handle);
         let _ = app_handle.emit("fm-ready", ());
     }
 

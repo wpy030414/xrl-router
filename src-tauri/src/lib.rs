@@ -42,38 +42,6 @@ use gateway::server::AppState;
 /// 必须与 `tauri_plugin_autostart::init` 的 args 保持一致（见下方 Builder 配置）。
 const ARG_MINIMIZED: &str = "--minimized";
 
-// ── Autostart Tauri commands ──
-#[tauri::command]
-fn get_autostart_status(app: tauri::AppHandle) -> bool {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().unwrap_or(false)
-}
-
-/// 返回本机 gateway 的客户端可连接地址（前端 Claude FM 音频 + API 调用用）。
-/// `Config.host` 可能是 `0.0.0.0`（bind 通配地址，客户端不可直连），
-/// 故对 `0.0.0.0` / `::` 统一返回 `127.0.0.1`。
-#[tauri::command]
-fn get_gateway_base(app: tauri::AppHandle) -> String {
-    let state = app.state::<Arc<AppState>>();
-    let cfg = &state.config;
-    let host = if cfg.host == "0.0.0.0" || cfg.host == "::" {
-        "127.0.0.1"
-    } else {
-        &cfg.host
-    };
-    format!("http://{}:{}", host, cfg.port)
-}
-
-#[tauri::command]
-fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    if enabled {
-        app.autolaunch().enable().map_err(|e| e.to_string())
-    } else {
-        app.autolaunch().disable().map_err(|e| e.to_string())
-    }
-}
-
 // ── i18n（托盘菜单文本随前端语言切换） ──
 
 /// 托盘菜单项句柄（前端切换语言时 set_locale 更新文本）。
@@ -91,9 +59,9 @@ struct TrayMenuState {
 /// 按 locale 返回托盘菜单文本（zh-CN 默认）。
 fn tray_texts(locale: &str) -> (&'static str, &'static str, &'static str) {
     if locale == "en" {
-        ("Show Window", "Quit", "Claude FM")
+        ("Show Window", "Quit", "FM")
     } else {
-        ("显示窗口", "退出", "Claude FM")
+        ("显示窗口", "退出", "FM")
     }
 }
 
@@ -140,22 +108,6 @@ fn fm_toggle(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 播放 FM。
-#[tauri::command]
-fn fm_play(app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<Arc<AppState>>();
-    state.fm.play();
-    Ok(())
-}
-
-/// 暂停 FM。
-#[tauri::command]
-fn fm_pause(app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<Arc<AppState>>();
-    state.fm.pause();
-    Ok(())
-}
-
 /// 获取 FM 播放状态快照（前端初始化时调用）。
 #[tauri::command]
 fn fm_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -170,19 +122,18 @@ fn fm_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     }))
 }
 
-/// 前端 Claude FM 预热完成时调用：把 FM 勾选项加入托盘菜单。
-/// 预热完成前 FM 菜单项隐藏，避免在音源未就绪时误操作。
-#[tauri::command]
-fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {    let state_guard = app.state::<std::sync::Mutex<TrayMenuState>>();
+/// 把 FM 勾选项加入托盘菜单（Rust 侧直接调用，不依赖前端中转）。
+/// 幂等：重复调用不会重复添加。
+pub(crate) fn add_fm_menu_item(app: &tauri::AppHandle) -> Result<(), String> {
+    let state_guard = app.state::<std::sync::Mutex<TrayMenuState>>();
     let mut state = state_guard.lock().map_err(|e| e.to_string())?;
     if state.fm_item.is_some() {
         return Ok(()); // 已加入过，幂等
     }
     // 重建托盘菜单：显示窗口 / Claude FM / 退出
-    // 用缓存 locale（不依赖 AppState——启动早期 AppState 尚未 manage）
     let (_, _, fm_txt) = tray_texts(&state.locale);
     let fm_item = tauri::menu::CheckMenuItem::with_id(
-        &app,
+        app,
         "fm",
         fm_txt,
         true,
@@ -190,7 +141,7 @@ fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {    let state_guard = 
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
-    let menu = tauri::menu::Menu::with_items(&app, &[&state.show_item, &fm_item, &state.quit_item])
+    let menu = tauri::menu::Menu::with_items(app, &[&state.show_item, &fm_item, &state.quit_item])
         .map_err(|e| e.to_string())?;
     state.fm_item = Some(fm_item.clone());
     app.tray_by_id("main-tray")
@@ -199,6 +150,13 @@ fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {    let state_guard = 
         .map_err(|e| e.to_string())?;
     info!("fm_ready: Claude FM menu item added to tray");
     Ok(())
+}
+
+/// 前端 Claude FM 预热完成时调用：把 FM 勾选项加入托盘菜单。
+/// 预热完成前 FM 菜单项隐藏，避免在音源未就绪时误操作。
+#[tauri::command]
+fn fm_ready(app: tauri::AppHandle) -> Result<(), String> {
+    add_fm_menu_item(&app)
 }
 
 // ── 像素场景动画时钟（主窗口与壁纸窗口共用采样源） ──
@@ -305,16 +263,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
-            get_autostart_status,
-            set_autostart,
             set_locale,
             fm_set_playing,
             fm_toggle,
-            fm_play,
-            fm_pause,
             fm_get_state,
             fm_ready,
-            get_gateway_base,
             fm_scene_t,
             wallpaper_set,
             wallpaper_get_state,
