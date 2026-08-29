@@ -33,6 +33,14 @@ export default {
   'conn.offline': '无法连接到后端服务',
   'conn.retry': '重试',
 
+  // ── 系统监控 ──
+  'system.monitor': '系统监控',
+  'system.cpu': 'CPU',
+  'system.memory': '内存',
+  'system.gpu': '显存',
+  'system.usage': '{value}%',
+  'system.memory_usage': '{used} / {total}',
+
   // ── 设置页 ──
   'settings.title': '设置',
   'settings.tab.general': '通用',

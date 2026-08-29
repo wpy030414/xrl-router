@@ -33,6 +33,14 @@ export default {
   'conn.offline': 'Cannot connect to the backend service',
   'conn.retry': 'Retry',
 
+  // ── System monitor ──
+  'system.monitor': 'System Monitor',
+  'system.cpu': 'CPU',
+  'system.memory': 'Memory',
+  'system.gpu': 'GPU',
+  'system.usage': '{value}%',
+  'system.memory_usage': '{used} / {total}',
+
   // ── Settings page ──
   'settings.title': 'Settings',
   'settings.tab.general': 'General',

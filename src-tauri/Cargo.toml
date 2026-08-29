@@ -86,8 +86,12 @@ rmcp = { version = "3", features = ["server", "macros", "transport-streamable-ht
 htmd = "0.2"
 
 # 桌面壁纸劫持（FM 像素艺术 → 桌面层）：
-# - Windows：透明 WebView 窗口 + tauri-plugin-desktop-underlay 挂载
-#   （DWM 视觉合成路径——桌面 WorkerW 层唯一可靠渲染路径）
+# - Windows：透明 WebView 窗口 + 自实现 WorkerW 挂载（配方同社区插件
+#   tauri-plugin-desktop-underlay + Z 序锚定，见 docs/DECISIONS.md ADR-043/049）
+
+# 系统资源监控（CPU/内存/显存占用）
+sysinfo = "0.33"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 

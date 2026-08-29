@@ -3,6 +3,7 @@ import { Radio, Cloud, Server, Combine, Key, BarChart3, Settings, PanelLeft, Min
 import { useT } from '@/i18n';
 import { ConnectionStatus } from './ConnectionStatus';
 import { PluginRegisterDialog } from './PluginRegisterDialog';
+import { SystemStatusBar } from './SystemStatusBar';
 import { isWindows, getCurrentWindow } from '@/lib/tauri';
 import {
   Sidebar,
@@ -150,11 +151,11 @@ export function AppShell() {
         </Sidebar>
 
         <SidebarInset>
-          <main className="flex-1 min-w-0 p-8 grid grid-cols-[1fr_minmax(0,880px)_1fr]">
-            <div className="col-start-2">
-              <Outlet />
-            </div>
+          <main className="flex-1 min-w-0 p-8 flex flex-col">
+            <Outlet />
           </main>
+          {/* 系统资源状态栏：仅在私有智能页面显示 */}
+          {location.pathname === '/local' && <SystemStatusBar />}
         </SidebarInset>
         </SidebarProvider>
         {/* 窗口顶部透明拖拽横条，贯穿全宽。

@@ -27,6 +27,8 @@ pub mod search;
 mod types;
 // 桌面壁纸劫持（FM 像素艺术 → 桌面层；透明 WebView + 社区插件挂载）
 mod wallpaper;
+// 系统资源监控（CPU/内存/显存占用）
+mod system;
 
 // SDK 合规验证（fixtures 导出 + Python 官方 SDK 校验脚本）。
 // 本目录仅 test 构建；正式构建不编译任何测试代码。
@@ -251,6 +253,14 @@ fn wallpaper_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
     }))
 }
 
+/// 获取系统资源使用情况（CPU/内存/显存占用）
+#[tauri::command]
+fn get_system_resources(app: tauri::AppHandle) -> Result<system::SystemResources, String> {
+    let state = app.state::<std::sync::Mutex<system::SystemMonitor>>();
+    let monitor = state.lock().map_err(|e| e.to_string())?;
+    Ok(monitor.get_resources())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 全进程统一 WebView2 浏览器参数：关闭 Chromium 原生窗口遮挡检测。
@@ -308,6 +318,7 @@ pub fn run() {
             fm_scene_t,
             wallpaper_set,
             wallpaper_get_state,
+            get_system_resources,
         ])
         .setup(move |app| {
             // Resolve data directory using Tauri's path API:
@@ -370,6 +381,10 @@ pub fn run() {
             // ── 桌面壁纸劫持（FM 像素艺术 → 桌面层）──
             // 状态管理 + 启动恢复：上次勾选过则重建壁纸窗口。
             app.manage(wallpaper::WallpaperState::default());
+
+            // ── 系统资源监控（CPU/内存/显存占用）──
+            // 为前端提供实时系统资源使用情况
+            app.manage(std::sync::Mutex::new(system::SystemMonitor::new()));
             if database
                 .get_setting(wallpaper::SETTING_KEY)
                 .ok()
