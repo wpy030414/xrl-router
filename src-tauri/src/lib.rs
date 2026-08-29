@@ -401,6 +401,21 @@ pub fn run() {
                 .icon(app.default_window_icon().cloned().unwrap())
                 .tooltip("xrl-router")
                 .menu(&menu)
+                .on_tray_icon_event(|tray, event| {
+                    // 左键单击唤起主窗口；右键保持默认菜单行为（系统弹出上下文菜单）。
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -493,7 +508,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| match event {
+        .run(|_app_handle, event| match event {
             // ── macOS Dock 图标点击：从托盘唤起主窗口 ──
             // macOS 上窗口被 hide() 后点击 Dock 图标会触发 Reopen 事件，
             // 但 Tauri 默认不处理；必须手动 show + set_focus。
