@@ -6,8 +6,10 @@
 //! `initialization_script` 注入 `__WALLPAPER_MODE__`，前端分支渲染
 //! `WallpaperScene`——黑底全屏像素、无按钮/歌曲信息），随后挂入桌面壁纸层：
 //!
-//! - **Windows**：`tauri-plugin-desktop-underlay`（社区插件）`set_desktop_underlay`
-//!   ——窗口 SetParent 进壁纸 WorkerW。**透明窗口是关键**：WebView2 内容经
+//! - **Windows**：透明 WebviewWindow + 自实现 WorkerW 挂载（`win.rs`，
+//!   配方与社区插件 tauri-plugin-desktop-underlay 一致 + Z 序锚定）：
+//!   `SetParent` 进壁纸 WorkerW + 转 `WS_CHILD` 沉宿主最底层（桌面图标层
+//!   `SHELLDLL_DefView` 之下，防盖图标）。透明窗口是关键：WebView2 内容经
 //!   DWM 视觉合成上屏，是桌面 WorkerW 层唯一可靠渲染路径（GDI/重定向
 //!   表面在桌面层不被合成；`WS_EX_LAYERED` 不设属性则不显示内容）。
 //!   点击穿透为 `WS_EX_TRANSPARENT`（禁 LAYERED），见 `win.rs`。
@@ -191,9 +193,21 @@ fn mount(win: &WebviewWindow) -> Result<(), String> {
 }
 
 /// 展示壁纸窗口：Windows 走 tao（focused(false) 已加 WS_EX_NOACTIVATE）。
+/// show / WebView2 初始化可能重排宿主子窗（壁纸窗被顶回上层、盖住桌面
+/// 图标）：显示后 1.5s 在主线程复查一次，钉回宿主最底层（幂等）。
 #[cfg(target_os = "windows")]
 fn show_wallpaper(win: &WebviewWindow) -> Result<(), String> {
-    win.show().map_err(|e| format!("show wallpaper window: {e}"))
+    win.show().map_err(|e| format!("show wallpaper window: {e}"))?;
+    let recheck = win.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = recheck.run_on_main_thread(move || {
+            if let Err(e) = crate::wallpaper::win::recheck_zorder(&recheck) {
+                tracing::warn!("wallpaper z-order recheck failed: {e}");
+            }
+        });
+    });
+    Ok(())
 }
 
 /// 展示壁纸窗口：macOS 禁止用 tao show（抢焦点），mount 内已 orderFront。

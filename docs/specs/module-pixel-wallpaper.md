@@ -10,8 +10,8 @@
 
 ```
 ┌─ 主窗口 "main"(ClaudeFmView) ──┐   ┌─ 壁纸引擎（双平台透明 WebView）──────────┐
-│ PixelScene(seed,playing,sampleT)│   │ Win: transparent WebView + desktop-underlay│
-│ ContextMenu: 设置为/取消桌面背景 │   │      插件 SetParent 进 WorkerW             │
+│ PixelScene(seed,playing,sampleT)│   │ Win: transparent WebView + 自实现 WorkerW  │
+│ ContextMenu: 设置为/取消桌面背景 │   │      挂载（SetParent + Z 序锚定）           │
 └──────────────┬──────────────────┘   │ mac: WebviewWindow kCGDesktopIconWindow…   │
     invoke: wallpaper_set /           └────────────────┬───────────────────────┘
     wallpaper_get_state / fm_scene_t                   ▼
@@ -31,8 +31,10 @@
 
 - **Windows 渲染**：透明 WebviewWindow（`transparent(true)`——关键词，
   WebView2 内容经 DWM 视觉合成上屏，是桌面 WorkerW 层唯一可靠渲染路径），
-  `tauri-plugin-desktop-underlay` 的 `set_desktop_underlay(true)` 挂载进壁纸
-  WorkerW；WebView2 显式 `--disable-features=CalculateNativeWinOcclusion`
+  自实现 WorkerW 挂载（配方同社区插件 `tauri-plugin-desktop-underlay`）：
+  `SetParent` 进壁纸 WorkerW + 转 `WS_CHILD` 并 `SetWindowPos(HWND_BOTTOM)`
+  锚定宿主子窗 Z 序最底（防盖桌面图标，ADR-049）；WebView2 显式
+  `--disable-features=CalculateNativeWinOcclusion`
   （避免遮挡检测暂停合成）+ 独立 user data directory（避免与主窗口环境
   参数冲突 0x8007139F）；点击穿透 `WS_EX_TRANSPARENT`（顶层 + 递归子窗
   1s 补轮，**禁用 WS_EX_LAYERED**——分层窗口不设属性不显示内容）。
@@ -71,8 +73,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 1. **平台**：仅 Windows / macOS（`wallpaper_supported` 为 false 时前端隐藏
    菜单项）；v1 仅主显示器。
 2. **Windows 壁纸窗**：透明 `WebviewWindow`（`transparent(true)`，DWM 视觉合成上屏），
-   `tauri-plugin-desktop-underlay` 的 `set_desktop_underlay(true)` 把窗口 SetParent
-   进壁纸 WorkerW；WebView2 显式 `--disable-features=CalculateNativeWinOcclusion`
+   自实现挂载 `SetParent` 进壁纸 WorkerW（配方同 `tauri-plugin-desktop-underlay`）
+   + 转 `WS_CHILD` 并 `SetWindowPos(HWND_BOTTOM)` 锚定宿主最底层（桌面图标层
+   之下，防盖图标；show 后 1.5s 复查幂等重锚，ADR-049）；WebView2 显式
+   `--disable-features=CalculateNativeWinOcclusion`
    （避免遮挡检测暂停合成）+ 独立 user data directory（避免与主窗口环境
    参数冲突 0x8007139F）；点击穿透 `WS_EX_TRANSPARENT`（顶层 + 递归子窗
    1s 补轮，**禁用 WS_EX_LAYERED**——分层窗口不设属性不显示内容）。
@@ -104,8 +108,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 ## 实现位置
 
 - `src-tauri/src/wallpaper/mod.rs` — WallpaperState + 建窗/挂载/自愈重建
-  （挂载经 `tauri-plugin-desktop-underlay`，双平台）
-- `src-tauri/src/wallpaper/win.rs` — Windows 透明 WebView + tauri-plugin-desktop-underlay（WorkerW 挂载）
+  （Windows 挂载经 `win.rs`，macOS 经 `macos.rs`）
+- `src-tauri/src/wallpaper/win.rs` — Windows 透明 WebView + 自实现 WorkerW
+  挂载（SetParent + Z 序锚定 `WS_CHILD`/`HWND_BOTTOM`，ADR-049）
 - `src-tauri/src/wallpaper/macos.rs` — macOS kCGDesktopIconWindowLevel
 - `src-tauri/src/api/handlers/fm.rs` — `scene_t` 引擎权威时钟 + `state_arc()`
 - `src-tauri/src/lib.rs` — `wallpaper_set` / `wallpaper_get_state` / `fm_scene_t`
@@ -144,5 +149,6 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 - [x] 取消勾选 / 应用退出 → 原壁纸恢复
 - [x] 重启（含 --minimized）自动恢复勾选态
 - [x] Explorer 重启自动重建（Destroyed → 1s 延迟）
+- [ ] Windows 真机验证 Z 序锚定：图标可见可点（ADR-049 修复）
 - [x] `cargo check` + `tsc --noEmit` 通过
 - [ ] macOS 真机验证（CI 编译兜底；运行时验证待真机）

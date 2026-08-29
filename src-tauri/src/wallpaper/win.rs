@@ -7,9 +7,16 @@
 //! 1. 向 Progman 发 `WM_SPAWN_WORKERW (0x052C, (0xD, 0x1))`（幂等唤醒）；
 //! 2. 定位壁纸宿主 WorkerW（Progman 直接子窗优先；经典 DefView-宿主兜底）；
 //! 3. `SetParent` 挂入 + **验证**（失败 sleep 250ms 重试一次）；
-//! 4. 精确铺满主屏（补偿 Win11 无边框窗口隐形内边框，防左/顶空白条）；
-//! 5. 点击穿透 `WS_EX_TRANSPARENT`（顶层 + WebView2 子窗递归 1s 补轮）。
+//! 4. **Z 序锚定（防盖桌面图标）**：Win8+ `SetParent` 不会把 popup 转成真正的
+//!    子窗口（窗口仍留在顶层 Z 序、盖住图标），须手动补 `WS_CHILD`（清
+//!    `WS_POPUP`）并 `SetWindowPos(HWND_BOTTOM)` 沉到宿主最底层——壁纸层
+//!    必须位于 `SHELLDLL_DefView`（桌面图标层）之下；
+//! 5. 精确铺满主屏（补偿 Win11 无边框窗口隐形内边框，防左/顶空白条）——
+//!    该 `SetWindowPos` 带 `SWP_NOZORDER`，绝不扰动第 4 步的 Z 序锚定；
+//! 6. 点击穿透 `WS_EX_TRANSPARENT`（顶层 + WebView2 子窗递归 1s 补轮）。
 //!    **严禁 `WS_EX_LAYERED`**：分层窗口不设属性不显示内容。
+//! 7. show 之后再次复查 Z 序（`mod.rs` 延迟主线程复查）：show/WebView2
+//!    初始化可能重新排序，把壁纸窗顶回宿主上层。
 
 use std::time::Duration;
 
@@ -17,10 +24,11 @@ use tauri::WebviewWindow;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowRect, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
-    SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, SMTO_NORMAL, SWP_NOACTIVATE,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetSystemMetrics, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, GWL_EXSTYLE, GWL_STYLE, GW_HWNDNEXT, HWND_BOTTOM,
+    SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, IsWindow, SM_CXSCREEN,
+    SM_CYSCREEN, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CHILD,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// 点击穿透扩展样式（不包含 WS_EX_LAYERED，见模块注释）。
@@ -51,15 +59,92 @@ pub fn mount(win: &WebviewWindow) -> Result<(), String> {
         return Err("SetParent did not take effect (not in host children)".into());
     }
 
+    // Z 序锚定（防盖桌面图标）：首次失败多为系统仍在调整窗口树，
+    // 250ms 后重试一次；仍失败不算致命——mod.rs show 后的延迟复查兜底。
+    if let Err(e) = ensure_bottom_zorder(hwnd, host) {
+        tracing::warn!("wallpaper: bottom z-order attempt 1 failed: {e}");
+        std::thread::sleep(Duration::from_millis(250));
+        if let Err(e) = ensure_bottom_zorder(hwnd, host) {
+            tracing::warn!("wallpaper: bottom z-order failed: {e}");
+        }
+    }
+
     fit_monitor(win)?;
     apply_click_through(win);
     tracing::info!(?host, "wallpaper: mounted into WorkerW");
     Ok(())
 }
 
+/// show / WebView2 初始化后的延迟复查：再次钉到宿主最底层（幂等）。
+/// 窗口若已脱离宿主（Explorer 重启等外部销毁）只报错，交给自愈重建。
+pub fn recheck_zorder(win: &WebviewWindow) -> Result<(), String> {
+    let hwnd = win.hwnd().map_err(|e| format!("get wallpaper hwnd: {e}"))?;
+    let host = find_wallpaper_host()
+        .ok_or_else(|| "wallpaper host (WorkerW) not found".to_string())?;
+    if !is_child_of(hwnd, host) {
+        return Err("wallpaper window no longer child of host".into());
+    }
+    ensure_bottom_zorder(hwnd, host)
+}
+
 /// SetParent 挂载（返回是否成功）。
 fn attach(hwnd: HWND, host: HWND) -> bool {
     unsafe { SetParent(hwnd, Some(host)).is_ok() }
+}
+
+/// 把壁纸窗钉到宿主（WorkerW）子窗 Z 序的最底层（防盖桌面图标）。
+///
+/// 为什么需要：
+/// - Win8+ `SetParent` 对 popup 风格窗口只做"重设父链"，窗口仍留在顶层
+///   Z 序（旧行为见 ADR-042 注记），视觉上盖住 `SHELLDLL_DefView`（桌面
+///   图标层）；手动转 `WS_CHILD`（清 `WS_POPUP`）使其成为真正子窗、参与
+///   宿主 Z 序；
+/// - `SetWindowPos(HWND_BOTTOM, SWP_NOMOVE|SWP_NOSIZE)` 沉底——幂等，
+///   show / WebView2 初始化等引起重排后可安全重复调用；
+/// - 任何后续 `SetWindowPos` 都必须带 `SWP_NOZORDER`（见 `fit_monitor`），
+///   否则 `HWND_TOP` 默认值会把壁纸窗顶回宿主上层、盖住图标。
+pub fn ensure_bottom_zorder(hwnd: HWND, host: HWND) -> Result<(), String> {
+    // 宿主已销毁（Explorer 重启等瞬态）：交由重建流程处理，此处只报错。
+    if !unsafe { IsWindow(Some(host)).as_bool() } {
+        return Err("wallpaper host is gone".into());
+    }
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if style & WS_CHILD.0 as isize == 0 {
+            // popup → child：保留其余样式位（无标题栏/边框，无可见副作用）。
+            let _ = SetWindowLongPtrW(
+                hwnd,
+                GWL_STYLE,
+                (style & !(WS_POPUP.0 as isize)) | WS_CHILD.0 as isize,
+            );
+        }
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    }
+    .map_err(|e| format!("SetWindowPos(HWND_BOTTOM): {e}"))?;
+
+    // 验证：壁纸窗之下（更靠底层）不应再有兄弟窗——宿主内只有我们与
+    // 桌面图标层（DefView 链）。有残留则说明系统仍在调整窗口树，
+    // 交给调用方（挂载时的 250ms 重试 / mod.rs 延迟复查）再钉一次。
+    let next = unsafe { GetWindow(hwnd, GW_HWNDNEXT) };
+    if let Ok(below) = next {
+        if !below.is_invalid() {
+            return Err(format!(
+                "still not at bottom: sibling below = {:?}",
+                below
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 判定窗口是否为宿主（WorkerW）的子窗口：枚举宿主子窗命中。
@@ -123,7 +208,7 @@ fn fit_monitor(win: &WebviewWindow) -> Result<(), String> {
             -ct,
             mon_w + cl + m_r,
             mon_h + ct + m_b,
-            SWP_NOACTIVATE,
+            SWP_NOACTIVATE | SWP_NOZORDER, // 绝不扰动 Z 序（否则 HWND_TOP 盖图标）
         );
     }
     Ok(())
