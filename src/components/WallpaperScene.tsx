@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 /**
  * 壁纸模式入口（Rust 动态创建的 "wallpaper" 窗口加载的页面）。
  *
- * 与 ClaudeFmView 共享同一套 FM 事件接线（useFm）+ 引擎权威动画时钟
+ * 与 FmView 共享同一套 FM 事件接线（useFm）+ 引擎权威动画时钟
  * （`fm_scene_t` 采样）：两处画面严格同步。只渲染像素艺术——
  * 无播放/暂停按钮、无歌曲信息；未播放/暂停时同样黑白静止（grayscale）。
  */

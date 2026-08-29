@@ -503,7 +503,7 @@ export function KeysView() {
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   autoFocus
-                  placeholder="my-claude-code"
+                  placeholder={t('keys.name_placeholder')}
                   className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>

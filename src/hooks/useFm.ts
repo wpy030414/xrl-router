@@ -16,7 +16,7 @@ export interface FmState {
 /**
  * Claude FM 播放状态：初始化拉取 + 订阅后端广播事件。
  *
- * 主窗口（ClaudeFmView）与壁纸窗口（WallpaperScene）共用同一套接线——
+ * 主窗口（FmView）与壁纸窗口（WallpaperScene）共用同一套接线——
  * 后端事件是进程级广播，两窗口收到同样的种子/播放态，配合 `fm_scene_t`
  * 引擎权威时钟，渲染完全一致。
  */

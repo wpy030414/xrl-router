@@ -34,7 +34,7 @@ interface WallpaperInfo {
  * （SidebarInset 的 <main>，自带 relative），铺满侧边栏右侧整个可视区；
  * 按钮在文档流里居中，保证页面高度 = 视口（无滚动）。
  */
-export function ClaudeFmView() {
+export function FmView() {
   const t = useT();
   const fm = useFm();
   const [wallpaper, setWallpaper] = useState<WallpaperInfo>({
@@ -141,4 +141,4 @@ export function ClaudeFmView() {
   );
 }
 
-export default ClaudeFmView;
+export default FmView;

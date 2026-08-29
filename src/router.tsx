@@ -4,11 +4,11 @@ import { AppShell } from './components/AppShell';
 
 const ProvidersView = lazy(() => import('./views/ProvidersView'));
 const ProviderFormView = lazy(() => import('./views/ProviderFormView'));
-const KeysView = lazy(() => import('./views/KeysView'));
+const ServiceKeysView = lazy(() => import('./views/ServiceKeysView'));
 const StatsView = lazy(() => import('./views/StatsView'));
 const SettingsView = lazy(() => import('./views/SettingsView'));
 const InstallView = lazy(() => import('./views/InstallView'));
-const ClaudeFmView = lazy(() => import('./views/ClaudeFmView'));
+const FmView = lazy(() => import('./views/FmView'));
 const CombosView = lazy(() => import('./views/CombosView'));
 const ComboFormView = lazy(() => import('./views/ComboFormView'));
 const LocalModelsView = lazy(() => import('./views/LocalModelsView'));
@@ -33,10 +33,10 @@ export const router = createBrowserRouter([
       { path: 'combos', element: page(<CombosView />) },
       { path: 'combos/new', element: page(<ComboFormView />) },
       { path: 'combos/:id/edit', element: page(<ComboFormView />) },
-      { path: 'keys', element: page(<KeysView />) },
+      { path: 'keys', element: page(<ServiceKeysView />) },
       { path: 'stats', element: page(<StatsView />) },
       { path: 'settings', element: page(<SettingsView />) },
-      { path: 'fm', element: page(<ClaudeFmView />) },
+      { path: 'fm', element: page(<FmView />) },
     ],
   },
   { path: '/install', element: page(<InstallView />) },

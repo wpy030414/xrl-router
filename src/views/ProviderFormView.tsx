@@ -3,16 +3,16 @@ import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { ArrowLeft, Loader2, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProvidersStore } from '@/stores/providers';
-import { useKeysStore } from '@/stores/keys';
+import { useApiKeysStore } from '@/stores/apiKeys';
 import { providersApi, pluginsApi, modelsApi, keysApi, type Provider, type PluginDetail } from '@/lib/api';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 
 /** Provider 类型选项 */
 const KIND_OPTIONS = [
-  { value: 'messages', label: 'Anthropic (Messages)' },
-  { value: 'chat_completions', label: 'OpenAI (Chat Completions)' },
-  { value: 'responses', label: 'OpenAI (Responses)' },
+  { value: 'messages', labelKey: 'providerForm.kind.messages' },
+  { value: 'chat_completions', labelKey: 'providerForm.kind.chat_completions' },
+  { value: 'responses', labelKey: 'providerForm.kind.responses' },
 ] as const;
 
 /** 默认 base URL */
@@ -67,7 +67,7 @@ export function ProviderFormView() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const { fetchProviders } = useProvidersStore();
-  const { keys, fetchKeys, createKey } = useKeysStore();
+  const { keys, fetchKeys, createKey } = useApiKeysStore();
 
   const isEdit = !!id;
   const queryPluginId = searchParams.get('plugin_id');
@@ -120,7 +120,7 @@ export function ProviderFormView() {
         // 拉取密钥列表，供插件模式显示「已自动同步」数量
         await fetchKeys(id);
       } catch (e: any) {
-        setError(t('providerNew.load_failed', { msg: e.message }));
+        setError(t('providerForm.load_failed', { msg: e.message }));
       } finally {
         setLoading(false);
       }
@@ -150,7 +150,7 @@ export function ProviderFormView() {
             .join('\n')
         );
       } catch (e: any) {
-        setError(t('providerNew.plugin_load_failed', { msg: e.message }));
+        setError(t('providerForm.plugin_load_failed', { msg: e.message }));
       } finally {
         setLoading(false);
       }
@@ -250,7 +250,7 @@ export function ProviderFormView() {
           for (const line of inputKeys) {
             if (!existingPlain.has(line)) {
               await createKey(savedProvider.id, {
-                name: name.trim() + t('providerNew.key_suffix'),
+                name: name.trim() + t('providerForm.key_suffix'),
                 key: line,
               });
             }
@@ -274,19 +274,19 @@ export function ProviderFormView() {
       await fetchProviders();
       navigate('/providers');
     } catch (e: any) {
-      setError(t('providerNew.save_failed', { msg: e.message }));
+      setError(t('providerForm.save_failed', { msg: e.message }));
     } finally {
       setSaving(false);
     }
   };
 
   const title = isEdit && isPlugin
-    ? t('providerNew.title.plugin_edit')
+    ? t('providerForm.title.plugin_edit')
     : isPlugin
-    ? t('providerNew.title.plugin')
+    ? t('providerForm.title.plugin')
     : isEdit
-    ? t('providerNew.title.edit')
-    : t('providerNew.title.create');
+    ? t('providerForm.title.edit')
+    : t('providerForm.title.create');
 
   if (loading) {
     return (
@@ -318,7 +318,7 @@ export function ProviderFormView() {
         {/* Name */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium" htmlFor="provider-name">
-            {t('providerNew.name_label')}
+            {t('providerForm.name_label')}
           </label>
           <input
             id="provider-name"
@@ -330,14 +330,14 @@ export function ProviderFormView() {
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               'disabled:cursor-not-allowed disabled:opacity-50'
             )}
-            placeholder="My Provider"
+            placeholder={t('providerForm.name_placeholder')}
           />
         </div>
 
         {/* Kind */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium" htmlFor="provider-kind">
-            {t('providerNew.kind_label')}
+            {t('providerForm.kind_label')}
           </label>
           <div className="relative">
             <select
@@ -355,7 +355,7 @@ export function ProviderFormView() {
             >
               {KIND_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </option>
               ))}
             </select>
@@ -366,7 +366,7 @@ export function ProviderFormView() {
         {/* Base URL */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium" htmlFor="provider-base-url">
-            {t('providerNew.base_url_label')}
+            {t('providerForm.base_url_label')}
           </label>
           <input
             id="provider-base-url"
@@ -379,7 +379,7 @@ export function ProviderFormView() {
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               'disabled:cursor-not-allowed disabled:opacity-50'
             )}
-            placeholder="https://api.example.com"
+            placeholder={t('providerForm.base_url_placeholder')}
           />
         </div>
 
@@ -388,13 +388,13 @@ export function ProviderFormView() {
         {isPlugin ? (
           syncedKeysCount > 0 && (
             <p className="text-sm text-muted-foreground">
-              {t('providerNew.keys_synced', { count: syncedKeysCount })}
+              {t('providerForm.keys_synced', { count: syncedKeysCount })}
             </p>
           )
         ) : (
           <div className="space-y-1.5">
             <label className="text-sm font-medium" htmlFor="provider-api-key">
-              {t('providerNew.api_key_label')}
+              {t('providerForm.api_key_label')}
             </label>
             <textarea
               id="provider-api-key"
@@ -408,7 +408,7 @@ export function ProviderFormView() {
                 'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 'resize-y min-h-[72px]'
               )}
-              placeholder="sk-ant-..."
+              placeholder={t('providerForm.api_key_placeholder')}
             />
           </div>
         )}
@@ -416,7 +416,7 @@ export function ProviderFormView() {
         {/* Models */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium" htmlFor="provider-models">
-            {t('providerNew.models_label')}
+            {t('providerForm.models_label')}
           </label>
           <textarea
             id="provider-models"
@@ -428,7 +428,7 @@ export function ProviderFormView() {
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               'resize-y min-h-[120px]'
             )}
-            placeholder={t('providerNew.models_placeholder')}
+            placeholder={t('providerForm.models_placeholder')}
           />
         </div>
 
@@ -440,10 +440,10 @@ export function ProviderFormView() {
           <Button onClick={handleSave} disabled={saving || !name.trim()}>
             {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             {saving
-              ? t('providerNew.saving')
+              ? t('providerForm.saving')
               : isEdit
-              ? t('providerNew.save_edit')
-              : t('providerNew.save_create')}
+              ? t('providerForm.save_edit')
+              : t('providerForm.save_create')}
           </Button>
         </div>
       </div>

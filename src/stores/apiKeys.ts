@@ -11,7 +11,7 @@ interface KeysState {
   updateKeyHealth: (keyId: string, status: string) => void;
 }
 
-export const useKeysStore = create<KeysState>((set, get) => ({
+export const useApiKeysStore = create<KeysState>((set, get) => ({
   keys: [],
   loading: false,
 

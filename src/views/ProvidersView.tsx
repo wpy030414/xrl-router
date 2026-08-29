@@ -34,7 +34,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useProvidersStore } from '@/stores/providers';
-import { useKeysStore } from '@/stores/keys';
+import { useApiKeysStore } from '@/stores/apiKeys';
 import { useModelsStore } from '@/stores/models';
 import { providersApi, pluginsApi, type Provider, type Model, type ApiKey } from '@/lib/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -198,7 +198,7 @@ export function ProvidersView() {
   const t = useT();
   const navigate = useNavigate();
   const { providers, fetchProviders, reorderProviders } = useProvidersStore();
-  const { keys, fetchKeys } = useKeysStore();
+  const { keys, fetchKeys } = useApiKeysStore();
   const { models, fetchModels } = useModelsStore();
 
   const [loading, setLoading] = useState(true);
