@@ -122,7 +122,7 @@ export function CombosView() {
         <h2 className="text-3xl font-normal m-0">{t('combos.title')}</h2>
         <Button onClick={() => navigate('/combos/new')}>
           <Plus className="w-4 h-4 mr-2" />
-          {t('combos.add')}
+          {t('combos.create')}
         </Button>
       </div>
 

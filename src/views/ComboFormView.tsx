@@ -48,7 +48,7 @@ export function ComboFormView() {
         setEnabled(combo.enabled);
         setSelectedMembers(combo.members);
       } catch (e: any) {
-        setError(t('comboNew.load_failed', { msg: e.message }));
+        setError(t('comboForm.load_failed', { msg: e.message }));
       } finally {
         setLoading(false);
       }
@@ -135,7 +135,7 @@ export function ComboFormView() {
       await fetchCombos();
       navigate('/combos');
     } catch (e: any) {
-      setError(t('comboNew.save_failed', { msg: e.message }));
+      setError(t('comboForm.save_failed', { msg: e.message }));
     } finally {
       setSaving(false);
     }
@@ -149,7 +149,7 @@ export function ComboFormView() {
     );
   }
 
-  const title = isEdit ? t('comboNew.title.edit') : t('comboNew.title.create');
+  const title = isEdit ? t('comboForm.title.edit') : t('comboForm.title.create');
 
   return (
     <div className="space-y-6">
@@ -173,7 +173,7 @@ export function ComboFormView() {
         {/* Name */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium" htmlFor="combo-name">
-            {t('comboNew.name_label')}
+            {t('comboForm.name_label')}
           </label>
           <input
             id="combo-name"
@@ -184,13 +184,13 @@ export function ComboFormView() {
               'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm',
               'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
             )}
-            placeholder="My Combo"
+            placeholder={t('comboForm.name_placeholder')}
           />
         </div>
 
         {/* Enabled toggle */}
         <div className="flex items-center gap-3">
-          <label className="text-sm font-medium">{t('comboNew.enabled_label')}</label>
+          <label className="text-sm font-medium">{t('comboForm.enabled_label')}</label>
           <button
             type="button"
             onClick={() => setEnabled(!enabled)}
@@ -213,10 +213,10 @@ export function ComboFormView() {
 
         {/* Selected members */}
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('comboNew.selected_label')}</label>
+          <label className="text-sm font-medium">{t('comboForm.selected_label')}</label>
           {selectedMembers.length === 0 ? (
             <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-lg">
-              {t('comboNew.selected_empty')}
+              {t('comboForm.selected_empty')}
             </p>
           ) : (
             <div className="space-y-2">
@@ -275,10 +275,10 @@ export function ComboFormView() {
 
         {/* Available models */}
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('comboNew.available_label')}</label>
+          <label className="text-sm font-medium">{t('comboForm.available_label')}</label>
           {availableModels.length === 0 ? (
             <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-lg">
-              {t('comboNew.no_models')}
+              {t('comboForm.no_models')}
             </p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto border rounded-lg p-3">
@@ -322,10 +322,10 @@ export function ComboFormView() {
           >
             {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             {saving
-              ? t('comboNew.saving')
+              ? t('comboForm.saving')
               : isEdit
-              ? t('comboNew.save_edit')
-              : t('comboNew.save_create')}
+              ? t('comboForm.save_edit')
+              : t('comboForm.save_create')}
           </Button>
         </div>
       </div>

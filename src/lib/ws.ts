@@ -1,10 +1,8 @@
 export type WsEvent =
   | { type: 'key_stats'; provider_id: string; green: number; total: number }
-  | { type: 'request_metrics'; provider_id: string; model: string; latency_ms: number; tokens: number }
-  | { type: 'balance_update'; provider_id: string; key_id: string; balance: number }
-  | { type: 'provider_status'; provider_id: string; status: string; latency_ms: number }
   | { type: 'usage_stats_changed'; timestamp: number }
-  | { type: 'error'; provider_id: string; key_id: string; error: string };
+  | { type: 'local_progress'; id: string; downloaded: number; total: number | null }
+  | { type: 'local_status'; id: string; model_id: string; status: string; port: number | null; error: string | null };
 
 type EventHandler = (event: WsEvent) => void;
 

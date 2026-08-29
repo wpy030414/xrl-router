@@ -221,7 +221,7 @@ export function InstallView() {
     [consumer, platform, apiKey, base, selectedModel],
   );
 
-  const platformLabel = platform === 'windows' ? 'Windows (PowerShell)' : 'macOS (Bash)';
+  const platformLabel = platform === 'windows' ? t('install.platform_windows_powershell') : t('install.platform_macos_bash');
 
   const handleCopy = async () => {
     const ok = copyToClipboard(command);
@@ -272,7 +272,7 @@ export function InstallView() {
                     ) : (
                       <Monitor className="w-4 h-4 mr-1.5" />
                     )}
-                    {p === 'macos' ? 'macOS' : 'Windows'}
+                    {p === 'macos' ? t('install.platform_macos') : t('install.platform_windows')}
                   </Button>
                 ))}
               </div>

@@ -164,7 +164,7 @@ export function HfBrowseView() {
             />
           </div>
           <Button variant="outline" size="sm" onClick={toggleMirror}>
-            {t('local.hf_mirror')}：{mirror ? 'ON' : 'OFF'}
+            {t('local.hf_mirror')}：{mirror ? t('local.hf_mirror.on') : t('local.hf_mirror.off')}
           </Button>
         </div>
       )}
@@ -247,7 +247,7 @@ export function HfBrowseView() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t('local.create_title')}</DialogTitle>
+            <DialogTitle>{t('local.download_title')}</DialogTitle>
             <DialogDescription>
               {selectedRepo && selectedFile && (
                 <span className="font-mono text-xs">{selectedRepo.id}/{selectedFile.path}</span>
@@ -257,7 +257,7 @@ export function HfBrowseView() {
           <div className="space-y-4 py-2">
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('local.model_id_label')}</label>
-              <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="my-local-model" />
+              <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder={t('local.model_id_placeholder')} />
               <p className="text-xs text-muted-foreground">{t('local.model_id_hint')}</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -280,7 +280,7 @@ export function HfBrowseView() {
             <Button variant="outline" onClick={() => setCreateOpen(false)}>{t('common.cancel')}</Button>
             <Button onClick={handleCreate} disabled={creating || !modelId.trim()}>
               {creating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {t('local.create_btn')}
+              {t('local.download_btn')}
             </Button>
           </DialogFooter>
         </DialogContent>

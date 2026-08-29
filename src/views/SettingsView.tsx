@@ -115,7 +115,7 @@ export function SettingsView() {
 
       if (isTauri()) {
         const path = await tauriDialog.save({
-          title: 'Export Data',
+          title: t('settings.data.export.title'),
           defaultPath: `xrl-router-backup-${new Date().toISOString().split('T')[0]}.sql`,
           filters: [{ name: 'SQL', extensions: ['sql'] }],
         });
@@ -142,7 +142,7 @@ export function SettingsView() {
       let sql: string | null = null;
       if (isTauri()) {
         const path = await tauriDialog.open({
-          title: 'Import Data',
+          title: t('settings.data.import.title'),
           filters: [{ name: 'SQL', extensions: ['sql'] }],
         });
         if (path) {
@@ -448,7 +448,7 @@ export function SettingsView() {
 
           {/* MCP Tools */}
           <section className="space-y-3">
-            <h3 className="text-lg font-semibold">MCP Tools</h3>
+            <h3 className="text-lg font-semibold">{t('settings.mcp.title')}</h3>
 
             {/* Web Search */}
             <div className="flex items-center justify-between py-3 border-b">
@@ -565,10 +565,10 @@ export function SettingsView() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResetDialogOpen(false)}>
-              {t('settings.cancel')}
+              {t('common.cancel')}
             </Button>
             <Button variant="destructive" onClick={handleReset}>
-              {t('settings.confirm')}
+              {t('common.confirm')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -583,10 +583,10 @@ export function SettingsView() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setImportDialogOpen(false)}>
-              {t('settings.cancel')}
+              {t('common.cancel')}
             </Button>
             <Button onClick={handleImport}>
-              {t('settings.confirm')}
+              {t('common.confirm')}
             </Button>
           </DialogFooter>
         </DialogContent>

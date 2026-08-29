@@ -27,6 +27,7 @@ const HEADER_PT = isWin ? 'pt-[calc(40px+1.2rem)]' : 'pt-[calc(28px+1.2rem)]';
 /** 窗口控制按钮（红绿灯风格） */
 function WindowControls() {
   const tauriWindow = getCurrentWindow();
+  const t = useT();
 
   if (!tauriWindow) return null;
 
@@ -37,7 +38,7 @@ function WindowControls() {
         type="button"
         onClick={() => tauriWindow.close()}
         className="group w-3 h-3 rounded-full bg-red-500/80 hover:bg-red-600 flex items-center justify-center transition-colors"
-        title="Close"
+        title={t('common.close')}
       >
         <X className="w-2.5 h-2.5 text-white/0 group-hover:text-white transition-opacity" />
       </button>
@@ -47,7 +48,7 @@ function WindowControls() {
         type="button"
         onClick={() => tauriWindow.minimize()}
         className="group w-3 h-3 rounded-full bg-yellow-500/80 hover:bg-yellow-600 flex items-center justify-center transition-colors"
-        title="Minimize"
+        title={t('common.minimize')}
       >
         <Minus className="w-2.5 h-2.5 text-white/0 group-hover:text-white transition-opacity" />
       </button>
@@ -65,7 +66,7 @@ function WindowControls() {
           });
         }}
         className="group w-3 h-3 rounded-full bg-green-500/80 hover:bg-green-600 flex items-center justify-center transition-colors"
-        title="Maximize"
+        title={t('common.maximize')}
       >
         <Square className="w-2 h-2 text-white/0 group-hover:text-white transition-opacity" />
       </button>

@@ -25,11 +25,11 @@ interface PluginRegisterPayload {
   key_count?: number;
 }
 
-/** 与 ProviderFormView 的 KIND_OPTIONS 标签保持一致 */
-const KIND_LABELS: Record<string, string> = {
-  messages: 'Anthropic (Messages)',
-  chat_completions: 'OpenAI (Chat Completions)',
-  responses: 'OpenAI (Responses)',
+/** 与 ProviderFormView 的 KIND_OPTIONS 标签保持一致（复用 providerForm.kind.* 键） */
+const KIND_LABEL_KEYS: Record<string, string> = {
+  messages: 'providerForm.kind.messages',
+  chat_completions: 'providerForm.kind.chat_completions',
+  responses: 'providerForm.kind.responses',
 };
 
 export function PluginRegisterDialog() {
@@ -75,7 +75,10 @@ export function PluginRegisterDialog() {
   };
 
   const detailParts: string[] = [];
-  if (info?.kind) detailParts.push(t('plugin.dialog.kind', { kind: KIND_LABELS[info.kind] ?? info.kind }));
+  if (info?.kind) {
+    const kindKey = KIND_LABEL_KEYS[info.kind];
+    detailParts.push(t('plugin.dialog.kind', { kind: kindKey ? t(kindKey) : info.kind }));
+  }
   if (info?.base_url) detailParts.push(t('plugin.dialog.base_url', { url: info.base_url }));
   if (info?.models && info.models.length > 0) detailParts.push(t('plugin.dialog.models', { count: info.models.length }));
   if (typeof info?.key_count === 'number' && info.key_count > 0) {

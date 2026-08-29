@@ -27,11 +27,13 @@ const STATUS_COLORS: Record<string, string> = {
   error: 'bg-red-500',
 };
 
-function backendLabel(backend: string) {
-  const labels: Record<string, string> = {
-    auto: 'Auto', cpu: 'CPU', cuda: 'CUDA', vulkan: 'Vulkan', rocm: 'ROCm', metal: 'Metal',
+function backendLabel(backend: string, t: (key: string) => string) {
+  const labelKeys: Record<string, string> = {
+    auto: 'local.backend.auto', cpu: 'local.backend.cpu', cuda: 'local.backend.cuda',
+    vulkan: 'local.backend.vulkan', rocm: 'local.backend.rocm', metal: 'local.backend.metal',
   };
-  return labels[backend] || backend;
+  const key = labelKeys[backend];
+  return key ? t(key) : backend;
 }
 
 function formatSize(bytes: number | null): string {
@@ -42,12 +44,12 @@ function formatSize(bytes: number | null): string {
 }
 
 const BACKEND_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'metal', label: 'Metal' },
-  { value: 'cuda', label: 'CUDA' },
-  { value: 'vulkan', label: 'Vulkan' },
-  { value: 'rocm', label: 'ROCm' },
-  { value: 'cpu', label: 'CPU' },
+  { value: 'auto', labelKey: 'local.backend.auto' },
+  { value: 'metal', labelKey: 'local.backend.metal' },
+  { value: 'cuda', labelKey: 'local.backend.cuda' },
+  { value: 'vulkan', labelKey: 'local.backend.vulkan' },
+  { value: 'rocm', labelKey: 'local.backend.rocm' },
+  { value: 'cpu', labelKey: 'local.backend.cpu' },
 ];
 
 function ModelCard({ model }: { model: LocalModel }) {
@@ -173,7 +175,7 @@ function ModelCard({ model }: { model: LocalModel }) {
       )}
 
       <div className="text-xs text-muted-foreground">
-        {formatSize(model.file_size)}, {backendLabel(model.backend)}, {Math.round(model.ctx_size / 1024)}k, {model.n_gpu_layers} layers
+        {formatSize(model.file_size)}, {backendLabel(model.backend, t)}, {Math.round(model.ctx_size / 1024)}k, {model.n_gpu_layers} layers
       </div>
 
       {/* Edit Dialog */}
@@ -196,7 +198,7 @@ function ModelCard({ model }: { model: LocalModel }) {
                 onChange={(e) => setBackend(e.target.value)}
               >
                 {BACKEND_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
                 ))}
               </select>
             </div>
@@ -379,7 +381,7 @@ export function LocalModelsView() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('local.add')}</DialogTitle>
-            <DialogDescription>{t('local.add_dialog_desc')}</DialogDescription>
+            <DialogDescription>{t('local.import_desc')}</DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-3 py-2">
             <button
@@ -425,7 +427,7 @@ export function LocalModelsView() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('local.model_id_label')}</label>
-              <Input value={importModelId} onChange={(e) => setImportModelId(e.target.value)} placeholder="my-local-model" />
+              <Input value={importModelId} onChange={(e) => setImportModelId(e.target.value)} placeholder={t('local.model_id_placeholder')} />
               <p className="text-xs text-muted-foreground">{t('local.model_id_hint')}</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
