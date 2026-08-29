@@ -13,6 +13,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    watch: {
+      // Rust 编译产物（.pdb 等）会被 rustc 独占锁定，Vite 的 FSWatcher 尝试 watch 时触发 EBUSY。
+      // target/ 与前端无关，直接排除喵～
+      ignored: ['**/src-tauri/target/**'],
+    },
     proxy: {
       '/api': 'http://127.0.0.1:19068',
       '/v1': 'http://127.0.0.1:19068',

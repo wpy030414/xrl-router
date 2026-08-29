@@ -15,7 +15,7 @@ xrl-router 是一个 **Tauri 2 桌面应用**，内部跑着一个 Rust axum HTT
 │  │ KeysView          │────────────────▶│ /api/stats,settings,plugins  │ │
 │  │ StatsView         │                  │ /health  /api/install/local-ip│ │
 │  │ SettingsView      │  WebSocket       │ /ws (实时推送)               │ │
-│  │ ClaudeFmView      │═════════════════▶│ /ws/plugin (插件注册)        │ │
+│  │ FmView            │═════════════════▶│ /ws/plugin (插件注册)        │ │
 │  │                   │                  │ /mcp (MCP 工具服务器)        │ │
 │  └───────────────────┘                  └──────────────────────────────┘ │
 │                                        (同一进程, 单 listener :19068)   │
@@ -202,7 +202,7 @@ src/
 ├── hooks/             自定义 hooks (useTheme, useWebSocket, useFm)
 │
 ├── views/
-│    ClaudeFmView.tsx      Claude FM 视图（右键菜单：设置为桌面背景）
+│    FmView.tsx            Claude FM 视图（右键菜单：设置为桌面背景）
 │    ProvidersView.tsx     供应商列表（拖拽排序）
 │    ProviderFormView.tsx  供应商创建/编辑（支持插件供应商编辑）
 │    KeysView.tsx          Service Key 管理（创建时设置模型白名单）

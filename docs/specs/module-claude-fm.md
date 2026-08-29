@@ -11,7 +11,7 @@
 
 ```
 控制源                        Rust（lib.rs setup）                     播放线程 (std::thread)
-┌─ ClaudeFmView（前端） ─┐     souvlaki MediaControls                FmEngine::engine_loop
+┌─ FmView（前端） ─┐     souvlaki MediaControls                FmEngine::engine_loop
 ├─ 托盘菜单勾选项        ─┼─▶  （主线程创建，回调经                  ├─ mpsc 收控制消息
 └─ 系统媒体键（souvlaki）─┘     control_tx_clone 转发）              ├─ rodio OutputStream + Sink
                                                                      ├─ 墙钟种子定位 + 双缓冲预加载
@@ -57,7 +57,7 @@ Now Playing 元数据与进度。
 | `fm-meta` | 引擎启动 + 每次切歌 | `{artist, title, index}` |
 | `fm-state-changed` | 播放/暂停切换 | `bool` |
 
-主窗口 `ClaudeFmView` 与壁纸窗口 `WallpaperScene` 共用同一套事件接线。
+主窗口 `FmView` 与壁纸窗口 `WallpaperScene` 共用同一套事件接线。
 
 ## 场景时钟（`scene_t`，引擎权威）
 
@@ -95,7 +95,7 @@ Now Playing 元数据与进度。
 ## 实现位置
 
 - Rust：`src-tauri/src/api/handlers/fm.rs`（引擎）+ `lib.rs`（command / souvlaki / 托盘）
-- 前端：`src/views/ClaudeFmView.tsx`、`src/hooks/useFm.ts`、
+- 前端：`src/views/FmView.tsx`、`src/hooks/useFm.ts`、
   `src/components/PixelScene.tsx`（像素画布，`sampleT` 采样 `fm_scene_t`）
 
 ## 测试要求

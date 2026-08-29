@@ -9,7 +9,7 @@
 ## 架构
 
 ```
-┌─ 主窗口 "main"(ClaudeFmView) ──┐   ┌─ 壁纸引擎（双平台透明 WebView）──────────┐
+┌─ 主窗口 "main"(FmView) ──┐   ┌─ 壁纸引擎（双平台透明 WebView）──────────┐
 │ PixelScene(seed,playing,sampleT)│   │ Win: transparent WebView + 自实现 WorkerW  │
 │ ContextMenu: 设置为/取消桌面背景 │   │      挂载（SetParent + Z 序锚定）           │
 └──────────────┬──────────────────┘   │ mac: WebviewWindow kCGDesktopIconWindow…   │
@@ -119,7 +119,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 - `src/components/WallpaperScene.tsx` — 壁纸窗口渲染入口（macOS；无按钮/歌曲信息）
 - `src/hooks/useFm.ts` — FM 事件接线（主窗口/壁纸窗口共用）
 - `src/components/PixelScene.tsx` — `sampleT` 引擎时钟采样
-- `src/views/ClaudeFmView.tsx` — 右键 ContextMenu（设置为桌面背景）
+- `src/views/FmView.tsx` — 右键 ContextMenu（设置为桌面背景）
 - `src/components/ui/context-menu.tsx` — Radix 右键菜单组件
 - `src-tauri/capabilities/default.json` — windows 数组含 `"wallpaper"`（macOS）
 - `src-tauri/Cargo.toml` — target 依赖（windows 0.61 Gdi/LibraryLoader / objc2 0.6）

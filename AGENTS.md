@@ -169,7 +169,7 @@ src/
 ├── stores/                    Zustand stores（providers, keys, models, settings, combos, ui）
 ├── views/                     11 个页面视图（.tsx）
 │    ├─ ProvidersView / ProviderFormView / KeysView / StatsView
-│    ├─ SettingsView / InstallView / ClaudeFmView
+│    ├─ SettingsView / InstallView / FmView
 │    ├─ CombosView / ComboFormView
 │    └─ LocalModelsView / HfBrowseView
 ├── components/                AppShell / ConnectionStatus / PluginRegisterDialog / PixelScene / WallpaperScene + ui/（shadcn/ui 组件）
@@ -194,7 +194,7 @@ docs/
 | 修改代理逻辑 | `api/proxy/stream.rs` + `handler.rs` + `ir/` |
 | 修改密钥池 | `keys/pool/mod.rs` 注释的锁序规则 |
 | 修改前端 | `src/main.tsx` + `src/index.css` |
-| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/ClaudeFmView.tsx` + `src/hooks/useFm.ts` + `docs/specs/module-claude-fm.md` |
+| 修改 Claude FM | `api/handlers/fm.rs` + `src/views/FmView.tsx` + `src/hooks/useFm.ts` + `docs/specs/module-claude-fm.md` |
 | 修改协议转换 | `api/proxy/ir/types.rs` + `from_*.rs` + `to_*.rs` |
 | 修改桌面壁纸 | `wallpaper/mod.rs` + `wallpaper/win.rs` / `wallpaper/macos.rs` + `src/components/WallpaperScene.tsx` |
 | 修改本地模型 | `src-tauri/src/local/{mod,engine,backend,hf}.rs` + `api/handlers/local.rs` + `docs/specs/module-local-models.md` |
