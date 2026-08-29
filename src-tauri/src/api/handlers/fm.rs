@@ -144,16 +144,6 @@ impl FmEngine {
         let _ = self.control_tx.send(FmControl::Toggle);
     }
 
-    /// 播放。
-    pub fn play(&self) {
-        let _ = self.control_tx.send(FmControl::Play);
-    }
-
-    /// 暂停。
-    pub fn pause(&self) {
-        let _ = self.control_tx.send(FmControl::Pause);
-    }
-
     /// 返回播放控制消息发送端的 clone（供 souvlaki 回调使用）。
     pub fn control_tx_clone(&self) -> std::sync::mpsc::Sender<FmControl> {
         (*self.control_tx).clone()

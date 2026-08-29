@@ -514,7 +514,7 @@ pub fn run() {
             // 但 Tauri 默认不处理；必须手动 show + set_focus。
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
-                if let Some(w) = app_handle.get_webview_window("main") {
+                if let Some(w) = _app_handle.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
