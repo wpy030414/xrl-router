@@ -509,7 +509,12 @@ mod tests {
             host: "127.0.0.1".to_string(),
             ..Default::default()
         };
-        let state = Arc::new(AppState::new(config, db.clone(), master_key));
+        let state = Arc::new(AppState::new(
+            config,
+            db.clone(),
+            master_key,
+            &std::env::temp_dir(),
+        ));
         let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -545,14 +550,15 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("hello from B"), "响应应来自备选 provider B: {}", text);
 
-        // 开关关：主 provider A 的 500 → SSE error event（HTTP 200 表达，状态码无法中途改写）
+        // 开关关：主 provider A 的 500 → 非流式路径以真实状态码 + JSON 错误体透传
+        // （非流式客户端没有 SSE 通道，错误用真实 HTTP 状态码表达）
         db.set_setting("failover_enabled", "false").unwrap();
         state.failover_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
         state.provider_cooldowns.write().unwrap().clear();
         let resp = send().send().await.unwrap();
-        assert_eq!(resp.status(), 200, "failover 关闭时 5xx 以 SSE error event 表达（HTTP 200）");
+        assert_eq!(resp.status(), 500, "failover 关闭时上游 5xx 以真实状态码透传（非流式路径）");
         let text = resp.text().await.unwrap();
-        assert!(text.contains("error"), "应包含 error event: {}", text);
+        assert!(text.contains("boom from A"), "错误体应含上游错误信息: {}", text);
     }
 
     /// 组合别名（combo）E2E：全局 failover **关闭**（默认）时组合仍强制成员间回退；
@@ -708,7 +714,12 @@ mod tests {
             host: "127.0.0.1".to_string(),
             ..Default::default()
         };
-        let state = Arc::new(AppState::new(config, db.clone(), master_key));
+        let state = Arc::new(AppState::new(
+            config,
+            db.clone(),
+            master_key,
+            &std::env::temp_dir(),
+        ));
         assert!(!state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed));
         let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -751,7 +762,7 @@ mod tests {
 
         // 3. 组合 + 普通 400（请求级）：立即透传，不换成员
         let resp = send("c-400").send().await.unwrap();
-        assert_eq!(resp.status(), 200, "400 错误体以 SSE error event 表达（HTTP 200）");
+        assert_eq!(resp.status(), 400, "普通 400 以真实状态码透传（非流式路径）");
         let text = resp.text().await.unwrap();
         assert!(text.contains("bad request from C"), "应透传 400 错误体: {}", text);
         assert!(!text.contains("hello from B"), "普通 400 不得换成员: {}", text);

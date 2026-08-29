@@ -55,6 +55,7 @@ mod tests {
             crate::config::Config::default(),
             db,
             [7u8; 32],
+            &std::env::temp_dir(),
         ))
     }
 

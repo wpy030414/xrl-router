@@ -117,7 +117,7 @@ handler.rs (薄入口) → authenticate_and_stream() → stream.rs::proxy_stream
 
 `failover_enabled` 开关（设置页「路由」Tab，默认关闭）开启时，同一 `display_name` 下的全部 Provider 候选按序尝试：
 
-- **候选来源**：`route.rs::resolve_route_candidates()`——同 display_name 全部 models JOIN providers 行，按 `sort_order ASC, created_at ASC` 排序、按 provider_id 去重、跳过插件离线的委托 provider；关闭时仅主 provider（`resolve_route`，行为与单 Provider 一致）
+- **候选来源**：`route.rs::resolve_route_candidates()`——同 display_name 全部 models JOIN providers 行，**本地模型优先**（`tier='local'` 排前，其后按 `sort_order ASC, created_at ASC` 排序）、按 provider_id 去重、跳过插件离线的委托 provider；关闭时仅主 provider（`resolve_route`，行为与单 Provider 一致）
 - **双层循环**：外层 provider 候选（冷却中直接跳过），内层 key 轮换；key 级 4xx 先耗尽当前 provider 的 key 才切 provider
 - **冷却**：`failover.rs` 纯内存冷却表，provider 级失败（5xx/网络错误/响应头超时）标记 60s 冷却，2xx 成功立即清除
 - **请求体**：IR 渲染为上游格式在循环外预构建，循环内按候选类型覆写 `model`（候选可混合协议类型）

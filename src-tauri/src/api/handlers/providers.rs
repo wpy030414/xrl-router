@@ -12,7 +12,14 @@ use crate::gateway::server::AppState;
 use crate::types::{Provider, ProviderKind};
 
 pub(crate) async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let providers = state.providers.list_all();
+    // 云智能列表剔除本地引擎注册的 local-* provider（私有智能独立管理页维护）
+    // 注意：/api/models 和 /api/keys 不过滤，因为组合成员选择器和密钥白名单弹窗需要看到私有模型
+    let providers: Vec<Provider> = state
+        .providers
+        .list_all()
+        .into_iter()
+        .filter(|p| !p.id.starts_with("local-"))
+        .collect();
     Json(providers)
 }
 

@@ -40,6 +40,8 @@ pub(super) async fn resolve_route(state: &AppState, model_name: &str) -> Option<
 
     // Find model by display_name (alias) ONLY — calling with the real model_id
     // is rejected; clients must use the alias.
+    // 优先级：本地模型（tier='local'）恒优先于云端，其后按 sort_order ASC、created_at ASC。
+    // 完整优先级 组合 > 私有 > 云 由调用层组合保证（resolve_candidates 先查组合）。
     let mut stmt = conn
         .prepare(
             "SELECT m.id, m.model_id, m.provider_id, p.name, p.base_url, p.api_path, p.kind, p.config_json, m.context_window
@@ -48,7 +50,8 @@ pub(super) async fn resolve_route(state: &AppState, model_name: &str) -> Option<
              WHERE m.display_name = ?1
                AND m.enabled = 1
                AND p.enabled = 1
-             ORDER BY p.sort_order ASC, p.created_at ASC
+             ORDER BY CASE WHEN m.tier = 'local' THEN 0 ELSE 1 END,
+                      p.sort_order ASC, p.created_at ASC
              LIMIT 1",
         )
         .ok()?;
@@ -114,7 +117,7 @@ pub(super) async fn resolve_route(state: &AppState, model_name: &str) -> Option<
     })
 }
 
-/// 返回该 display_name 下全部可用候选（按 sort_order ASC, created_at ASC）。
+/// 返回该 display_name 下全部可用候选（本地模型优先，其后按 sort_order ASC, created_at ASC）。
 /// 故障转移（failover）用：主 provider 失败后按序尝试下一个。
 /// 跳过插件离线的委托 provider（与 resolve_route 的 None 语义一致，但继续下一行），
 /// 按 provider_id 去重（UNIQUE(provider_id, model_id) 允许同 provider 多行同别名）。
@@ -133,7 +136,8 @@ pub(super) async fn resolve_route_candidates(
              WHERE m.display_name = ?1
                AND m.enabled = 1
                AND p.enabled = 1
-             ORDER BY p.sort_order ASC, p.created_at ASC",
+             ORDER BY CASE WHEN m.tier = 'local' THEN 0 ELSE 1 END,
+                      p.sort_order ASC, p.created_at ASC",
         )
         .ok()?;
 
@@ -281,6 +285,7 @@ mod tests {
             crate::config::Config::default(),
             db,
             [7u8; 32],
+            &std::env::temp_dir(),
         ))
     }
 
@@ -301,12 +306,22 @@ mod tests {
     }
 
     fn add_model(db: &Database, id: &str, provider_id: &str, display_name: &str) {
+        add_model_with_tier(db, id, provider_id, display_name, "custom")
+    }
+
+    fn add_model_with_tier(
+        db: &Database,
+        id: &str,
+        provider_id: &str,
+        display_name: &str,
+        tier: &str,
+    ) {
         db.save_model(&Model {
             id: id.to_string(),
             provider_id: provider_id.to_string(),
             model_id: format!("real-{}", id),
             display_name: display_name.to_string(),
-            tier: "custom".to_string(),
+            tier: tier.to_string(),
             context_window: 128000,
             max_output_tokens: 4096,
             capabilities: "[\"text\"]".to_string(),
@@ -498,5 +513,59 @@ mod tests {
         let cands = resolve_combo(&state, "combo-x").await.unwrap();
         let order: Vec<&str> = cands.iter().map(|c| c.provider_id.as_str()).collect();
         assert_eq!(order, vec!["p2", "p1"], "成员内候选继承 sort_order 排序");
+    }
+
+    /// 本地模型优先于云模型（即使云模型 sort_order 更小）
+    #[tokio::test]
+    async fn test_local_priority_over_cloud() {
+        let state = test_state();
+        add_provider(&state.database, "cloud-p1", 0, serde_json::json!({}));
+        add_model(&state.database, "cloud-m1", "cloud-p1", "shared-model");
+        add_provider(&state.database, "local-lm1", 99, serde_json::json!({}));
+        add_model_with_tier(&state.database, "local-m1", "local-lm1", "shared-model", "local");
+
+        // resolve_route 应返回本地模型
+        let r = resolve_route(&state, "shared-model").await.unwrap();
+        assert_eq!(r.provider_id, "local-lm1", "本地模型应优先于云模型");
+
+        // resolve_route_candidates 应按 [本地, 云] 顺序
+        let candidates = resolve_route_candidates(&state, "shared-model").await.unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].provider_id, "local-lm1", "第一个候选应是本地模型");
+        assert_eq!(candidates[1].provider_id, "cloud-p1", "第二个候选应是云模型");
+    }
+
+    /// 多个本地模型按 sort_order 排序
+    #[tokio::test]
+    async fn test_multiple_local_models_sorted() {
+        let state = test_state();
+        add_provider(&state.database, "local-lm2", 50, serde_json::json!({}));
+        add_model_with_tier(&state.database, "local-m2", "local-lm2", "model-x", "local");
+        add_provider(&state.database, "local-lm1", 10, serde_json::json!({}));
+        add_model_with_tier(&state.database, "local-m1", "local-lm1", "model-x", "local");
+        add_provider(&state.database, "cloud-p1", 0, serde_json::json!({}));
+        add_model(&state.database, "cloud-m1", "cloud-p1", "model-x");
+
+        let candidates = resolve_route_candidates(&state, "model-x").await.unwrap();
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].provider_id, "local-lm1", "sort_order=10 的本地模型应排第一");
+        assert_eq!(candidates[1].provider_id, "local-lm2", "sort_order=50 的本地模型应排第二");
+        assert_eq!(candidates[2].provider_id, "cloud-p1", "云模型应排最后");
+    }
+
+    /// 组合成员包含本地和云模型时，本地优先
+    #[tokio::test]
+    async fn test_combo_with_local_and_cloud_members() {
+        let state = test_state();
+        add_provider(&state.database, "cloud-p1", 0, serde_json::json!({}));
+        add_model(&state.database, "cloud-m1", "cloud-p1", "cloud-model");
+        add_provider(&state.database, "local-lm1", 99, serde_json::json!({}));
+        add_model_with_tier(&state.database, "local-m1", "local-lm1", "local-model", "local");
+        add_combo(&state.database, "c1", "my-combo", true, &["local-model", "cloud-model"]);
+
+        let cands = resolve_combo(&state, "my-combo").await.unwrap();
+        assert_eq!(cands.len(), 2);
+        assert_eq!(cands[0].provider_id, "local-lm1", "组合中本地成员应优先");
+        assert_eq!(cands[1].provider_id, "cloud-p1", "组合中云成员应排后");
     }
 }
