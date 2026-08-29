@@ -1,4 +1,4 @@
-# sdk-test — IR SDK 合规性验证
+# sdk_test — IR SDK 合规性验证
 
 用官方 SDK（openai / anthropic）验证 IR 层转换的 3×3 通道（三种客户端格式 ×
 三种上游格式）输入输出合规：
@@ -14,18 +14,18 @@
 cargo test --lib sdk_fixtures
 
 # 2. 用官方 SDK 校验（venv 已在 src-tauri/src/sdk-test/.venv）
-src-tauri/src/sdk-test/.venv/bin/python src-tauri/src/sdk-test/ir_sdk_verify.py
+src-tauri/src/sdk_test/.venv/bin/python src-tauri/src/sdk_test/ir_sdk_verify.py
 ```
 
 ## 工作原理
 
-- `src-tauri/src/sdk-test/fixtures.rs`（仅 test 构建，lib.rs 挂载）直接调用真实
+- `src-tauri/src/sdk_test/fixtures.rs`（仅 test 构建，lib.rs 挂载）直接调用真实
   `crate::api::proxy::ir::` 转换函数，把输入/输出导出为
   `src-tauri/target/ir_fixtures/*.json`——不含任何转换逻辑复制。
-- `src-tauri/src/sdk-test/ir_sdk_verify.py` 用官方 SDK + `httpx.MockTransport`
+- `src-tauri/src/sdk_test/ir_sdk_verify.py` 用官方 SDK + `httpx.MockTransport`
   双向验证：请求体经 SDK 客户端路径发出并比对字段保真；SSE 帧经 SDK 流解析器
   消费并断言最终结构化结果（文本拼接、工具参数、usage）。
-- SDK 依赖装在 `src-tauri/src/sdk-test/.venv`（不入库，见 .gitignore），
+- SDK 依赖装在 `src-tauri/src/sdk_test/.venv`（不入库，见 .gitignore），
   用 `python3 -m venv .venv && .venv/bin/pip install openai anthropic httpx` 初始化。
 
 > 语义参考：官方 SDK 的类型定义即规范事实（`openai/types/**`、`anthropic/types/**`）。

@@ -33,7 +33,7 @@ mod system;
 // SDK 合规验证（fixtures 导出 + Python 官方 SDK 校验脚本）。
 // 本目录仅 test 构建；正式构建不编译任何测试代码。
 #[cfg(test)]
-#[path = "sdk-test/fixtures.rs"]
+#[path = "sdk_test/fixtures.rs"]
 mod sdk_fixtures;
 
 use gateway::server::AppState;

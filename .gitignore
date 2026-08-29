@@ -49,4 +49,4 @@ Thumbs.db
 # SDK 合规性验证（python venv，不入库）
 # =========================
 scripts/sdk_venv/
-src-tauri/src/sdk-test/.venv/
+src-tauri/src/sdk_test/.venv/

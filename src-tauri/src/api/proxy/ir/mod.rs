@@ -17,4 +17,4 @@ pub mod to_chat_completions;
 pub mod to_responses;
 pub mod usage;
 
-// SDK 合规验证已移至 crate 根 src/sdk-test/（见 lib.rs 的 #[cfg(test)] 挂载）
+// SDK 合规验证已移至 crate 根 src/sdk_test/（见 lib.rs 的 #[cfg(test)] 挂载）
