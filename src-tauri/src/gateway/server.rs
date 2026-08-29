@@ -34,6 +34,10 @@ pub struct AppState {
     pub mcp_notify: Arc<std::sync::atomic::AtomicBool>,
     /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个（运行时可改）。
     pub failover_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// 用户对话审查开关：开启 = 代理请求时捕获消息内容并存储到 conversations 表。
+    pub audit_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// 会话注入：非空时，内容会被前置到所有代理请求的系统提示词中。
+    pub session_inject: Arc<std::sync::RwLock<String>>,
     /// provider 级冷却表：provider_id → 冷却到期 unix 秒（纯内存，设计选择同密钥健康）。
     pub provider_cooldowns: Arc<std::sync::RwLock<std::collections::HashMap<String, i64>>>,
     /// Plugin manager: tracks connected plugins and their delegated providers.
@@ -95,6 +99,21 @@ impl AppState {
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ));
+        let audit_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
+            database
+                .get_setting("audit_enabled")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false),
+        ));
+        let session_inject = Arc::new(std::sync::RwLock::new(
+            database
+                .get_setting("session_inject")
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ));
         let provider_cooldowns = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
 
         let plugins = PluginManager::new(database.clone(), providers.providers_map());
@@ -133,6 +152,8 @@ impl AppState {
             mcp_webfetch,
             mcp_notify,
             failover_enabled,
+            audit_enabled,
+            session_inject,
             provider_cooldowns,
             plugins,
             http_client,

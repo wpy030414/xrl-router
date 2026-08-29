@@ -280,6 +280,8 @@ export interface AppSettings {
   mcp_webfetch: boolean;
   mcp_notify: boolean;
   failover_enabled: boolean;
+  audit_enabled: boolean;
+  session_inject: string;
   theme: string;
   hue: number;
   locale: string;
@@ -287,7 +289,7 @@ export interface AppSettings {
 
 export const settingsApi = {
   get: () => request<AppSettings>('/api/settings'),
-  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; failover_enabled?: boolean; theme?: string; hue?: number; locale?: string }) =>
+  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; failover_enabled?: boolean; audit_enabled?: boolean; session_inject?: string; theme?: string; hue?: number; locale?: string }) =>
     request<{ status: string }>('/api/settings', { method: 'PUT', body: data }),
 };
 
@@ -307,6 +309,34 @@ export const dataApi = {
   export: () => request<string>('/api/data/export'),
   import: (sql: string) => request<{ status: string }>('/api/data/import', { method: 'POST', body: { sql } }),
   reset: () => request<{ status: string }>('/api/data/reset', { method: 'POST' }),
+};
+
+// --- Audit (conversation review) ---
+export interface ConversationListItem {
+  id: number;
+  fingerprint: string;
+  service_key_id: string;
+  service_key_name: string;
+  message_count: number;
+  request_count: number;
+  first_user_message: string;
+  last_message: string;
+  last_message_raw: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ConversationDetail extends ConversationListItem {
+  messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }>;
+}
+
+export const auditApi = {
+  list: (params: { page?: number; page_size?: number; service_key_id?: string }) =>
+    request<{ total: number; page: number; page_size: number; data: ConversationListItem[] }>(
+      `/api/audit?page=${params.page ?? 1}&page_size=${params.page_size ?? 20}` +
+        (params.service_key_id ? `&service_key_id=${encodeURIComponent(params.service_key_id)}` : '')),
+  get: (id: number) => request<ConversationDetail>(`/api/audit/${id}`),
+  delete: (id: number) => request<{ status: string }>(`/api/audit/${id}`, { method: 'DELETE' }),
 };
 
 // --- Install（局域网分发）---

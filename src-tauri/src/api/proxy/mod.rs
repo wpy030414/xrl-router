@@ -6,6 +6,7 @@
 //! 代理仅在 `mcp_websearch` 开启时剔除请求自带的搜索类工具。
 
 pub mod auth;
+pub mod audit;
 pub mod failover;
 pub mod forward;
 pub mod handler;

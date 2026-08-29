@@ -48,6 +48,7 @@ base64 = "0.22"
 rand = "0.8"
 aes-gcm = "0.10"
 argon2 = "0.5"
+sha2 = "0.10"
 
 # Utilities
 thiserror = "1"

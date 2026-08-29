@@ -13,6 +13,7 @@ const CombosView = lazy(() => import('./views/CombosView'));
 const ComboFormView = lazy(() => import('./views/ComboFormView'));
 const LocalModelsView = lazy(() => import('./views/LocalModelsView'));
 const HfBrowseView = lazy(() => import('./views/HfBrowseView'));
+const AuditView = lazy(() => import('./views/AuditView'));
 
 /** 路由级懒加载：本地资源加载极快，无需额外 loading UI */
 function page(element: ReactNode) {
@@ -35,6 +36,7 @@ export const router = createBrowserRouter([
       { path: 'combos/:id/edit', element: page(<ComboFormView />) },
       { path: 'keys', element: page(<ServiceKeysView />) },
       { path: 'stats', element: page(<StatsView />) },
+      { path: 'audit', element: page(<AuditView />) },
       { path: 'settings', element: page(<SettingsView />) },
       { path: 'fm', element: page(<FmView />) },
     ],

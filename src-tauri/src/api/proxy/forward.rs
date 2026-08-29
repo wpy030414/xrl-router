@@ -18,6 +18,7 @@ use crate::gateway::server::AppState;
 
 use super::auth::ServiceKeyInfo;
 use super::ir;
+use super::ir::types::{IrContentDelta, IrStreamEvent};
 use super::route::ResolvedRoute;
 use super::stream::{send_error_event, ClientFormat};
 use super::UPSTREAM_CHUNK_TIMEOUT_SECS;
@@ -60,6 +61,7 @@ pub(super) async fn forward_stream_ir(
     provider_kind: &str,
     client_format: ClientFormat,
     est_input: u64,
+    audit: Option<&super::stream::AuditCapture>,
 ) -> ForwardOutcome {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -89,6 +91,9 @@ pub(super) async fn forward_stream_ir(
     responses_parse.usage.input_tokens = est_input;
 
     let mut saw_done = false;
+
+    // 对话审查：累积助手回复文本（流式 delta 拼接）
+    let mut audit_response_text = String::new();
 
     'outer: loop {
         let chunk = match tokio::time::timeout(
@@ -179,6 +184,15 @@ pub(super) async fn forward_stream_ir(
                         ir::from_chat_completions::chat_completions_chunk_to_ir(&chunk_json, &mut chat_parse)
                     }
                 };
+
+                // 1.5 累积助手回复文本（用于对话审查）
+                if audit.is_some() {
+                    for ev in &ir_events {
+                        if let IrStreamEvent::ContentBlockDelta { delta: IrContentDelta::TextDelta(text), .. } = ev {
+                            audit_response_text.push_str(text);
+                        }
+                    }
+                }
 
                 // 2. 渲染 IR 事件 → 客户端 SSE 字节
                 for ev in &ir_events {
@@ -289,6 +303,31 @@ pub(super) async fn forward_stream_ir(
         None,
         cr,
     );
+
+    // 5. 对话审查：流结束后 upsert（请求消息 + 助手回复一起记录）
+    if let Some(ac) = audit {
+        if !audit_response_text.is_empty() {
+            let mut all_msgs = ac.request_messages.clone();
+            all_msgs.push(super::ir::types::IrMessage {
+                role: super::ir::types::IrRole::Assistant,
+                content: vec![super::ir::types::IrContentBlock::Text {
+                    text: audit_response_text.clone(),
+                    cache_control: None,
+                }],
+            });
+            let sanitized = super::audit::sanitize_messages(&all_msgs);
+            let fp = super::audit::compute_fingerprint(&ac.sk_id, &sanitized);
+            let json = serde_json::to_string(&sanitized).unwrap_or_default();
+            let first = super::audit::extract_first_user_message(&sanitized);
+            let last = super::audit::extract_last_message(&sanitized);
+            let last_raw = super::audit::extract_last_message_raw(&sanitized);
+            let now = chrono::Utc::now().timestamp();
+            let _ = ac.db.upsert_conversation(
+                &fp, &ac.sk_id, &ac.sk_name, &json,
+                sanitized.len() as i64, &first, &last, &last_raw, now,
+            );
+        }
+    }
 
     ForwardOutcome::Completed
 }

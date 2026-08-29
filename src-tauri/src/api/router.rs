@@ -168,6 +168,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/stats", get(handlers::get_stats))
         // 请求日志分页（时间逆序）
         .route("/api/stats/requests", get(handlers::get_stats_requests))
+        // 对话审查（audit_enabled 开启后记录）
+        .route("/api/audit", get(handlers::get_conversations))
+        .route("/api/audit/:id", get(handlers::get_conversation).delete(handlers::delete_conversation))
         // Service Key management (argon2 hashed)
         .route("/api/service-keys", get(handlers::list_service_keys).post(handlers::create_service_key))
         .route("/api/service-keys/:id", put(handlers::update_service_key).delete(handlers::delete_service_key))

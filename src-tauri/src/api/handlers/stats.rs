@@ -84,12 +84,15 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
     let theme = state.database.get_setting("theme").ok().flatten().unwrap_or_else(|| "system".to_string());
     let hue = state.database.get_setting("hue").ok().flatten().unwrap_or_else(|| "264".to_string());
     let locale = state.database.get_setting("locale").ok().flatten().unwrap_or_else(|| "zh-CN".to_string());
+    let session_inject = state.session_inject.read().unwrap().clone();
 
     Json(serde_json::json!({
         "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_webfetch": state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_notify": state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
         "failover_enabled": state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
+        "audit_enabled": state.audit_enabled.load(std::sync::atomic::Ordering::Relaxed),
+        "session_inject": session_inject,
         "theme": theme,
         "hue": hue.parse::<i32>().unwrap_or(264),
         "locale": locale,
@@ -102,6 +105,8 @@ pub(crate) struct UpdateSettingsRequest {
     mcp_webfetch: Option<bool>,
     mcp_notify: Option<bool>,
     failover_enabled: Option<bool>,
+    audit_enabled: Option<bool>,
+    session_inject: Option<String>,
     theme: Option<String>,
     hue: Option<i32>,
     locale: Option<String>,
@@ -145,6 +150,28 @@ pub(crate) async fn update_settings(
         state.failover_enabled.store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("failover_enabled", val) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ));
+        }
+    }
+    if let Some(v) = req.audit_enabled {
+        state.audit_enabled.store(v, std::sync::atomic::Ordering::Relaxed);
+        let val = if v { "true" } else { "false" };
+        if let Err(e) = state.database.set_setting("audit_enabled", val) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ));
+        }
+    }
+    if let Some(ref v) = req.session_inject {
+        {
+            let mut lock = state.session_inject.write().unwrap();
+            *lock = v.clone();
+        }
+        if let Err(e) = state.database.set_setting("session_inject", v) {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),

@@ -51,6 +51,7 @@ pub(super) async fn proxy_non_stream(
     let endpoint = ctx.endpoint;
     let service_key = ctx.service_key;
     let ir_request = ctx.ir_request;
+    let audit = ctx.audit;
 
     info!(trace_id = %trace_id, model = %model_name, "Non-stream proxy request");
 
@@ -305,6 +306,34 @@ pub(super) async fn proxy_non_stream(
                         None,
                         usage.cache_read_input_tokens as i64,
                     );
+                    // 对话审查：请求消息 + 助手回复一起记录
+                    if let Some(ref ac) = audit {
+                        let response_text: String = acc.blocks.iter().filter_map(|b| match b {
+                            AccBlock::Text(t) if !t.is_empty() => Some(t.as_str()),
+                            _ => None,
+                        }).collect::<Vec<_>>().join("");
+                        if !response_text.is_empty() {
+                            let mut all_msgs = ac.request_messages.clone();
+                            all_msgs.push(super::ir::types::IrMessage {
+                                role: super::ir::types::IrRole::Assistant,
+                                content: vec![super::ir::types::IrContentBlock::Text {
+                                    text: response_text,
+                                    cache_control: None,
+                                }],
+                            });
+                            let sanitized = super::audit::sanitize_messages(&all_msgs);
+                            let fp = super::audit::compute_fingerprint(&ac.sk_id, &sanitized);
+                            let json = serde_json::to_string(&sanitized).unwrap_or_default();
+                            let first = super::audit::extract_first_user_message(&sanitized);
+                            let last = super::audit::extract_last_message(&sanitized);
+                            let last_raw = super::audit::extract_last_message_raw(&sanitized);
+                            let now = chrono::Utc::now().timestamp();
+                            let _ = ac.db.upsert_conversation(
+                                &fp, &ac.sk_id, &ac.sk_name, &json,
+                                sanitized.len() as i64, &first, &last, &last_raw, now,
+                            );
+                        }
+                    }
                     return Ok(json_response(body));
                 }
                 Err(err) => {

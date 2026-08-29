@@ -59,6 +59,19 @@ pub struct StreamContext {
     /// 客户端原始 stream 偏好（true=流式，false=非流式）。
     /// 上游始终走流式，但客户端非流式时需要收集所有事件后返回 JSON。
     pub(super) client_wants_stream: bool,
+    /// 对话审查上下文（仅 audit_enabled 时存在）。
+    /// 由 handler 构建，forward/non_stream 消费：流式转发完成后，
+    /// 将请求消息 + 累积的助手回复一起 upsert 到 conversations 表。
+    pub(super) audit: Option<AuditCapture>,
+}
+
+/// 对话审查捕获上下文：handler 构建，forward/non_stream 消费。
+/// 在流式转发完成后，将请求消息 + 累积的助手回复一起 upsert 到 conversations 表。
+pub(super) struct AuditCapture {
+    pub(super) db: crate::db::Database,
+    pub(super) sk_id: String,
+    pub(super) sk_name: String,
+    pub(super) request_messages: Vec<super::ir::types::IrMessage>,
 }
 
 /// provider 级失败（5xx/网络错误/响应头超时）：failover 切换后若无任何
@@ -193,6 +206,7 @@ pub async fn proxy_stream(
     let service_key = ctx.service_key;
     let model_name_owned = ctx.model_name;
     let endpoint = ctx.endpoint;
+    let audit_capture = ctx.audit;
 
     tokio::spawn(async move {
         let trace_id = &trace_id_owned;
@@ -434,6 +448,7 @@ pub async fn proxy_stream(
                     &cand.provider_id, cand, model_name, &service_key,
                     &last_key_id, &last_key_name, &last_key_masked, endpoint,
                     &cand.provider_kind, client_format, est_input,
+                    audit_capture.as_ref(),
                 ).await;
                 match outcome {
                     // 流内密钥级错误（200 + SSE error event / 非 SSE JSON 错误体）：

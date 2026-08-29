@@ -354,4 +354,32 @@ CREATE INDEX IF NOT EXISTS idx_local_models_status ON local_models(status);
     r#"
 ALTER TABLE local_models ADD COLUMN thinking INTEGER NOT NULL DEFAULT 1;
 "#,
+    // V22: conversations — 对话审查存储。开启 audit_enabled 后，代理层对每个请求
+    // 的消息做指纹（SHA256 前 3 条消息）并 upsert 到此表。同一对话的多条请求归为
+    // 一行（fingerprint UNIQUE），request_count 递增，messages 更新为最新版本。
+    // Image base64 数据在存储前被剥离为 "[image]" 占位。
+    r#"
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    service_key_id TEXT NOT NULL DEFAULT '',
+    service_key_name TEXT NOT NULL DEFAULT '',
+    messages TEXT NOT NULL DEFAULT '[]',
+    message_count INTEGER NOT NULL DEFAULT 0,
+    request_count INTEGER NOT NULL DEFAULT 1,
+    first_user_message TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conv_sk ON conversations(service_key_id);
+CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
+"#,
+    // V23: conversations 添加 last_message / last_message_raw 列。
+    // 使用 IF NOT EXISTS 保证幂等——V22→V23 之间曾因 execute_batch 非事务，
+    // 第一条 ALTER 成功、第二条失败后 schema_version 未更新，导致重跑 V23
+    // 在已存在的列上撞 duplicate column，迁移链永久中断。
+    r#"
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message_raw TEXT NOT NULL DEFAULT '';
+"#,
 ];

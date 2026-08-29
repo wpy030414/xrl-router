@@ -1,6 +1,8 @@
+import { useMemo } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router';
-import { Radio, Cloud, Server, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X } from 'lucide-react';
+import { Radio, Cloud, Server, Combine, Key, BarChart3, Settings, PanelLeft, Minus, Square, X, Eye } from 'lucide-react';
 import { useT } from '@/i18n';
+import { useSettingsStore } from '@/stores/settings';
 import { ConnectionStatus } from './ConnectionStatus';
 import { PluginRegisterDialog } from './PluginRegisterDialog';
 import { SystemStatusBar } from './SystemStatusBar';
@@ -74,7 +76,7 @@ function WindowControls() {
   );
 }
 
-const navItems = [
+const baseNavItems = [
   { path: '/fm', labelKey: 'nav.fm', icon: Radio },
   { path: '/providers', labelKey: 'nav.providers', icon: Cloud },
   { path: '/local', labelKey: 'nav.local', icon: Server },
@@ -101,7 +103,18 @@ function CollapseButton() {
 export function AppShell() {
   const t = useT();
   const location = useLocation();
+  const { settings } = useSettingsStore();
   const isInstall = location.pathname === '/install';
+
+  // 条件渲染：audit_enabled 开启时在统计后面插入审查项
+  const navItems = useMemo(() => {
+    const items = [...baseNavItems];
+    if (settings?.audit_enabled) {
+      const settingsIdx = items.findIndex(i => i.path === '/settings');
+      items.splice(settingsIdx, 0, { path: '/audit', labelKey: 'nav.audit', icon: Eye });
+    }
+    return items;
+  }, [settings?.audit_enabled]);
 
   if (isInstall) {
     return <Outlet />;

@@ -6,6 +6,7 @@ export default {
   'nav.combos': '组合',
   'nav.keys': '密钥',
   'nav.stats': '统计',
+  'nav.audit': '审查',
   'nav.settings': '设置',
   'nav.collapse': '折叠',
 
@@ -96,10 +97,52 @@ export default {
 
   'settings.mcp.title': 'MCP 工具',
 
-  'settings.data.title': '用户数据',
+  'settings.data.title': '使用数据',
   'settings.data.desc': '将所有设置和数据导出为 SQL 备份文件，或从 SQL 文件导入恢复（导入会覆盖当前数据）',
   'settings.data.export.button': '导出',
   'settings.data.export.title': '导出数据',
+
+  // 对话审查开关
+  'settings.audit.title': '对话审查',
+  'settings.audit.desc': '开启后，经过网关的所有对话内容将被记录并可在「审查」页面中查看。关闭后不再记录新对话，已有记录保留。',
+  'settings.audit.on': '已开启',
+  'settings.audit.off': '已关闭',
+
+  // 会话注入
+  'settings.inject.title': '会话注入',
+  'settings.inject.desc': '此处文本会被注入到所有经过网关的请求的系统提示词中。留空表示不注入。',
+  'settings.inject.placeholder': '输入要注入到系统提示词中的内容…',
+  'settings.inject.saved': '已保存',
+
+  // 审查页面
+  'audit.title': '审查',
+  'audit.empty': '暂无对话记录',
+  'audit.messages': '{count} 条消息',
+  'audit.requests': '{count} 次请求',
+  'audit.col_key': '密钥',
+  'audit.col_preview': '对话预览',
+  'audit.col_messages': '消息数',
+  'audit.col_requests': '请求数',
+  'audit.col_time': '最近活动',
+  'audit.prev': '上一页',
+  'audit.next': '下一页',
+  'audit.page': '第 {current} / {total} 页',
+  'audit.detail_title': '对话详情',
+  'audit.role_user': '用户',
+  'audit.role_assistant': '助手',
+  'audit.thinking': '思考过程',
+  'audit.tool_use': '工具调用: {name}',
+  'audit.tool_result': '工具结果',
+  'audit.image_placeholder': '[图片]',
+  'audit.delete': '删除对话',
+  'audit.delete_confirm': '确定删除这条对话记录吗？',
+  'audit.actions': '操作',
+  'audit.open': '打开',
+  'audit.save_as': '另存为 TXT',
+  'audit.filter_all_keys': '全部',
+  'audit.page_of': '第 {current} 页 / 共 {total} 页',
+  'audit.mode_simple': '简约模式',
+  'audit.mode_raw': '原始模式',
 
   'settings.data.import.button': '导入',
   'settings.data.import.title': '导入数据',

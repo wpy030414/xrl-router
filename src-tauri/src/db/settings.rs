@@ -33,7 +33,7 @@ impl super::Database {
         sql.push_str("BEGIN TRANSACTION;\n\n");
 
         // combos 必须在 combo_members 前导出（FK 顺序）。
-        let tables = ["providers", "models", "api_keys", "service_keys", "plugins", "usage_log", "settings", "combos", "combo_members"];
+        let tables = ["providers", "models", "api_keys", "service_keys", "plugins", "usage_log", "settings", "combos", "combo_members", "conversations"];
         for table in &tables {
             let mut stmt = conn.prepare(&format!("SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'", table))?;
             if let Ok(create_sql) = stmt.query_row([], |row| row.get::<_, String>(0)) {
@@ -93,7 +93,7 @@ impl super::Database {
     pub fn reset_all_data(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         // 子表先删：combo_members 在 combos 前。
-        let tables = ["usage_log", "plugins", "service_keys", "api_keys", "models", "combo_members", "combos", "providers", "settings"];
+        let tables = ["usage_log", "conversations", "plugins", "service_keys", "api_keys", "models", "combo_members", "combos", "providers", "settings"];
         for table in &tables {
             conn.execute(&format!("DELETE FROM {}", table), [])?;
         }

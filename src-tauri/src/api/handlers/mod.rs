@@ -13,6 +13,7 @@ pub mod data;
 pub mod fm;
 pub mod combos;
 pub mod local;
+pub mod audit;
 
 pub(crate) use health::health_check;
 pub(crate) use install::get_local_ip;
@@ -26,3 +27,4 @@ pub(crate) use stats::{get_settings, get_stats, get_stats_requests, get_ui_setti
 pub(crate) use websocket::ws_handler;
 pub(crate) use data::{export_data, import_data, reset_data};
 pub(crate) use fm::FmEngine;
+pub(crate) use audit::{get_conversations, get_conversation, delete_conversation};

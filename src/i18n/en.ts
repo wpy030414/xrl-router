@@ -6,6 +6,7 @@ export default {
   'nav.combos': 'Combos',
   'nav.keys': 'Keys',
   'nav.stats': 'Stats',
+  'nav.audit': 'Audit',
   'nav.settings': 'Settings',
   'nav.collapse': 'Collapse',
 
@@ -96,10 +97,52 @@ export default {
 
   'settings.mcp.title': 'MCP Tools',
 
-  'settings.data.title': 'User Data',
+  'settings.data.title': 'Usage Data',
   'settings.data.desc': 'Export all settings and data to a SQL backup file, or import to restore from a SQL file (import overwrites current data)',
   'settings.data.export.button': 'Export',
   'settings.data.export.title': 'Export Data',
+
+  // Conversation audit toggle
+  'settings.audit.title': 'Audit',
+  'settings.audit.desc': 'When enabled, all conversation content passing through the gateway is recorded and viewable in the Audit page. Disabling stops new recording; existing records are preserved.',
+  'settings.audit.on': 'Enabled',
+  'settings.audit.off': 'Disabled',
+
+  // Session injection
+  'settings.inject.title': 'Session Injection',
+  'settings.inject.desc': 'Text here will be injected into the system prompt of all requests passing through the gateway. Leave empty to disable.',
+  'settings.inject.placeholder': 'Enter content to inject into the system prompt…',
+  'settings.inject.saved': 'Saved',
+
+  // Audit page
+  'audit.title': 'Audit',
+  'audit.empty': 'No conversations yet',
+  'audit.messages': '{count} messages',
+  'audit.requests': '{count} requests',
+  'audit.col_key': 'Key',
+  'audit.col_preview': 'Preview',
+  'audit.col_messages': 'Messages',
+  'audit.col_requests': 'Requests',
+  'audit.col_time': 'Last Activity',
+  'audit.prev': 'Previous',
+  'audit.next': 'Next',
+  'audit.page': 'Page {current} of {total}',
+  'audit.detail_title': 'Conversation Detail',
+  'audit.role_user': 'User',
+  'audit.role_assistant': 'Assistant',
+  'audit.thinking': 'Thinking',
+  'audit.tool_use': 'Tool: {name}',
+  'audit.tool_result': 'Tool Result',
+  'audit.image_placeholder': '[image]',
+  'audit.delete': 'Delete',
+  'audit.delete_confirm': 'Are you sure you want to delete this conversation?',
+  'audit.actions': 'Actions',
+  'audit.open': 'Open',
+  'audit.save_as': 'Save as TXT',
+  'audit.filter_all_keys': 'All',
+  'audit.page_of': 'Page {current} of {total}',
+  'audit.mode_simple': 'Simple Mode',
+  'audit.mode_raw': 'Raw Mode',
 
   'settings.data.import.button': 'Import',
   'settings.data.import.title': 'Import Data',

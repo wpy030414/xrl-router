@@ -186,10 +186,45 @@ async fn authenticate_and_stream(
     // ── 强制 stream=true（上游始终走流式） ────────────────────────────
     ir_request.stream = true;
 
+    // ── 会话注入：非空时前置到系统提示词 ─────────────────────────────
+    {
+        let inject = state.session_inject.read().unwrap().clone();
+        if !inject.is_empty() {
+            match &mut ir_request.system {
+                Some(ir::types::IrSystemContent::Text(ref mut t)) => {
+                    *t = format!("{}\n{}", t, inject);
+                }
+                Some(ir::types::IrSystemContent::Blocks(ref mut blocks)) => {
+                    blocks.push(ir::types::IrSystemBlock {
+                        text: inject,
+                        cache_control: None,
+                    });
+                }
+                None => {
+                    ir_request.system = Some(ir::types::IrSystemContent::Text(inject));
+                }
+            }
+        }
+    }
+
     // ── 输入 token 估算（translation 路径 message_start 占位用） ─
     let est_input = ir::usage::estimate_input_tokens(&ir_request);
     // 大上下文（缓存恢复）首字节延迟高，按输入规模放宽响应头超时
     let header_timeout_secs = super::header_timeout_for(est_input);
+
+    // ── 对话审查上下文（仅 audit_enabled 开启时构建） ─────────────
+    // 审查在流式转发完成后执行（forward.rs / non_stream.rs），
+    // 这样每条记录都包含完整的请求消息 + 助手回复。
+    let audit = if state.audit_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+        Some(super::stream::AuditCapture {
+            db: state.database.clone(),
+            sk_id: service_key.id.clone(),
+            sk_name: service_key.name.clone(),
+            request_messages: ir_request.messages.clone(),
+        })
+    } else {
+        None
+    };
 
     // ── 委托流式引擎 ────────────────────────────────────────────────
     super::stream::proxy_stream(
@@ -205,6 +240,7 @@ async fn authenticate_and_stream(
             est_input,
             header_timeout_secs,
             client_wants_stream,
+            audit,
         },
     )
     .await

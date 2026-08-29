@@ -18,6 +18,8 @@ import {
   Zap,
   Info,
   Database,
+  Eye,
+  MessageSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -56,6 +58,8 @@ export function SettingsView() {
   const [saving, setSaving] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [injectText, setInjectText] = useState('');
+  const [injectSaved, setInjectSaved] = useState(false);
 
   // Load settings and Tauri state
   useEffect(() => {
@@ -70,6 +74,13 @@ export function SettingsView() {
     };
     load();
   }, []);
+
+  // Sync session_inject from settings store to local state
+  useEffect(() => {
+    if (settings?.session_inject !== undefined) {
+      setInjectText(settings.session_inject);
+    }
+  }, [settings?.session_inject]);
 
   // Toggle handlers
   const handleSettingToggle = async (key: keyof AppSettings, value: boolean) => {
@@ -531,6 +542,68 @@ export function SettingsView() {
       {/* Privacy Tab */}
       {activeTab === 'data' && (
         <div className="space-y-6">
+          {/* Audit Toggle */}
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Eye className="w-5 h-5" />
+              <h3 className="text-lg font-semibold">{t('settings.audit.title')}</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">{t('settings.audit.desc')}</p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleSettingToggle('audit_enabled', !settings.audit_enabled)}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                  settings.audit_enabled ? 'bg-primary' : 'bg-muted-foreground/20'
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                    settings.audit_enabled ? 'translate-x-6' : 'translate-x-1'
+                  )}
+                />
+              </button>
+              <span className="text-sm">
+                {settings.audit_enabled ? t('settings.audit.on') : t('settings.audit.off')}
+              </span>
+            </div>
+          </section>
+
+          {/* Session Inject */}
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-5 h-5" />
+              <h3 className="text-lg font-semibold">{t('settings.inject.title')}</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">{t('settings.inject.desc')}</p>
+            <textarea
+              value={injectText}
+              onChange={(e) => {
+                setInjectText(e.target.value);
+                setInjectSaved(false);
+              }}
+              placeholder={t('settings.inject.placeholder')}
+              rows={6}
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm resize-y"
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                size="sm"
+                onClick={async () => {
+                  await updateSettings({ session_inject: injectText });
+                  setInjectSaved(true);
+                  setTimeout(() => setInjectSaved(false), 2000);
+                }}
+              >
+                {t('common.save')}
+              </Button>
+              {injectSaved && (
+                <span className="text-sm text-green-600">{t('settings.inject.saved')}</span>
+              )}
+            </div>
+          </section>
+
           {/* Export/Import/Reset */}
           <section className="space-y-3">
             <div className="flex items-center gap-2">
