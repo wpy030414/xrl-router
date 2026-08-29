@@ -757,3 +757,91 @@ Tauri 默认使用系统原生标题栏。Windows 11 的原生标题栏与自定
 - 首次启动需下载引擎（~50MB），需要网络连接
 - GPU 后端依赖系统驱动（CUDA/Vulkan/ROCm 需预装）
 
+---
+
+## ADR-049: Windows 壁纸 Z 序锚定（防盖桌面图标）
+
+**日期**: 2026-08-29  
+**状态**: 已接受
+
+### 背景
+
+ADR-043 的透明 WebView + WorkerW 挂载真机反馈：**壁纸窗口盖住桌面图标**。
+挂载链本身正确（`SetParent` 成功、子窗枚举验证通过），问题全在 Z 序：
+
+1. Win8+ `SetParent` 对 popup 风格窗口只做"重设父链"，窗口仍留在顶层
+   Z 序（ADR-042 注记的历史结论）——在宿主内盖住 `SHELLDLL_DefView` 链
+   （桌面图标层）；
+2. `fit_monitor` 的 `SetWindowPos` 未带 `SWP_NOZORDER`，默认 `HWND_TOP`
+   会把壁纸窗顶到宿主上层，进一步加重盖图标。
+
+### 决策
+
+1. **Z 序锚定**（`ensure_bottom_zorder`）：挂载后手动转 `WS_CHILD`
+   （清 `WS_POPUP`）使窗口真正参与宿主子窗 Z 序，`SetWindowPos(
+   HWND_BOTTOM, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 沉到宿主最底——
+   位于 `SHELLDLL_DefView` 链之下；首次失败 250ms 重试一次，仍失败不
+   致命（复查兜底）；
+2. **验证 = `GW_HWNDNEXT`**：壁纸窗之下无兄弟窗即锚定生效；有则说明
+   系统仍在重排窗口树，由调用方重试；
+3. **后续不扰 Z 序**：`fit_monitor` 的 `SetWindowPos` 补 `SWP_NOZORDER`
+   （否则默认 HWND_TOP 会撤销锚定）；
+4. **show 后复查**：show / WebView2 初始化可能重排宿主子窗，故 `show()`
+   后 1.5s 在主线程复查一次并幂等重锚（`recheck_zorder`），失败仅 warn。
+
+### 备选与权衡
+
+- **建窗即 `WS_CHILD` 子窗**（ADR-042 GDI 版做法）：tauri builder 不暴露
+  该样式，仍需运行时 `SetWindowLongPtr` 补——与现方案等价，无收益；
+- **照社区插件只做 SetParent**：已核实 `tauri-plugin-desktop-underlay`
+  源码不做任何 Z 序处理（仅 `SetParent`），靠系统默认排序在部分真机上
+  即复现盖图标 → 否决。
+
+### 代价
+
+- 挂载链多两次重试 + 一次延迟复查的主线程 dispatch，代码复杂度上升；
+- 锚定依赖宿主子窗 Z 序语义，未来 Windows 布局变化需重新验证（与
+  ADR-041/043 的 WorkerW 配方同命运）。
+
+---
+
+## ADR-050: 本地模型路由优先与云智能管理面隔离
+
+**日期**: 2026-08-29  
+**状态**: 已接受
+
+### 背景
+
+本地模型（私有智能）以普通 Provider 身份注册进网关，与云端 Provider 共用同一套路由管线。
+两个问题浮现：
+
+1. **路由优先级缺失**：`resolve_route_candidates()` 按 `sort_order ASC, created_at ASC` 排序，
+   本地引擎注册时取 `next_sort_order()`（追加到末尾），导致同名模型云端 Provider 反而优先。
+2. **管理面泄漏**：`/api/providers` 返回全部 Provider（含 `local-*` 前缀的本地引擎），
+   云智能页面（ProvidersView）出现「本地 · X」卡片，与私有智能独立管理页职责重叠。
+
+### 决策
+
+1. **路由优先级**：组合 > 私有智能 > 云智能。`resolve_route_candidates()` 的 ORDER BY 改为
+   `CASE WHEN tier='local' THEN 0 ELSE 1 END, sort_order ASC, created_at ASC`——本地模型恒优先，
+   其后按 sort_order 排序。组合别名解析（`resolve_combo()`）先展开成员，成员内部同样遵循此优先级。
+2. **管理面隔离**：`/api/providers` 过滤 `local-*` 前缀（云智能页面不显示本地引擎），但
+   `/api/models` 和 `/api/keys` 不过滤——组合成员选择器和密钥白名单弹窗需要看到私有模型。
+3. **名称冲突检查**：本地模型创建/编辑时通过 `alias_taken()` 同时检查 models 表和 combos 表，
+   防止与组合名冲突。
+
+### 原因
+
+1. **概念对齐**：云智能、私有智能、组合三者都是"模型提供者"，判定按逆序搜索最近可用的别名。
+   组合成员选择器必须能看到私有模型（否则无法用私有模型做成员），密钥白名单弹窗必须能看到
+   私有模型（否则无法授权）。
+2. **职责分离**：私有智能有独立管理页（LocalModelsView），不应在云智能页面重复出现。
+3. **用户预期**：本地模型启动后，用户期望优先使用本地引擎（低延迟、数据不出机），而非云端。
+
+### 代价
+
+- 本地模型从 ProvidersView 的拖拽排序载荷中消失（保留旧 sort_order，tier 优先下无害）；
+- 组合成员选择器无法通过 UI 直接选择本地模型（但手填别名仍可解析，`validate_members`
+  接受任何存在的 display_name）；
+- 路由优先级依赖 `tier='local'` 字段，仅 `LocalManager::register_provider()` 写入，
+  前端无法手动设置（ProviderFormView 默认 `tier='custom'`）——单用户本地应用可接受。

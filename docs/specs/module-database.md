@@ -61,8 +61,9 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V18 | 新增 combos / combo_members 表 + 索引（组合别名：多个模型别名按顺序捆绑，路由时依次尝试直到可用） |
 | V19 | MCP 桌面通知工具 notify 的设置键：`mcp_notify` 默认行 |
 | V20 | 新增 local_models 表（本地模型私有化：GGUF 权重 + llama-server 引擎运行时元数据） |
+| V21 | local_models 新增 thinking 列（思考模式开关，默认 1，引擎启动时映射 `--reasoning on\|off`） |
 
-## 当前表结构（V20 最终状态）
+## 当前表结构（V21 最终状态）
 
 ### providers
 
@@ -245,7 +246,7 @@ CREATE TABLE plugins (
 
 **注意**: `provider_id` 使用 `ON DELETE SET NULL`（非 CASCADE），删除 provider 时插件记录保留但 provider_id 置空。
 
-### local_models（V20：本地模型）
+### local_models（V20 + V21：本地模型）
 
 ```sql
 CREATE TABLE local_models (
@@ -265,6 +266,8 @@ CREATE TABLE local_models (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+-- V21 追加（ALTER TABLE，物理列在表尾）：
+-- thinking INTEGER NOT NULL DEFAULT 1   -- 思考模式：1 = --reasoning on，0 = off
 
 CREATE INDEX idx_local_models_status ON local_models(status);
 ```
