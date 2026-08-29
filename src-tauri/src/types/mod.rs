@@ -121,6 +121,8 @@ pub struct LocalModel {
     pub n_gpu_layers: i64,
     /// 1 = 应用启动时自动启动引擎
     pub autostart: i64,
+    /// 1 = 引擎启动时启用思考模式（llama-server --reasoning on）
+    pub thinking: i64,
     /// 目标字节数（HF tree API），下载中/后非空
     pub file_size: Option<i64>,
     /// 权重文件绝对路径

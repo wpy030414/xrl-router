@@ -2,8 +2,8 @@
 
 ## 目标
 
-把开源 GGUF 模型变成「零配置私有 Provider」：应用内浏览 HuggingFace → 一键下载 →
-自动启动 `llama-server` → 以普通 Provider/Model 身份注册进网关（`http://127.0.0.1:<port>/v1`），
+把开源 GGUF 模型变成「零配置私有 Provider」：应用内浏览 HuggingFace → 一键下载（或导入本地已有
+GGUF 文件）→ 自动启动 `llama-server` → 以普通 Provider/Model 身份注册进网关（`http://127.0.0.1:<port>/v1`），
 与云端 Provider 一样参与路由、组合、密钥与统计体系。对应 PRD §10「本地模型规格」。
 
 ## 架构
@@ -30,7 +30,7 @@ HfBrowseView.tsx   ─┼─ REST /api/local/* ├─ engine.rs   llama-server �
 |------|------|
 | `GET /api/local/models` | 列出本地模型（含运行状态/健康/端口） |
 | `POST /api/local/models` | 注册本地模型（GGUF 文件 + 引擎参数） |
-| `PATCH /api/local/models/:id` | 编辑参数（上下文长度、GPU 层、端口等） |
+| `POST /api/local/models/:id/edit` | 编辑参数（别名、上下文长度、GPU 层、后端、自启动、思考模式） |
 | `DELETE /api/local/models/:id` | 停止并删除注册 |
 | `POST /api/local/models/:id/start` / `/stop` | 引擎生命周期控制 |
 | `GET /api/local/backends` | GPU 后端检测结果 |
@@ -44,7 +44,19 @@ HfBrowseView.tsx   ─┼─ REST /api/local/* ├─ engine.rs   llama-server �
   - 停止模型必须回收子进程与端口占用。
 - **下载**：HF 下载支持进度上报（前端 `stores/localModels.ts` 轮询/订阅状态）；
   下载中断不得留下被当作完整文件使用的半成品。
+- **导入本地权重**：`POST /api/local/models` 携带 `local_path` 时跳过下载——校验文件存在且为
+  `.gguf` → 拷贝到应用数据目录（models/{id}/model.gguf）→ 直接 `status=downloaded`；
+  拷贝失败不产生半成品记录。前端入口为私有智能页「添加权重」按钮弹出的来源选择
+  （导入本地权重 / 浏览 HuggingFace），文件选择走 Tauri dialog 插件（仅桌面端可用）。
 - **端口**：默认自动分配，冲突时顺延；编辑后重启生效。
+- **思考模式**：`local_models.thinking`（V21，0/1，默认 1）持久化用户开关；引擎启动时总是
+  显式映射为 `llama-server --reasoning on|off`（不走 auto 第三态，保证开关状态与引擎一致）。
+  新建模型默认开启；引擎运行中修改需下次启动生效（同 ctx_size / n_gpu_layers）。
+- **路由优先级**：组合 > 私有智能 > 云智能。`resolve_route_candidates()` 按 `tier='local'` 优先排序，
+  同名模型本地引擎优先于云端 Provider。组合别名解析（`resolve_combo()`）先展开成员，成员内部同样遵循此优先级。
+- **管理面隔离**：`/api/providers` 不返回 `local-*` provider（云智能页面不显示本地引擎），但
+  `/api/models` 和 `/api/keys` 仍返回全部记录（组合成员选择器和密钥白名单需要看到私有模型）。
+  本地模型创建/编辑时通过 `alias_taken()` 检查名称冲突（同时检查 models 表和 combos 表）。
 - **删除语义**：删除注册默认保留已下载的 GGUF 文件（磁盘清理由用户显式操作）。
 
 ## 输出契约

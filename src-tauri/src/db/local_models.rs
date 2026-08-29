@@ -6,15 +6,15 @@ impl super::Database {
     pub fn save_local_model(&self, m: &LocalModel) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO local_models (id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO local_models (id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at, thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 repo_id=excluded.repo_id, filename=excluded.filename, format=excluded.format,
                 backend=excluded.backend, status=excluded.status, model_id=excluded.model_id,
                 ctx_size=excluded.ctx_size, n_gpu_layers=excluded.n_gpu_layers,
                 autostart=excluded.autostart, file_size=excluded.file_size,
                 local_path=excluded.local_path, port=excluded.port,
-                updated_at=excluded.updated_at",
+                updated_at=excluded.updated_at, thinking=excluded.thinking",
             rusqlite::params![
                 m.id,
                 m.repo_id,
@@ -31,6 +31,7 @@ impl super::Database {
                 m.port,
                 m.created_at,
                 m.updated_at,
+                m.thinking,
             ],
         )?;
         Ok(())
@@ -39,7 +40,7 @@ impl super::Database {
     pub fn get_local_model(&self, id: &str) -> anyhow::Result<Option<LocalModel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at
+            "SELECT id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at, thinking
              FROM local_models WHERE id = ?1",
         )?;
         let row = stmt.query_row(rusqlite::params![id], |r| {
@@ -59,6 +60,7 @@ impl super::Database {
                 port: r.get(12)?,
                 created_at: r.get(13)?,
                 updated_at: r.get(14)?,
+                thinking: r.get(15)?,
             })
         });
         match row {
@@ -71,7 +73,7 @@ impl super::Database {
     pub fn list_local_models(&self) -> anyhow::Result<Vec<LocalModel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at
+            "SELECT id, repo_id, filename, format, backend, status, model_id, ctx_size, n_gpu_layers, autostart, file_size, local_path, port, created_at, updated_at, thinking
              FROM local_models ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -91,6 +93,7 @@ impl super::Database {
                 port: r.get(12)?,
                 created_at: r.get(13)?,
                 updated_at: r.get(14)?,
+                thinking: r.get(15)?,
             })
         })?;
         let mut result = Vec::new();
@@ -118,5 +121,11 @@ impl super::Database {
             |r| r.get(0),
         );
         exists.unwrap_or(false)
+    }
+
+    /// 别名是否已被占用（模型 display_name 或组合名）。
+    /// 本地模型创建/改名时调用，确保不与现有模型或组合冲突。
+    pub fn alias_taken(&self, name: &str) -> bool {
+        self.display_name_taken(name) || self.combo_name_exists(name).unwrap_or(false)
     }
 }

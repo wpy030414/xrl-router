@@ -37,7 +37,7 @@ export function HfBrowseView() {
   const [modelId, setModelId] = useState('');
   const [ctxSize, setCtxSize] = useState('32768');
   const [gpuLayers, setGpuLayers] = useState('99');
-  const [autostart, setAutostart] = useState(true);
+  const [autostart, setAutostart] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 

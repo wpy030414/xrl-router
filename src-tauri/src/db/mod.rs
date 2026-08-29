@@ -162,6 +162,59 @@ mod tests {
         assert!(ucols.contains(&"cache_read_input_tokens".to_string()));
         assert!(!ucols.contains(&"cache_creation_input_tokens".to_string()));
         assert!(!ucols.contains(&"cost_estimate".to_string()));
+
+        // V21：local_models 应有 thinking 列（思考模式开关，默认 1）。
+        let lcols: Vec<String> = conn
+            .prepare("PRAGMA table_info(local_models)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(lcols.contains(&"thinking".to_string()));
+    }
+
+    /// local_models 的 thinking 列 save→get 往返（守护 INSERT 列/参数对齐与
+    /// upsert SET 列表——位置索引错配是运行时错误，编译期查不出来）。
+    #[test]
+    fn test_local_model_thinking_roundtrip() {
+        use crate::types::LocalModel;
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+
+        let mut m = LocalModel {
+            id: "lm-test".to_string(),
+            repo_id: "r/x".to_string(),
+            filename: "x.gguf".to_string(),
+            format: "gguf".to_string(),
+            backend: "metal".to_string(),
+            status: "downloaded".to_string(),
+            model_id: "x".to_string(),
+            ctx_size: 8192,
+            n_gpu_layers: 99,
+            autostart: 1,
+            thinking: 0,
+            file_size: None,
+            local_path: "/tmp/x.gguf".to_string(),
+            port: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        db.save_local_model(&m).unwrap();
+        let got = db.get_local_model("lm-test").unwrap().unwrap();
+        assert_eq!(got.thinking, 0, "thinking=0 应完整往返");
+
+        // upsert 更新：同 id 再存一次，thinking 翻为 1
+        m.thinking = 1;
+        m.updated_at = 2;
+        db.save_local_model(&m).unwrap();
+        let got = db.get_local_model("lm-test").unwrap().unwrap();
+        assert_eq!(got.thinking, 1, "upsert 应更新 thinking");
+
+        // list 同样读得到
+        let all = db.list_local_models().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].thinking, 1);
     }
 
     /// 回归测试：save_provider/save_api_key/save_model 必须用 UPSERT。

@@ -347,4 +347,11 @@ CREATE TABLE IF NOT EXISTS local_models (
 );
 CREATE INDEX IF NOT EXISTS idx_local_models_status ON local_models(status);
 "#,
+    // V21: local_models.thinking — 思考模式开关。1 = 引擎启动时传 --reasoning on，
+    // 0 = --reasoning off（总是显式传参，不走 auto 第三态）。默认 1 保持存量行为
+    // （模板默认思考）。引擎运行中修改需下次启动生效（同 ctx_size / n_gpu_layers）。
+    // CREATE TABLE IF NOT EXISTS 不会补列，必须用 ALTER TABLE。
+    r#"
+ALTER TABLE local_models ADD COLUMN thinking INTEGER NOT NULL DEFAULT 1;
+"#,
 ];

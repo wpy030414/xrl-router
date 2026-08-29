@@ -357,6 +357,8 @@ export interface LocalModel {
   ctx_size: number;
   n_gpu_layers: number;
   autostart: number;
+  /** 思考模式：1 = --reasoning on（默认），0 = --reasoning off */
+  thinking: number;
   file_size: number | null;
   local_path: string;
   port: number | null;
@@ -402,10 +404,12 @@ export const localModelsApi = {
     ctx_size: number;
     n_gpu_layers: number;
     autostart: boolean;
+    /** 导入本地权重：源文件路径（传入后跳过下载） */
+    local_path?: string;
   }) => request<LocalModel>('/api/local/models', { method: 'POST', body: data }),
   delete: (id: string, removeFiles = false) =>
     request<void>(`/api/local/models/${id}?remove_files=${removeFiles}`, { method: 'DELETE' }),
-  edit: (id: string, data: { model_id?: string; ctx_size?: number; n_gpu_layers?: number; backend?: string; autostart?: boolean }) =>
+  edit: (id: string, data: { model_id?: string; ctx_size?: number; n_gpu_layers?: number; backend?: string; autostart?: boolean; thinking?: boolean }) =>
     request<LocalModel>(`/api/local/models/${id}/edit`, { method: 'POST', body: data }),
   start: (id: string) => request<{ ok: boolean }>(`/api/local/models/${id}/start`, { method: 'POST' }),
   stop: (id: string) => request<{ ok: boolean }>(`/api/local/models/${id}/stop`, { method: 'POST' }),

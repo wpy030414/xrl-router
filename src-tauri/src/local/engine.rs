@@ -286,12 +286,15 @@ fn find_llama_server_sync(dir: &Path) -> Option<PathBuf> {
 }
 
 /// 启动 GGUF 引擎（llama-server），stdout/stderr 写入 log_path（覆盖式）。
+/// thinking=true 传 `--reasoning on`，否则 `--reasoning off`（总是显式传参，
+/// 保证引擎状态与用户开关一致，不走 auto 第三态）。
 pub fn spawn_llama_server(
     bin: &Path,
     model_path: &Path,
     port: u16,
     ctx_size: i64,
     n_gpu_layers: i64,
+    thinking: bool,
     api_key: &str,
     log_path: &Path,
 ) -> std::io::Result<tokio::process::Child> {
@@ -309,6 +312,8 @@ pub fn spawn_llama_server(
         .arg(ctx_size.to_string())
         .arg("--n-gpu-layers")
         .arg(n_gpu_layers.to_string())
+        .arg("--reasoning")
+        .arg(if thinking { "on" } else { "off" })
         .arg("--api-key")
         .arg(api_key)
         .arg("--parallel")

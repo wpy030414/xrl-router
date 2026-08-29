@@ -72,7 +72,7 @@ pub(crate) async fn delete_local_model(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))))
 }
 
-/// POST /api/local/models/:id/edit —— 编辑参数（ctx_size / n_gpu_layers / backend / autostart）
+/// POST /api/local/models/:id/edit —— 编辑参数（ctx_size / n_gpu_layers / backend / autostart / thinking）
 pub(crate) async fn edit_local_model(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
