@@ -126,7 +126,7 @@ interface Reflect { x: number; color: string; phase: number; offs: number[] }
 /** 鸟：speed 为横向速度，bob 为上下浮动的相位。 */
 interface Bird { x: number; y: number; speed: number; bob: number }
 
-export interface PixelScene {
+export interface PixelSceneData {
   sky: string[];
   stars: Star[];
   moon: { x: number; y: number; r: number; color: string; phase: number } | null;
@@ -146,7 +146,7 @@ export interface PixelScene {
 }
 
 /** 由 seed 生成确定性场景（不依赖时间）。 */
-export function generateScene(seed: number): PixelScene {
+export function generateScene(seed: number): PixelSceneData {
   const mood = MOODS[((seed % MOODS.length) + MOODS.length) % MOODS.length];
   const rnd = mulberry32((seed >>> 0) * 2654435761 + 0x9e3779b9);
 
@@ -332,7 +332,7 @@ function wrapX(v: number, span: number, margin: number): number {
 }
 
 /** 绘制一帧。t 为秒级时间戳，用于动画（闪烁 / 波光 / 流星）。 */
-export function renderScene(ctx: CanvasRenderingContext2D, s: PixelScene, t: number): void {
+export function renderScene(ctx: CanvasRenderingContext2D, s: PixelSceneData, t: number): void {
   const { sky, stars, moon, sun, clouds, ridges, water, grass, trees, birds } = s;
   const w = SCENE_W;
   const h = SCENE_H;

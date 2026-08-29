@@ -201,8 +201,9 @@ fn show_wallpaper(win: &WebviewWindow) -> Result<(), String> {
     let recheck = win.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(1500));
+        let inner = recheck.clone();
         let _ = recheck.run_on_main_thread(move || {
-            if let Err(e) = crate::wallpaper::win::recheck_zorder(&recheck) {
+            if let Err(e) = crate::wallpaper::win::recheck_zorder(&inner) {
                 tracing::warn!("wallpaper z-order recheck failed: {e}");
             }
         });
