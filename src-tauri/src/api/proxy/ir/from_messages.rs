@@ -280,7 +280,12 @@ pub fn messages_chunk_to_ir(
             // 渲染回 Anthropic 客户端时再合并（input_tokens + cache_creation）。
             let it = usage["input_tokens"].as_u64().unwrap_or(0);
             let cr = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
-            state.usage.input_tokens = it;
+            // 部分兼容上游（如智谱 GLM）message_start 的 input_tokens 恒为 0——
+            // 此时保留 forward.rs 预填的估算占位，等 message_delta 的真实值覆盖，
+            // 否则 usage_log 的输入列会永远是 0。
+            if it > 0 {
+                state.usage.input_tokens = it;
+            }
             state.usage.cache_read_input_tokens = cr;
             state.usage.cache_creation_input_tokens =
                 usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
@@ -346,6 +351,13 @@ pub fn messages_chunk_to_ir(
             let usage_obj = &chunk["usage"];
             if let Some(ot) = usage_obj["output_tokens"].as_u64() {
                 state.usage.output_tokens = ot;
+            }
+            // 部分兼容上游在 message_delta 才补报 input_tokens（同样 >0 才覆盖，
+            // 避免 0 值抹掉估算占位）
+            if let Some(it) = usage_obj["input_tokens"].as_u64() {
+                if it > 0 {
+                    state.usage.input_tokens = it;
+                }
             }
             if let Some(cr) = usage_obj["cache_read_input_tokens"].as_u64() {
                 state.usage.cache_read_input_tokens = cr;

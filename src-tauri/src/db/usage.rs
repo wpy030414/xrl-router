@@ -82,6 +82,18 @@ impl super::Database {
                 cache_read_input_tokens,
             ],
         )?;
+        // 同步递增局域网用户（service_key）的累计统计（只动计数与
+        // last_used_at，不刷 updated_at——否则密钥列表的「修改时间」
+        // 会随每次请求跳动，失去「人工编辑时间」的语义）。
+        if let Some(sk_id) = service_key_id {
+            if !sk_id.is_empty() {
+                let total = prompt_tokens + completion_tokens + cache_read_input_tokens;
+                let _ = conn.execute(
+                    "UPDATE service_keys SET total_requests = total_requests + 1, total_tokens = total_tokens + ?1, last_used_at = ?2 WHERE id = ?3",
+                    rusqlite::params![total, timestamp, sk_id],
+                );
+            }
+        }
         Ok(())
     }
 
