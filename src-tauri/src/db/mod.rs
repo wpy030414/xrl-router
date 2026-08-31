@@ -58,24 +58,17 @@ impl Database {
 
     /// Run all pending migrations.
     pub fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-
-        // Create schema_version table if not exists
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_version (
-                version INTEGER PRIMARY KEY,
-                applied_at INTEGER NOT NULL
-            );"
-        )?;
-
-        // Get current schema version
-        let current_version: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        // Create schema_version table if not exists + 读当前版本（需持锁，块内用完即放）。
+        let current_version: i64 = {
+            let conn = self.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                );"
+            )?;
+            current_version_of(&conn)?
+        };
 
         if current_version >= schema::MIGRATIONS.len() as i64 {
             info!("Database schema is up to date (v{})", current_version);
@@ -88,21 +81,39 @@ impl Database {
             schema::MIGRATIONS.len()
         );
 
-        // Run pending migrations
-        for (i, migration) in schema::MIGRATIONS.iter().enumerate().skip(current_version as usize) {
-            let version = (i + 1) as i64;
+        self.run_pending_migrations(&schema::MIGRATIONS[current_version as usize..])?;
 
-            conn.execute_batch(migration)?;
+        info!("Database migrations complete");
+        Ok(())
+    }
 
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
-                rusqlite::params![version, chrono::Utc::now().timestamp()],
-            )?;
+    /// 按事务逐条执行待应用的迁移（供 migrate() 使用，测试也直接驱动以验证回滚）。
+    /// 每个迁移 + 其 schema_version 写入在同一事务内原子提交：若迁移中途失败则
+    /// 整体回滚，不会出现"列已加、版本号没跟上"的半应用状态（历史上 V23 曾因
+    /// IF NOT EXISTS 解析失败卡死在此，见 schema.rs）。
+    /// execute_batch 不会自动开事务（autocommit 逐句提交），必须显式 BEGIN/COMMIT。
+    fn run_pending_migrations(&self, migrations: &[&str]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut version = current_version_of(&conn)?;
+        for migration in migrations {
+            version += 1;
+
+            let sql = format!(
+                "BEGIN IMMEDIATE;
+                 {migration}
+                 INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES ({version}, {now});
+                 COMMIT;",
+                now = chrono::Utc::now().timestamp(),
+            );
+            if let Err(e) = conn.execute_batch(&sql) {
+                // execute_batch 失败不会自动 ROLLBACK：显式回滚，避免同一连接上
+                // 残留未提交事务（连接关闭时 SQLite 也会自动回滚，双保险）。
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
 
             info!("  Migration v{} applied", version);
         }
-
-        info!("Database migrations complete");
         Ok(())
     }
 
@@ -123,6 +134,17 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(sql, params)
     }
+}
+
+/// 读取当前 schema 版本（schema_version 表内最大版本号，不存在则视为 0）。
+fn current_version_of(conn: &Connection) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -302,5 +324,106 @@ mod tests {
         db.save_model(&mu).unwrap();
         let m2 = db.get_model("m1").unwrap().unwrap();
         assert_eq!(m2.display_name, "gpt-y");
+    }
+
+    /// 回归测试：真实升级路径 V22→V23。曾因 V23 误用 SQLite 不支持的
+    /// ADD COLUMN IF NOT EXISTS（仅 CREATE 语句支持）在解析期直接失败，
+    /// 应用永远卡在 V22。此处从 V22（含已填数据的 conversations 表）手动
+    /// 升到最新版，验证 last_message 两列被正确补上且数据无损。
+    #[test]
+    fn test_upgrade_from_v22_preserves_conversations() {
+        // 手工搭建一个 V22 库：执行 V1..V22 迁移，再塞一条对话。
+        let db = Database::open_in_memory().unwrap();
+        {
+            let conn = db.conn();
+            for (i, m) in super::schema::MIGRATIONS.iter().take(22).enumerate() {
+                conn.execute_batch(m).unwrap();
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![(i + 1) as i64, 1],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO conversations (fingerprint, service_key_id, service_key_name,
+                    messages, message_count, request_count, first_user_message, created_at, updated_at)
+                 VALUES ('fp1', 'sk1', 'key', '[]', 3, 2, 'hello', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 从 V22 一路升到最新（含此前必挂的 V23）。
+        db.migrate().expect("V22 → latest must succeed");
+
+        let conn = db.conn();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(conversations)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"last_message".to_string()));
+        assert!(cols.contains(&"last_message_raw".to_string()));
+
+        // 既有数据不丢，新列回填默认空串。
+        let (count, first_user, last): (i64, String, String) = conn
+            .query_row(
+                "SELECT message_count, first_user_message, last_message FROM conversations WHERE fingerprint='fp1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(first_user, "hello");
+        assert_eq!(last, "");
+
+        // 重复 migrate 幂等（事务 + INSERT OR REPLACE 保证无副作用）。
+        drop(conn);
+        db.migrate().expect("re-migrate must be a no-op");
+    }
+
+    /// 回归测试：迁移中途失败必须整体回滚——任何语句失败时既不能留下
+    /// 半应用的表结构，也不能留下已推进的 schema_version（历史上正因
+    /// 非事务执行 + 失败不记账，重跑才撞 duplicate column）。
+    #[test]
+    fn test_migration_failure_rolls_back() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE conversations (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (1, 1)",
+            [],
+        )
+        .unwrap();
+        let db = Database {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+
+        // 注入一条非法迁移，模拟历史上 V23 的解析失败。
+        let bad = "CREATE TABLE t2 (id INTEGER); THIS IS NOT SQL;";
+        let err = db.run_pending_migrations(&[bad]).unwrap_err();
+        assert!(err.to_string().contains("syntax error"), "err = {err}");
+
+        // 事务回滚：t2 不应存在。
+        let conn = db.conn();
+        let has_t2: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='t2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_t2, 0, "failed migration must not leave t2 behind");
+
+        // schema_version 停在 V1，可安全重跑。
+        let max: i64 = conn
+            .query_row("SELECT COALESCE(MAX(version),0) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(max, 1);
     }
 }

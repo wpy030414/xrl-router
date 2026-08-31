@@ -375,11 +375,12 @@ CREATE INDEX IF NOT EXISTS idx_conv_sk ON conversations(service_key_id);
 CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
 "#,
     // V23: conversations 添加 last_message / last_message_raw 列。
-    // 使用 IF NOT EXISTS 保证幂等——V22→V23 之间曾因 execute_batch 非事务，
-    // 第一条 ALTER 成功、第二条失败后 schema_version 未更新，导致重跑 V23
-    // 在已存在的列上撞 duplicate column，迁移链永久中断。
+    // 注意：SQLite 不支持 ALTER TABLE ... ADD COLUMN IF NOT EXISTS（仅 CREATE
+    // 语句支持），早期版本误用该语法导致迁移在解析期直接失败、应用卡在 V22。
+    // 幂等性改由 migrate() 的事务保证（整段迁移 + schema_version 原子提交），
+    // 因此这里使用普通 ADD COLUMN 即可；历史上没有库能越过该坏迁移，无需兜底。
     r#"
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message TEXT NOT NULL DEFAULT '';
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message_raw TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN last_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN last_message_raw TEXT NOT NULL DEFAULT '';
 "#,
 ];
