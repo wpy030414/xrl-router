@@ -22,6 +22,11 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -234,18 +239,15 @@ export function SettingsView() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b pb-2">
-        {TABS.map((tab) => (
-          <Button
-            key={tab.key}
-            variant={activeTab === tab.key ? 'default' : 'ghost'}
-            size="sm"
-            onClick={() => setActiveTab(tab.key)}
-          >
-            {t(tab.labelKey)}
-          </Button>
-        ))}
-      </div>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Tab)}>
+        <TabsList>
+          {TABS.map((tab) => (
+            <TabsTrigger key={tab.key} value={tab.key}>
+              {t(tab.labelKey)}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       {/* General Tab */}
       {activeTab === 'general' && (
@@ -333,7 +335,7 @@ export function SettingsView() {
 
             {/* Hue slider */}
             <div className="space-y-2 pt-2">
-              <label className="text-sm font-medium">{t('settings.theme.hue')}</label>
+              <Label>{t('settings.theme.hue')}</Label>
               <div className="flex items-center gap-3">
                 {/* 圆角色条画在独立轨道层，input 透明浮在其上（保留滑杆交互）。
                     包装层用 flex 居中 input，避免 inline 行框基线留白造成的 3px 偏移 */}
@@ -372,23 +374,12 @@ export function SettingsView() {
                 <h3 className="text-lg font-semibold">{t('settings.autostart.title')}</h3>
               </div>
               <p className="text-sm text-muted-foreground">{t('settings.autostart.desc')}</p>
-              <button
-                onClick={handleAutostartToggle}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  autostartEnabled ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    autostartEnabled ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
-              <span className="text-sm ml-2">
-                {autostartEnabled ? t('settings.autostart.on') : t('settings.autostart.off')}
-              </span>
+              <div className="flex items-center gap-2">
+                <Switch checked={autostartEnabled} onCheckedChange={handleAutostartToggle} />
+                <span className="text-sm">
+                  {autostartEnabled ? t('settings.autostart.on') : t('settings.autostart.off')}
+                </span>
+              </div>
             </section>
           )}
         </div>
@@ -404,23 +395,15 @@ export function SettingsView() {
               <h3 className="text-lg font-semibold">{t('settings.failover.title')}</h3>
             </div>
             <p className="text-sm text-muted-foreground">{t('settings.failover.desc')}</p>
-            <button
-              onClick={() => handleSettingToggle('failover_enabled', !settings.failover_enabled)}
-              className={cn(
-                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                settings.failover_enabled ? 'bg-primary' : 'bg-muted-foreground/20'
-              )}
-            >
-              <span
-                className={cn(
-                  'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                  settings.failover_enabled ? 'translate-x-6' : 'translate-x-1'
-                )}
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={settings.failover_enabled}
+                onCheckedChange={(v) => handleSettingToggle('failover_enabled', v)}
               />
-            </button>
-            <span className="text-sm ml-2">
-              {settings.failover_enabled ? t('settings.failover.on') : t('settings.failover.off')}
-            </span>
+              <span className="text-sm">
+                {settings.failover_enabled ? t('settings.failover.on') : t('settings.failover.off')}
+              </span>
+            </div>
           </section>
 
           {/* MCP Connection Info（在 MCP Tools 之上：先接入、再开关工具） */}
@@ -428,27 +411,26 @@ export function SettingsView() {
             <h3 className="text-lg font-semibold">{t('settings.mcp_info.title')}</h3>
             <p className="text-sm text-muted-foreground">{t('settings.mcp_info.desc')}</p>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('settings.mcp_info.endpoint')}</label>
+              <Label>{t('settings.mcp_info.endpoint')}</Label>
               <div className="flex gap-2">
-                <input
+                <Input
                   type="text"
                   readOnly
                   value={mcpEndpoint}
-                  className="flex-1 px-3 py-2 rounded-md border border-input bg-background text-sm font-mono"
+                  className="flex-1 font-mono"
                 />
                 <Button size="sm" onClick={() => handleCopyMcp(mcpEndpoint, 'endpoint')}>
                   {copied === 'endpoint' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </Button>
               </div>
-              {/* 注册命令与端点同等待遇：独立输入框 + 一键复制。
-                  label 默认 inline，垂直 padding 不参与布局——须 block 才真正把间距撑开 */}
-              <label className="block text-sm font-medium">{t('settings.mcp_info.register')}</label>
+              {/* 注册命令与端点同等待遇：独立输入框 + 一键复制 */}
+              <Label className="block">{t('settings.mcp_info.register')}</Label>
               <div className="flex gap-2">
-                <input
+                <Input
                   type="text"
                   readOnly
                   value={mcpCmd}
-                  className="flex-1 px-3 py-2 rounded-md border border-input bg-background text-sm font-mono"
+                  className="flex-1 font-mono"
                 />
                 <Button size="sm" onClick={() => handleCopyMcp(mcpCmd, 'cmd')}>
                   {copied === 'cmd' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
@@ -470,20 +452,10 @@ export function SettingsView() {
                   <p className="text-sm text-muted-foreground">{t('settings.mcp_websearch.desc')}</p>
                 </div>
               </div>
-              <button
-                onClick={() => handleSettingToggle('mcp_websearch', !settings.mcp_websearch)}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  settings.mcp_websearch ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    settings.mcp_websearch ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
+              <Switch
+                checked={settings.mcp_websearch}
+                onCheckedChange={(v) => handleSettingToggle('mcp_websearch', v)}
+              />
             </div>
 
             {/* Web Fetch */}
@@ -495,20 +467,10 @@ export function SettingsView() {
                   <p className="text-sm text-muted-foreground">{t('settings.mcp_webfetch.desc')}</p>
                 </div>
               </div>
-              <button
-                onClick={() => handleSettingToggle('mcp_webfetch', !settings.mcp_webfetch)}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  settings.mcp_webfetch ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    settings.mcp_webfetch ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
+              <Switch
+                checked={settings.mcp_webfetch}
+                onCheckedChange={(v) => handleSettingToggle('mcp_webfetch', v)}
+              />
             </div>
 
             {/* Notify */}
@@ -520,20 +482,10 @@ export function SettingsView() {
                   <p className="text-sm text-muted-foreground">{t('settings.mcp_notify.desc')}</p>
                 </div>
               </div>
-              <button
-                onClick={() => handleSettingToggle('mcp_notify', !settings.mcp_notify)}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  settings.mcp_notify ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    settings.mcp_notify ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
+              <Switch
+                checked={settings.mcp_notify}
+                onCheckedChange={(v) => handleSettingToggle('mcp_notify', v)}
+              />
             </div>
           </section>
         </div>
@@ -550,20 +502,10 @@ export function SettingsView() {
             </div>
             <p className="text-sm text-muted-foreground">{t('settings.audit.desc')}</p>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleSettingToggle('audit_enabled', !settings.audit_enabled)}
-                className={cn(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                  settings.audit_enabled ? 'bg-primary' : 'bg-muted-foreground/20'
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                    settings.audit_enabled ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
+              <Switch
+                checked={settings.audit_enabled}
+                onCheckedChange={(v) => handleSettingToggle('audit_enabled', v)}
+              />
               <span className="text-sm">
                 {settings.audit_enabled ? t('settings.audit.on') : t('settings.audit.off')}
               </span>
@@ -577,7 +519,7 @@ export function SettingsView() {
               <h3 className="text-lg font-semibold">{t('settings.inject.title')}</h3>
             </div>
             <p className="text-sm text-muted-foreground">{t('settings.inject.desc')}</p>
-            <textarea
+            <Textarea
               value={injectText}
               onChange={(e) => {
                 setInjectText(e.target.value);
@@ -585,7 +527,6 @@ export function SettingsView() {
               }}
               placeholder={t('settings.inject.placeholder')}
               rows={6}
-              className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm resize-y"
             />
             <div className="flex items-center gap-3">
               <Button

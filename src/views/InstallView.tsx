@@ -2,6 +2,11 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 import { Download, Copy, Check, Loader2, Monitor, Laptop, User, Brain, Terminal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Card, CardContent } from '@/components/ui/card';
 import { uiSettingsApi } from '@/lib/api';
 import { useT, useI18nStore } from '@/i18n';
 import { useThemeStore } from '@/hooks/useTheme';
@@ -241,18 +246,19 @@ export function InstallView() {
 
         {/* No key placeholder */}
         {!apiKey && (
-          <div className="rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-6 text-center space-y-2">
-            <h3 className="text-lg font-semibold text-yellow-600 dark:text-yellow-400">
+          <Alert className="border-yellow-500/50 bg-yellow-500/10 text-center">
+            <AlertTitle className="text-yellow-600 dark:text-yellow-400">
               {t('install.no_key_title')}
-            </h3>
-            <p className="text-sm text-muted-foreground">{t('install.no_key_desc')}</p>
-          </div>
+            </AlertTitle>
+            <AlertDescription className="text-muted-foreground">{t('install.no_key_desc')}</AlertDescription>
+          </Alert>
         )}
 
         {apiKey && (
           <>
             {/* OS selector */}
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <Card>
+              <CardContent className="p-5 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
                   <Laptop className="w-5 h-5 text-muted-foreground" />
@@ -276,10 +282,12 @@ export function InstallView() {
                   </Button>
                 ))}
               </div>
-            </section>
+              </CardContent>
+            </Card>
 
             {/* Consumer selector */}
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <Card>
+              <CardContent className="p-5 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
                   <User className="w-5 h-5 text-muted-foreground" />
@@ -302,10 +310,12 @@ export function InstallView() {
                   {t('install.mode_chatgpt')}
                 </Button>
               </div>
-            </section>
+              </CardContent>
+            </Card>
 
             {/* Model selector */}
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <Card>
+              <CardContent className="p-5 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
                   <Brain className="w-5 h-5 text-muted-foreground" />
@@ -336,39 +346,28 @@ export function InstallView() {
               )}
 
               {!modelsLoading && !modelsError && models.length > 0 && (
-                <div className="relative">
-                  <select
-                    value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
-                    className={cn(
-                      'flex h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-2 pr-9 text-sm',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    )}
-                  >
+                <Select
+                  value={selectedModel}
+                  onValueChange={(v) => setSelectedModel(v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
                     {models.map((m) => (
-                      <option key={m.id} value={m.id}>
+                      <SelectItem key={m.id} value={m.id}>
                         {m.id}{m.owned_by ? ` · ${m.owned_by}` : ''}
-                      </option>
+                      </SelectItem>
                     ))}
-                  </select>
-                  <svg
-                    className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </div>
+                  </SelectContent>
+                </Select>
               )}
-            </section>
+              </CardContent>
+            </Card>
 
             {/* Command output */}
-            <section className="rounded-lg border bg-card p-5 space-y-4">
+            <Card>
+              <CardContent className="p-5 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
                   <Terminal className="w-5 h-5 text-muted-foreground" />
@@ -394,7 +393,8 @@ export function InstallView() {
                   )}
                 </Button>
               </div>
-            </section>
+              </CardContent>
+            </Card>
           </>
         )}
       </div>

@@ -1,6 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronLeft, ChevronRight, ChevronDown, Inbox, Loader2, Bot, User, MoreVertical, Trash2, FileDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox, Loader2, Bot, User, MoreVertical, Trash2, FileDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import {
+  ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
@@ -70,23 +81,16 @@ export function AuditView() {
 
   // Developer mode: right-click title to toggle between simple/raw mode
   const [developerMode, setDeveloperMode] = useState(auditDeveloperMode);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Delete confirmation dialog
   const [deleteTarget, setDeleteTarget] = useState<ConversationListItem | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  };
-
   const handleToggleMode = () => {
     const isRaw = !developerMode;
     auditDeveloperMode = isRaw;
     setDeveloperMode(isRaw);
-    setContextMenu(null);
   };
 
   /** Build a plain-text rendering of the conversation for export / save-as. */
@@ -261,22 +265,34 @@ export function AuditView() {
     <div className="space-y-6">
       {/* Header — 只有标题 + 密钥筛选 */}
       <div className="flex justify-between items-start gap-4 flex-wrap">
-        <h2 className="text-3xl font-normal m-0 select-none" onContextMenu={handleContextMenu}>
-          {t('audit.title')}
-          {developerMode && <span className="ml-2 text-sm text-muted-foreground">⚡</span>}
-        </h2>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <h2 className="text-3xl font-normal m-0 select-none cursor-default">
+              {t('audit.title')}
+              {developerMode && <span className="ml-2 text-sm text-muted-foreground">⚡</span>}
+            </h2>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onClick={handleToggleMode}>
+              {developerMode ? t('audit.mode_simple') : t('audit.mode_raw')}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
         <div className="relative">
-          <select
+          <Select
             value={keyFilter}
-            onChange={e => { setKeyFilter(e.target.value); setPage(1); }}
-            className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-8 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onValueChange={(v) => { setKeyFilter(v); setPage(1); }}
           >
-            <option value="">{t('common.all')}</option>
-            {serviceKeys.map(sk => (
-              <option key={sk.id} value={sk.id}>{sk.name} ({sk.key_masked})</option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <SelectTrigger className="h-9 w-[200px]">
+              <SelectValue placeholder={t('common.all')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{t('common.all')}</SelectItem>
+              {serviceKeys.map(sk => (
+                <SelectItem key={sk.id} value={sk.id}>{sk.name} ({sk.key_masked})</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
@@ -300,9 +316,9 @@ export function AuditView() {
               >
                 <div className="min-w-0 overflow-hidden">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">
+                    <Badge variant="secondary" className="shrink-0">
                       {conv.service_key_name}
-                    </span>
+                    </Badge>
                     <span className="text-xs text-muted-foreground shrink-0">
                       {t('audit.messages', { count: conv.message_count })}
                     </span>
@@ -404,15 +420,16 @@ export function AuditView() {
 
                 return (
                   <div key={idx} className={cn('flex gap-3')}>
-                    <div className={cn(
-                      'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center',
-                      isUser ? 'bg-primary/10' : 'bg-muted'
-                    )}>
-                      {isUser
-                        ? <User className="w-4 h-4 text-primary" />
-                        : <Bot className="w-4 h-4 text-muted-foreground" />
-                      }
-                    </div>
+                    <Avatar className="h-8 w-8 shrink-0">
+                      <AvatarFallback className={cn(
+                        isUser ? 'bg-primary/10' : 'bg-muted'
+                      )}>
+                        {isUser
+                          ? <User className="w-4 h-4 text-primary" />
+                          : <Bot className="w-4 h-4 text-muted-foreground" />
+                        }
+                      </AvatarFallback>
+                    </Avatar>
                     <div className={cn(
                       'flex-1 rounded-lg px-4 py-3 text-sm',
                       isUser ? 'bg-primary/5' : 'bg-muted/50'
@@ -433,43 +450,49 @@ export function AuditView() {
 
                       {/* Thinking blocks — only visible in developer mode */}
                       {developerMode && hasThinking && (
-                        <details className="mt-2">
-                          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                        <Collapsible className="mt-2">
+                          <CollapsibleTrigger className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
                             💭 {t('audit.thinking')}
-                          </summary>
-                          <pre className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
-                            {Array.isArray(msg.content)
-                              ? (msg.content as any[]).filter((b: any) => b?.type === 'thinking').map((b: any) => b.thinking).join('\n')
-                              : ''}
-                          </pre>
-                        </details>
+                          </CollapsibleTrigger>
+                          <CollapsibleContent>
+                            <pre className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
+                              {Array.isArray(msg.content)
+                                ? (msg.content as any[]).filter((b: any) => b?.type === 'thinking').map((b: any) => b.thinking).join('\n')
+                                : ''}
+                            </pre>
+                          </CollapsibleContent>
+                        </Collapsible>
                       )}
 
                       {/* Tool blocks — only visible in developer mode */}
                       {developerMode && (
                         <>
                           {toolUses.map((tu: any, i: number) => (
-                            <details key={i} className="mt-2">
-                              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                            <Collapsible key={i} className="mt-2">
+                              <CollapsibleTrigger className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
                                 🔧 {t('audit.tool_use', { name: tu.name })}
-                              </summary>
-                              <pre className="mt-1 text-xs whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
-                                {JSON.stringify(tu.input, null, 2)}
-                              </pre>
-                            </details>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent>
+                                <pre className="mt-1 text-xs whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
+                                  {JSON.stringify(tu.input, null, 2)}
+                                </pre>
+                              </CollapsibleContent>
+                            </Collapsible>
                           ))}
 
                           {toolResults.map((tr: any, i: number) => (
-                            <details key={i} className="mt-2">
-                              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                            <Collapsible key={i} className="mt-2">
+                              <CollapsibleTrigger className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
                                 📋 {t('audit.tool_result')} {tr.is_error && '⚠️'}
-                              </summary>
-                              <pre className="mt-1 text-xs whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
-                                {typeof tr.content === 'string'
-                                  ? tr.content
-                                  : JSON.stringify(tr.content, null, 2)}
-                              </pre>
-                            </details>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent>
+                                <pre className="mt-1 text-xs whitespace-pre-wrap max-h-40 overflow-y-auto bg-background/50 rounded p-2">
+                                  {typeof tr.content === 'string'
+                                    ? tr.content
+                                    : JSON.stringify(tr.content, null, 2)}
+                                </pre>
+                              </CollapsibleContent>
+                            </Collapsible>
                           ))}
                         </>
                       )}
@@ -503,27 +526,6 @@ export function AuditView() {
         </DialogContent>
       </Dialog>
 
-      {/* Right-click context menu */}
-      {contextMenu && (
-        <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setContextMenu(null)}
-            onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}
-          />
-          <div
-            className="fixed z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            <button
-              className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
-              onClick={handleToggleMode}
-            >
-              {developerMode ? t('audit.mode_simple') : t('audit.mode_raw')}
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }

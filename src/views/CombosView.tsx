@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { Plus, Inbox, MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -38,20 +39,21 @@ function ComboCard({ combo, onEdit, onDelete }: ComboCardProps) {
             {combo.name}
           </h3>
           {!combo.enabled && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-muted-foreground/20 text-muted-foreground">
+            <Badge variant="secondary">
               {t('combos.disabled')}
-            </span>
+            </Badge>
           )}
         </div>
         <div className="flex flex-wrap gap-1 mt-2">
           {combo.members.map((member, idx) => (
-            <span
+            <Badge
               key={idx}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-background border text-xs"
+              variant="outline"
+              className="text-xs"
               title={t('combos.member_order', { pos: idx + 1 })}
             >
               <span className="font-mono">{member}</span>
-            </span>
+            </Badge>
           ))}
         </div>
       </div>

@@ -18,6 +18,7 @@ import {
   rectSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -120,7 +121,8 @@ function ProviderCard({
             {provider.name}
           </h3>
           {isPlugin ? (
-            <span
+            <Badge
+              variant="outline"
               className={cn(
                 'text-xs shrink-0',
                 // 在线：常规样式（不斜体）；离线：淡化 + 斜体提示，不另标文字
@@ -131,7 +133,7 @@ function ProviderCard({
               title={t('providers.plugin_delegated')}
             >
               {t('providers.plugin_badge')}
-            </span>
+            </Badge>
           ) : provider.base_url ? (
             <span
               className="text-xs text-muted-foreground font-mono truncate shrink-0"
@@ -146,12 +148,9 @@ function ProviderCard({
         {models.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {models.map((m) => (
-              <span
-                key={m.id}
-                className="inline-flex items-center px-2 py-1 rounded-md bg-background border text-xs"
-              >
+              <Badge key={m.id} variant="outline" className="text-xs">
                 <span className="font-mono">{m.display_name || m.model_id}</span>
-              </span>
+              </Badge>
             ))}
           </div>
         )}

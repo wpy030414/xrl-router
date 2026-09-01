@@ -1,7 +1,18 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
-import { ArrowLeft, Loader2, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Alert } from '@/components/ui/alert';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useProvidersStore } from '@/stores/providers';
 import { useApiKeysStore } from '@/stores/apiKeys';
 import { providersApi, pluginsApi, modelsApi, keysApi, type Provider, type PluginDetail } from '@/lib/api';
@@ -308,77 +319,62 @@ export function ProviderFormView() {
 
       {/* Error banner */}
       {error && (
-        <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">
+        <Alert variant="destructive">
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Form */}
       <div className="space-y-5">
         {/* Name */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium" htmlFor="provider-name">
+          <Label htmlFor="provider-name">
             {t('providerForm.name_label')}
-          </label>
-          <input
+          </Label>
+          <Input
             id="provider-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className={cn(
-              'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm',
-              'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              'disabled:cursor-not-allowed disabled:opacity-50'
-            )}
             placeholder={t('providerForm.name_placeholder')}
           />
         </div>
 
         {/* Kind */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium" htmlFor="provider-kind">
+          <Label htmlFor="provider-kind">
             {t('providerForm.kind_label')}
-          </label>
-          <div className="relative">
-            <select
-              id="provider-kind"
-              value={kind}
-              onChange={(e) => handleKindChange(e.target.value as Provider['kind'])}
-              disabled={isEdit || isPlugin}
-              className={cn(
-                // appearance-none：去掉原生 select 自带内边距，px-3 才能与 input 精确对齐；
-                // pr-9 给右侧 chevron 留位
-                'flex h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-2 pr-9 text-sm',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                'disabled:cursor-not-allowed disabled:opacity-50'
-              )}
-            >
+          </Label>
+          <Select
+            value={kind}
+            onValueChange={(v) => handleKindChange(v as Provider['kind'])}
+            disabled={isEdit || isPlugin}
+          >
+            <SelectTrigger id="provider-kind">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
               {KIND_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
+                <SelectItem key={opt.value} value={opt.value}>
                   {t(opt.labelKey)}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          </div>
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Base URL */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium" htmlFor="provider-base-url">
+          <Label htmlFor="provider-base-url">
             {t('providerForm.base_url_label')}
-          </label>
-          <input
+          </Label>
+          <Input
             id="provider-base-url"
             type="url"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             disabled={isPlugin}
-            className={cn(
-              'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono',
-              'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              'disabled:cursor-not-allowed disabled:opacity-50'
-            )}
+            className="font-mono"
             placeholder={t('providerForm.base_url_placeholder')}
           />
         </div>
@@ -393,21 +389,17 @@ export function ProviderFormView() {
           )
         ) : (
           <div className="space-y-1.5">
-            <label className="text-sm font-medium" htmlFor="provider-api-key">
+            <Label htmlFor="provider-api-key">
               {t('providerForm.api_key_label')}
-            </label>
-            <textarea
+            </Label>
+            <Textarea
               id="provider-api-key"
               value={apiKeysText}
               onChange={(e) => setApiKeysText(e.target.value)}
               rows={3}
               autoComplete="off"
               spellCheck={false}
-              className={cn(
-                'flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono',
-                'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                'resize-y min-h-[72px]'
-              )}
+              className="font-mono"
               placeholder={t('providerForm.api_key_placeholder')}
             />
           </div>
@@ -415,19 +407,15 @@ export function ProviderFormView() {
 
         {/* Models */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium" htmlFor="provider-models">
+          <Label htmlFor="provider-models">
             {t('providerForm.models_label')}
-          </label>
-          <textarea
+          </Label>
+          <Textarea
             id="provider-models"
             value={modelsText}
             onChange={(e) => setModelsText(e.target.value)}
             rows={6}
-            className={cn(
-              'flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono',
-              'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              'resize-y min-h-[120px]'
-            )}
+            className="font-mono"
             placeholder={t('providerForm.models_placeholder')}
           />
         </div>

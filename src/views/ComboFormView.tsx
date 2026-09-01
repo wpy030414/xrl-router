@@ -2,6 +2,10 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { ArrowLeft, Loader2, ChevronUp, ChevronDown, X, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Alert } from '@/components/ui/alert';
 import { useCombosStore } from '@/stores/combos';
 import { useModelsStore } from '@/stores/models';
 import { useProvidersStore } from '@/stores/providers';
@@ -163,49 +167,31 @@ export function ComboFormView() {
 
       {/* Error banner */}
       {error && (
-        <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">
+        <Alert variant="destructive">
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Form */}
       <div className="space-y-5">
         {/* Name */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium" htmlFor="combo-name">
+          <Label htmlFor="combo-name">
             {t('comboForm.name_label')}
-          </label>
-          <input
+          </Label>
+          <Input
             id="combo-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className={cn(
-              'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm',
-              'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
-            )}
             placeholder={t('comboForm.name_placeholder')}
           />
         </div>
 
         {/* Enabled toggle */}
         <div className="flex items-center gap-3">
-          <label className="text-sm font-medium">{t('comboForm.enabled_label')}</label>
-          <button
-            type="button"
-            onClick={() => setEnabled(!enabled)}
-            className={cn(
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-              enabled ? 'bg-primary' : 'bg-muted-foreground/20'
-            )}
-          >
-            <span
-              className={cn(
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                enabled ? 'translate-x-6' : 'translate-x-1'
-              )}
-            />
-          </button>
+          <Label>{t('comboForm.enabled_label')}</Label>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
           <span className="text-sm text-muted-foreground">
             {enabled ? t('common.enabled') : t('common.disabled')}
           </span>
@@ -213,7 +199,7 @@ export function ComboFormView() {
 
         {/* Selected members */}
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('comboForm.selected_label')}</label>
+          <Label>{t('comboForm.selected_label')}</Label>
           {selectedMembers.length === 0 ? (
             <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-lg">
               {t('comboForm.selected_empty')}
@@ -275,7 +261,7 @@ export function ComboFormView() {
 
         {/* Available models */}
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('comboForm.available_label')}</label>
+          <Label>{t('comboForm.available_label')}</Label>
           {availableModels.length === 0 ? (
             <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-lg">
               {t('comboForm.no_models')}
