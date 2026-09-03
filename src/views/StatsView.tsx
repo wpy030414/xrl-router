@@ -8,8 +8,15 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { ChevronLeft, ChevronRight, ChevronDown, Inbox } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import {
   statsApi,
   requestLogApi,
@@ -441,24 +448,25 @@ export function StatsView() {
         <h2 className="text-3xl font-normal m-0">{t('stats.title')}</h2>
         <div className="flex items-center gap-2.5">
           {/* 密钥筛选：作用于全部统计单元 */}
-          <div className="relative">
-            <select
-              value={keyFilter}
-              onChange={(e) => {
-                setKeyFilter(e.target.value);
-                setLogPage(1);
-              }}
-              className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-8 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <option value="">{t('common.all')}</option>
+          <Select
+            value={keyFilter}
+            onValueChange={(v) => {
+              setKeyFilter(v);
+              setLogPage(1);
+            }}
+          >
+            <SelectTrigger className="h-9 w-[200px]">
+              <SelectValue placeholder={t('common.all')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{t('common.all')}</SelectItem>
               {serviceKeys.map((k) => (
-                <option key={k.id} value={k.id}>
+                <SelectItem key={k.id} value={k.id}>
                   {k.name} ({k.key_masked})
-                </option>
+                </SelectItem>
               ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          </div>
+            </SelectContent>
+          </Select>
           <div className="flex gap-1 rounded-lg border bg-muted/50 p-1">
             {TIME_RANGES.map((r) => (
               <button
@@ -613,56 +621,51 @@ export function StatsView() {
           )
         ) : (
           <>
-            {/* 翻页时保留旧行半透明直至新页数据到达，避免表格高度塌缩导致页面跳顶 */}
-            <div className={cn('overflow-x-auto transition-opacity', logLoading && 'opacity-50')}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th className="text-left py-2 px-2 font-medium">{t('stats.log.col_time')}</th>
-                    <th className="text-left py-2 px-2 font-medium">{t('stats.log.col_key')}</th>
-                    <th className="text-left py-2 px-2 font-medium">{t('stats.log.col_provider')}</th>
-                    <th className="text-left py-2 px-2 font-medium">{t('stats.log.col_model')}</th>
-                    <th className="text-right py-2 px-2 font-medium">{t('stats.log.col_input')}</th>
-                    <th className="text-right py-2 px-2 font-medium">{t('stats.log.col_output')}</th>
-                    <th className="text-center py-2 px-2 font-medium">{t('stats.log.col_status')}</th>
-                  </tr>
-                </thead>
-                <tbody>
+            <div className={cn('transition-opacity', logLoading && 'opacity-50')}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('stats.log.col_time')}</TableHead>
+                    <TableHead>{t('stats.log.col_key')}</TableHead>
+                    <TableHead>{t('stats.log.col_provider')}</TableHead>
+                    <TableHead>{t('stats.log.col_model')}</TableHead>
+                    <TableHead className="text-right">{t('stats.log.col_input')}</TableHead>
+                    <TableHead className="text-right">{t('stats.log.col_output')}</TableHead>
+                    <TableHead className="text-center">{t('stats.log.col_status')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {logRows.map((row) => (
-                    <tr key={row.id} className="border-b border-border/50 hover:bg-muted/30">
-                      <td className="py-2 px-2 text-xs tabular-nums">
+                    <TableRow key={row.id}>
+                      <TableCell className="text-xs tabular-nums">
                         {new Date(row.timestamp * 1000).toLocaleString()}
-                      </td>
-                      <td className="py-2 px-2 text-xs truncate max-w-[120px]" title={row.service_key_name}>
+                      </TableCell>
+                      <TableCell className="text-xs truncate max-w-[120px]" title={row.service_key_name}>
                         {row.service_key_name || row.service_key_masked}
-                      </td>
-                      <td className="py-2 px-2 text-xs">{row.provider_name}</td>
-                      <td className="py-2 px-2 text-xs truncate max-w-[150px]" title={row.model_display_name}>
+                      </TableCell>
+                      <TableCell className="text-xs">{row.provider_name}</TableCell>
+                      <TableCell className="text-xs truncate max-w-[150px]" title={row.model_display_name}>
                         {row.model_display_name}
-                      </td>
-                      <td className="py-2 px-2 text-xs text-right tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
                         {row.prompt_tokens.toLocaleString()}
-                      </td>
-                      <td className="py-2 px-2 text-xs text-right tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
                         {row.completion_tokens.toLocaleString()}
-                      </td>
-                      <td className="py-2 px-2 text-center">
-                        <span
-                          className={cn(
-                            'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium',
-                            row.success
-                              ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                              : 'bg-red-500/10 text-red-600 dark:text-red-400'
-                          )}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge
+                          variant={row.success ? 'secondary' : 'destructive'}
+                          className="text-xs"
                           title={row.error_message || undefined}
                         >
                           {row.success ? t('stats.log.status_ok') : t('stats.log.status_fail')}
-                        </span>
-                      </td>
-                    </tr>
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
             {/* Pagination */}

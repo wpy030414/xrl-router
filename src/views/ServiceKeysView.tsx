@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Plus, Search, Copy, Check, Trash2, Pencil, Shield, Gauge, Key as KeyIcon, Loader2, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -317,7 +320,7 @@ export function KeysView() {
       {/* Search */}
       <div className="relative flex-1 min-w-[200px] max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <input
+        <Input
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -462,13 +465,13 @@ export function KeysView() {
                   {t('keys.created_once')}
                 </p>
                 <p className="text-xs text-muted-foreground mb-3">{t('keys.save_warning')}</p>
-                <label className="text-xs font-medium">{t('keys.plain_key')}</label>
+                <Label className="text-xs">{t('keys.plain_key')}</Label>
                 <div className="flex gap-2 mt-1">
-                  <input
+                  <Input
                     type="text"
                     readOnly
                     value={createdKey.key}
-                    className="flex-1 px-3 py-2 rounded-md border border-input bg-background text-sm font-mono"
+                    className="flex-1 font-mono"
                   />
                   <Button size="sm" onClick={() => copyToClipboard(createdKey.key)}>
                     {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
@@ -476,15 +479,15 @@ export function KeysView() {
                 </div>
                 {deployLink && (
                   <>
-                    <label className="text-xs font-medium mt-3 block">
+                    <Label className="text-xs mt-3 block">
                       {t('keys.deploy_link')}
-                    </label>
+                    </Label>
                     <div className="flex gap-2 mt-1">
-                      <input
+                      <Input
                         type="text"
                         readOnly
                         value={deployLink}
-                        className="flex-1 px-3 py-2 rounded-md border border-input bg-background text-sm font-mono"
+                        className="flex-1 font-mono"
                       />
                       <Button size="sm" onClick={() => copyToClipboard(deployLink)}>
                         {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
@@ -497,20 +500,20 @@ export function KeysView() {
           ) : (
             <div className="space-y-4">
               <div>
-                <label className="text-sm font-medium">{t('keys.rename_label')}</label>
-                <input
+                <Label>{t('keys.rename_label')}</Label>
+                <Input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   autoFocus
                   placeholder={t('keys.name_placeholder')}
-                  className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="mt-1"
                 />
               </div>
 
               {/* 可用模型：创建时即可限定白名单（不勾选 = 全部） */}
               <div>
-                <label className="text-sm font-medium">{t('keys.col_models')}</label>
+                <Label>{t('keys.col_models')}</Label>
                 {modelsLoading ? (
                   <div className="flex justify-center py-6">
                     <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
@@ -530,11 +533,9 @@ export function KeysView() {
                                 key={m}
                                 className="flex items-center gap-2 text-sm cursor-pointer select-none"
                               >
-                                <input
-                                  type="checkbox"
+                                <Checkbox
                                   checked={checked}
-                                  onChange={() => toggleCreatePerm(m)}
-                                  className="h-4 w-4 rounded border-input accent-primary"
+                                  onCheckedChange={() => toggleCreatePerm(m)}
                                 />
                                 <span className="font-mono text-xs truncate">{m}</span>
                               </label>
@@ -574,13 +575,13 @@ export function KeysView() {
             <DialogTitle>{t('keys.rename_title')}</DialogTitle>
           </DialogHeader>
           <div>
-            <label className="text-sm font-medium">{t('keys.rename_label')}</label>
-            <input
+            <Label>{t('keys.rename_label')}</Label>
+            <Input
               type="text"
               value={renameName}
               onChange={(e) => setRenameName(e.target.value)}
               autoFocus
-              className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="mt-1"
             />
           </div>
           <DialogFooter>
@@ -622,11 +623,9 @@ export function KeysView() {
                           key={m}
                           className="flex items-center gap-2 text-sm cursor-pointer select-none"
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={checked}
-                            onChange={() => togglePerm(m)}
-                            className="h-4 w-4 rounded border-input accent-primary"
+                            onCheckedChange={() => togglePerm(m)}
                           />
                           <span className="font-mono text-xs truncate">{m}</span>
                         </label>
@@ -659,28 +658,28 @@ export function KeysView() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium">{t('keys.quota_5h_label')}</label>
-              <input
+              <Label>{t('keys.quota_5h_label')}</Label>
+              <Input
                 type="number"
                 min={0}
                 value={quota5h}
                 onChange={(e) => setQuota5h(e.target.value)}
                 placeholder="0"
-                className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="mt-1 font-mono"
               />
               <p className="text-xs text-muted-foreground mt-1">
                 {t('keys.quota_preview', { value: formatAbbrev(parseInt(quota5h || '0', 10) || 0, t) })}
               </p>
             </div>
             <div>
-              <label className="text-sm font-medium">{t('keys.quota_7d_label')}</label>
-              <input
+              <Label>{t('keys.quota_7d_label')}</Label>
+              <Input
                 type="number"
                 min={0}
                 value={quota7d}
                 onChange={(e) => setQuota7d(e.target.value)}
                 placeholder="0"
-                className="w-full mt-1 h-10 px-3 rounded-md border border-input bg-background text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="mt-1 font-mono"
               />
               <p className="text-xs text-muted-foreground mt-1">
                 {t('keys.quota_preview', { value: formatAbbrev(parseInt(quota7d || '0', 10) || 0, t) })}

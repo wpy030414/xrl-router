@@ -2,7 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { Search, ArrowLeft, Download, Loader2, Heart, CloudDownload, Inbox } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -256,22 +258,22 @@ export function HfBrowseView() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('local.model_id_label')}</label>
+              <Label>{t('local.model_id_label')}</Label>
               <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder={t('local.model_id_placeholder')} />
               <p className="text-xs text-muted-foreground">{t('local.model_id_hint')}</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.ctx_size')}</label>
+                <Label>{t('local.ctx_size')}</Label>
                 <Input type="number" value={ctxSize} onChange={(e) => setCtxSize(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.n_gpu_layers')}</label>
+                <Label>{t('local.n_gpu_layers')}</Label>
                 <Input type="number" value={gpuLayers} onChange={(e) => setGpuLayers(e.target.value)} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" checked={autostart} onChange={(e) => setAutostart(e.target.checked)} className="rounded" />
+              <Checkbox checked={autostart} onCheckedChange={(v) => setAutostart(!!v)} />
               {t('local.autostart_label')}
             </label>
             {createError && <p className="text-sm text-destructive">{createError}</p>}

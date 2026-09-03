@@ -6,6 +6,13 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -165,9 +172,7 @@ function ModelCard({ model }: { model: LocalModel }) {
 
       {model.status === 'downloading' && progress && (
         <div className="space-y-1">
-          <div className="w-full h-2 bg-background rounded-full overflow-hidden">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
-          </div>
+          <Progress value={progressPct} className="h-2" />
           <p className="text-xs text-muted-foreground">
             {formatSize(progress.downloaded)} / {formatSize(progress.total)} ({progressPct.toFixed(1)}%)
           </p>
@@ -187,36 +192,37 @@ function ModelCard({ model }: { model: LocalModel }) {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('local.model_id_label')}</label>
+              <Label>{t('local.model_id_label')}</Label>
               <Input value={modelId} onChange={(e) => setModelId(e.target.value)} />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('local.backend')}</label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
-                value={backend}
-                onChange={(e) => setBackend(e.target.value)}
-              >
-                {BACKEND_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
-                ))}
-              </select>
+              <Label>{t('local.backend')}</Label>
+              <Select value={backend} onValueChange={(v) => setBackend(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BACKEND_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>{t(opt.labelKey)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" checked={thinking} onChange={(e) => setThinking(e.target.checked)} className="rounded" />
+              <Checkbox checked={thinking} onCheckedChange={(v) => setThinking(!!v)} />
               {t('local.thinking_label')}
             </label>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" checked={autostart} onChange={(e) => setAutostart(e.target.checked)} className="rounded" />
+              <Checkbox checked={autostart} onCheckedChange={(v) => setAutostart(!!v)} />
               {t('local.autostart_label')}
             </label>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.ctx_size')}</label>
+                <Label>{t('local.ctx_size')}</Label>
                 <Input type="number" value={ctxSize} onChange={(e) => setCtxSize(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.n_gpu_layers')}</label>
+                <Label>{t('local.n_gpu_layers')}</Label>
                 <Input type="number" value={gpuLayers} onChange={(e) => setGpuLayers(e.target.value)} />
               </div>
             </div>
@@ -413,7 +419,7 @@ export function LocalModelsView() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('local.import_src')}</label>
+              <Label>{t('local.import_src')}</Label>
               <div className="flex gap-2">
                 <div
                   className="flex h-9 flex-1 min-w-0 items-center rounded-md border border-input bg-background px-3 text-sm text-muted-foreground truncate cursor-pointer"
@@ -426,22 +432,22 @@ export function LocalModelsView() {
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('local.model_id_label')}</label>
+              <Label>{t('local.model_id_label')}</Label>
               <Input value={importModelId} onChange={(e) => setImportModelId(e.target.value)} placeholder={t('local.model_id_placeholder')} />
               <p className="text-xs text-muted-foreground">{t('local.model_id_hint')}</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.ctx_size')}</label>
+                <Label>{t('local.ctx_size')}</Label>
                 <Input type="number" value={importCtxSize} onChange={(e) => setImportCtxSize(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('local.n_gpu_layers')}</label>
+                <Label>{t('local.n_gpu_layers')}</Label>
                 <Input type="number" value={importGpuLayers} onChange={(e) => setImportGpuLayers(e.target.value)} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" checked={importAutostart} onChange={(e) => setImportAutostart(e.target.checked)} className="rounded" />
+              <Checkbox checked={importAutostart} onCheckedChange={(v) => setImportAutostart(!!v)} />
               {t('local.autostart_label')}
             </label>
             {importError && <p className="text-sm text-destructive">{importError}</p>}
