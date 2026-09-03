@@ -86,6 +86,12 @@ export function KeysView() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // 时间列显示模式：默认「最后调用」，单击表头循环切换
+  type TimeMode = 'last_used' | 'updated' | 'created';
+  const TIME_MODES: TimeMode[] = ['last_used', 'updated', 'created'];
+  const [timeMode, setTimeMode] = useState<TimeMode>('last_used');
+  const cycleTimeMode = () => setTimeMode((m) => TIME_MODES[(TIME_MODES.indexOf(m) + 1) % TIME_MODES.length]);
+
   // Create
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -348,7 +354,15 @@ export function KeysView() {
                 <th className="px-4 py-2.5 font-normal">{t('keys.col_key')}</th>
                 <th className="px-3 py-2.5 font-normal">{t('keys.col_models')}</th>
                 <th className="px-3 py-2.5 font-normal">{t('keys.col_quota')}</th>
-                <th className="px-3 py-2.5 font-normal text-right">{t('keys.col_times')}</th>
+                <th
+                  className="px-3 py-2.5 font-normal text-right cursor-pointer select-none hover:text-foreground transition-colors"
+                  onClick={cycleTimeMode}
+                  title={t('keys.col_times')}
+                >
+                  {timeMode === 'last_used' && t('keys.time_last_used')}
+                  {timeMode === 'updated' && t('keys.time_updated')}
+                  {timeMode === 'created' && t('keys.time_created')}
+                </th>
                 <th className="w-9" />
               </tr>
             </thead>
@@ -399,10 +413,11 @@ export function KeysView() {
                       </div>
                     </td>
 
-                    {/* 创建 / 修改时间（右对齐） */}
+                    {/* 时间列：根据 timeMode 显示对应时间 */}
                     <td className="px-3 py-3 text-right text-xs text-muted-foreground whitespace-nowrap">
-                      <p>{formatTime(k.created_at)}</p>
-                      <p>{formatTime(k.updated_at)}</p>
+                      {timeMode === 'last_used' && (k.last_used_at ? formatTime(k.last_used_at) : '-')}
+                      {timeMode === 'updated' && formatTime(k.updated_at)}
+                      {timeMode === 'created' && formatTime(k.created_at)}
                     </td>
 
                     {/* Actions */}
