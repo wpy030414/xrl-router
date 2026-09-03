@@ -1,15 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router';
 import {
-  CloudDownload, FolderOpen, Plus, Play, Square, Pencil, Trash2, Inbox,
-  XCircle, Loader2,
+  Plus, Play, Square, Pencil, Trash2, Inbox,
+  Loader2,
   MoreVertical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -28,7 +25,6 @@ import { cn } from '@/lib/utils';
 import { tauriDialog, isTauri } from '@/lib/tauri';
 
 const STATUS_COLORS: Record<string, string> = {
-  downloading: 'bg-blue-500',
   downloaded: 'bg-gray-400',
   running: 'bg-green-500',
   error: 'bg-red-500',
@@ -61,7 +57,6 @@ const BACKEND_OPTIONS = [
 
 function ModelCard({ model }: { model: LocalModel }) {
   const t = useT();
-  const progress = useLocalModelsStore((s) => s.progress[model.id]);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [modelId, setModelId] = useState(model.model_id);
@@ -73,13 +68,8 @@ function ModelCard({ model }: { model: LocalModel }) {
   const [busy, setBusy] = useState(false);
   const { fetchModels } = useLocalModelsStore();
 
-  const progressPct = progress && progress.total > 0
-    ? Math.min(100, (progress.downloaded / progress.total) * 100)
-    : 0;
-
   const handleStart = async () => { setBusy(true); try { await localModelsApi.start(model.id); } finally { setBusy(false); } };
   const handleStop = async () => { setBusy(true); try { await localModelsApi.stop(model.id); } finally { setBusy(false); } };
-  const handleCancel = async () => { try { await localModelsApi.cancel(model.id); } catch { /* ignore */ } };
 
   const handleEditSave = async () => {
     setBusy(true);
@@ -115,7 +105,6 @@ function ModelCard({ model }: { model: LocalModel }) {
           <div className="flex items-center gap-2 min-w-0">
             <h3 className="font-medium truncate" title={model.model_id}>{model.model_id}</h3>
             <span className={cn('inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full text-white shrink-0', STATUS_COLORS[model.status])}>
-              {model.status === 'downloading' && <Loader2 className="w-3 h-3 animate-spin" />}
               {t(`local.status.${model.status}`)}
             </span>
           </div>
@@ -130,54 +119,36 @@ function ModelCard({ model }: { model: LocalModel }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {model.status === 'downloading' ? (
-              <DropdownMenuItem onClick={handleCancel} className="text-destructive focus:text-destructive">
-                <XCircle className="w-4 h-4 mr-2" />
-                {t('local.actions.cancel')}
+            {model.status !== 'running' ? (
+              <DropdownMenuItem onClick={handleStart}>
+                <Play className="w-4 h-4 mr-2" />
+                {t('local.actions.start')}
               </DropdownMenuItem>
             ) : (
-              <>
-                {model.status !== 'running' ? (
-                  <DropdownMenuItem onClick={handleStart} disabled={model.status === 'downloading'}>
-                    <Play className="w-4 h-4 mr-2" />
-                    {t('local.actions.start')}
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onClick={handleStop}>
-                    <Square className="w-4 h-4 mr-2" />
-                    {t('local.actions.stop')}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem onClick={() => {
-                  setModelId(model.model_id);
-                  setBackend(model.backend);
-                  setCtxSize(model.ctx_size.toString());
-                  setGpuLayers(model.n_gpu_layers.toString());
-                  setThinking(model.thinking === 1);
-                  setAutostart(model.autostart === 1);
-                  setEditing(true);
-                }}>
-                  <Pencil className="w-4 h-4 mr-2" />
-                  {t('local.actions.edit')}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setDeleting(true)} className="text-destructive focus:text-destructive">
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  {t('local.actions.delete')}
-                </DropdownMenuItem>
-              </>
+              <DropdownMenuItem onClick={handleStop}>
+                <Square className="w-4 h-4 mr-2" />
+                {t('local.actions.stop')}
+              </DropdownMenuItem>
             )}
+            <DropdownMenuItem onClick={() => {
+              setModelId(model.model_id);
+              setBackend(model.backend);
+              setCtxSize(model.ctx_size.toString());
+              setGpuLayers(model.n_gpu_layers.toString());
+              setThinking(model.thinking === 1);
+              setAutostart(model.autostart === 1);
+              setEditing(true);
+            }}>
+              <Pencil className="w-4 h-4 mr-2" />
+              {t('local.actions.edit')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setDeleting(true)} className="text-destructive focus:text-destructive">
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('local.actions.delete')}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-
-      {model.status === 'downloading' && progress && (
-        <div className="space-y-1">
-          <Progress value={progressPct} className="h-2" />
-          <p className="text-xs text-muted-foreground">
-            {formatSize(progress.downloaded)} / {formatSize(progress.total)} ({progressPct.toFixed(1)}%)
-          </p>
-        </div>
-      )}
 
       <div className="text-xs text-muted-foreground">
         {formatSize(model.file_size)}, {backendLabel(model.backend, t)}, {Math.round(model.ctx_size / 1024)}k, {model.n_gpu_layers} layers
@@ -261,13 +232,10 @@ function ModelCard({ model }: { model: LocalModel }) {
 
 export function LocalModelsView() {
   const t = useT();
-  const navigate = useNavigate();
   const { models, loading, fetchModels } = useLocalModelsStore();
-  const updateProgress = useLocalModelsStore((s) => s.updateProgress);
   const updateStatus = useLocalModelsStore((s) => s.updateStatus);
 
-  // 添加权重：来源选择 + 本地导入表单
-  const [addOpen, setAddOpen] = useState(false);
+  // 导入权重表单
   const [importOpen, setImportOpen] = useState(false);
   const [importPath, setImportPath] = useState('');
   const [importModelId, setImportModelId] = useState('');
@@ -278,13 +246,11 @@ export function LocalModelsView() {
   const [importError, setImportError] = useState<string | null>(null);
 
   const openImport = () => {
-    setAddOpen(false);
     setImportPath('');
     setImportModelId('');
     setImportCtxSize('32768');
     setImportGpuLayers('99');
     setImportAutostart(false);
-    // 浏览器环境没有原生文件选择，本地导入仅桌面端可用
     setImportError(isTauri() ? null : t('local.import_browser_unsupported'));
     setImportOpen(true);
   };
@@ -297,7 +263,6 @@ export function LocalModelsView() {
     if (!path) return;
     setImportPath(path);
     if (!importModelId.trim()) {
-      // 默认别名：从文件名推断（与 HF 下载一致）
       const name = path
         .split(/[\\/]/)
         .pop()!
@@ -337,16 +302,13 @@ export function LocalModelsView() {
     fetchModels();
   }, [fetchModels]);
 
-  // WebSocket: local_progress / local_status 事件
+  // WebSocket: local_status 事件
   const handleWs = useCallback((data: any) => {
-    if (data?.type === 'local_progress') {
-      updateProgress(data.id, data.downloaded, data.total);
-    } else if (data?.type === 'local_status') {
+    if (data?.type === 'local_status') {
       updateStatus(data.id, data.status, data.port);
       fetchModels();
     }
-  }, [updateProgress, updateStatus, fetchModels]);
-  useWebSocket('local_progress', handleWs);
+  }, [updateStatus, fetchModels]);
   useWebSocket('local_status', handleWs);
 
   return (
@@ -356,7 +318,7 @@ export function LocalModelsView() {
           <div className="flex justify-between items-start gap-4 flex-wrap">
             <h2 className="text-3xl font-normal m-0">{t('local.title')}</h2>
             <div className="flex items-center gap-2">
-              <Button onClick={() => setAddOpen(true)}>
+              <Button onClick={openImport}>
                 <Plus className="w-4 h-4 mr-2" />
                 {t('local.add')}
               </Button>
@@ -381,34 +343,6 @@ export function LocalModelsView() {
           )}
         </div>
       </div>
-
-      {/* 添加权重：来源选择 */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('local.add')}</DialogTitle>
-            <DialogDescription>{t('local.import_desc')}</DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-3 py-2">
-            <button
-              className="flex flex-col items-center gap-2 rounded-lg border border-border bg-background p-5 text-center hover:bg-accent transition-colors cursor-pointer"
-              onClick={openImport}
-            >
-              <FolderOpen className="w-8 h-8 text-muted-foreground" />
-              <span className="text-sm font-medium">{t('local.import_local')}</span>
-              <span className="text-xs text-muted-foreground">{t('local.import_local_desc')}</span>
-            </button>
-            <button
-              className="flex flex-col items-center gap-2 rounded-lg border border-border bg-background p-5 text-center hover:bg-accent transition-colors cursor-pointer"
-              onClick={() => { setAddOpen(false); navigate('/local/hf'); }}
-            >
-              <CloudDownload className="w-8 h-8 text-muted-foreground" />
-              <span className="text-sm font-medium">{t('local.browse_hf')}</span>
-              <span className="text-xs text-muted-foreground">{t('local.hf_subtitle')}</span>
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* 导入本地权重 */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>

@@ -12,7 +12,6 @@ const FmView = lazy(() => import('./views/FmView'));
 const CombosView = lazy(() => import('./views/CombosView'));
 const ComboFormView = lazy(() => import('./views/ComboFormView'));
 const LocalModelsView = lazy(() => import('./views/LocalModelsView'));
-const HfBrowseView = lazy(() => import('./views/HfBrowseView'));
 const AuditView = lazy(() => import('./views/AuditView'));
 
 /** 路由级懒加载：本地资源加载极快，无需额外 loading UI */
@@ -30,7 +29,6 @@ export const router = createBrowserRouter([
       { path: 'providers/new', element: page(<ProviderFormView />) },
       { path: 'providers/:id/edit', element: page(<ProviderFormView />) },
       { path: 'local', element: page(<LocalModelsView />) },
-      { path: 'local/hf', element: page(<HfBrowseView />) },
       { path: 'combos', element: page(<CombosView />) },
       { path: 'combos/new', element: page(<ComboFormView />) },
       { path: 'combos/:id/edit', element: page(<ComboFormView />) },

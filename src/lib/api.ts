@@ -382,7 +382,7 @@ export interface LocalModel {
   filename: string;
   format: string;
   backend: string;
-  status: 'downloading' | 'downloaded' | 'running' | 'error';
+  status: 'downloaded' | 'running' | 'error';
   model_id: string;
   ctx_size: number;
   n_gpu_layers: number;
@@ -402,27 +402,6 @@ export interface BackendDetect {
   candidates: { backend: string; available: boolean; reason: string }[];
 }
 
-export interface HfRepoSummary {
-  id: string;
-  downloads: number;
-  likes: number;
-  tags: string[];
-  description: string | null;
-}
-
-export interface HfFile {
-  path: string;
-  size: number | null;
-}
-
-export interface HfRepoDetail {
-  id: string;
-  downloads: number;
-  likes: number;
-  tags: string[];
-  files: HfFile[];
-}
-
 export const localModelsApi = {
   list: () => request<LocalModel[]>('/api/local/models'),
   create: (data: {
@@ -434,8 +413,8 @@ export const localModelsApi = {
     ctx_size: number;
     n_gpu_layers: number;
     autostart: boolean;
-    /** 导入本地权重：源文件路径（传入后跳过下载） */
-    local_path?: string;
+    /** 导入本地权重：源文件路径 */
+    local_path: string;
   }) => request<LocalModel>('/api/local/models', { method: 'POST', body: data }),
   delete: (id: string, removeFiles = false) =>
     request<void>(`/api/local/models/${id}?remove_files=${removeFiles}`, { method: 'DELETE' }),
@@ -443,13 +422,5 @@ export const localModelsApi = {
     request<LocalModel>(`/api/local/models/${id}/edit`, { method: 'POST', body: data }),
   start: (id: string) => request<{ ok: boolean }>(`/api/local/models/${id}/start`, { method: 'POST' }),
   stop: (id: string) => request<{ ok: boolean }>(`/api/local/models/${id}/stop`, { method: 'POST' }),
-  cancel: (id: string) => request<{ ok: boolean }>(`/api/local/models/${id}/cancel`, { method: 'POST' }),
   backends: () => request<BackendDetect>('/api/local/backends'),
-  hfMirror: (mirror: boolean) =>
-    request<{ ok: boolean }>('/api/local/hf/mirror', { method: 'POST', body: { mirror } }),
-  hfSearch: (q: string, filter = 'gguf', limit = 30) =>
-    request<{ results: HfRepoSummary[]; mirror: boolean }>(
-      `/api/local/hf/search?q=${encodeURIComponent(q)}&filter=${filter}&limit=${limit}`),
-  hfRepoDetail: (owner: string, repo: string) =>
-    request<HfRepoDetail>(`/api/local/hf/repo/${owner}/${repo}`),
 };

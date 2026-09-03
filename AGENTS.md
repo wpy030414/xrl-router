@@ -24,7 +24,7 @@ xrl-router 是一个**单用户本地 LLM API 网关**，以 Tauri 2 桌面应�
 - 国际化（zh-CN / en）
 - 数据导出/导入/重置
 - Claude FM 桌面壁纸劫持（Windows/macOS）
-- 本地模型管理（HuggingFace 浏览 + GGUF 下载 + llama-server 引擎生命周期）
+- 本地模型管理（GGUF 导入 + llama-server 引擎生命周期）
 
 ### Non-Goals（明确不做的事）
 
@@ -154,11 +154,10 @@ src-tauri/src/
 ├── providers/                 Provider 适配器
 ├── search/bing.rs             Bing 搜索
 ├── wallpaper/                 桌面壁纸劫持（FM 像素艺术 → 桌面层）
-├── local/                     本地模型管理（HF 浏览 + GGUF 下载 + llama-server 引擎）
-│    ├─ mod.rs                 LocalManager（下载/启动/停止/删除/自启动/崩溃重启）
+├── local/                     本地模型管理（GGUF 导入 + llama-server 引擎）
+│    ├─ mod.rs                 LocalManager（导入/启动/停止/删除/自启动/崩溃重启）
 │    ├─ engine.rs              llama-server 引擎二进制管理 + 健康检查
-│    ├─ backend.rs             GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
-│    └─ hf.rs                  HuggingFace API 客户端（搜索/仓库详情/文件下载）
+│    └─ backend.rs             GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
 └── types/                     数据结构定义
 
 src/
@@ -171,7 +170,7 @@ src/
 │    ├─ ProvidersView / ProviderFormView / KeysView / StatsView
 │    ├─ SettingsView / InstallView / FmView
 │    ├─ CombosView / ComboFormView
-│    └─ LocalModelsView / HfBrowseView
+│    └─ LocalModelsView
 ├── components/                AppShell / ConnectionStatus / PluginRegisterDialog / PixelScene / WallpaperScene + ui/（shadcn/ui 组件）
 └── lib/                       工具函数（utils.ts, tauri.ts）
 
@@ -197,4 +196,4 @@ docs/
 | 修改 Claude FM | `api/handlers/fm.rs` + `src/views/FmView.tsx` + `src/hooks/useFm.ts` + `docs/specs/module-claude-fm.md` |
 | 修改协议转换 | `api/proxy/ir/types.rs` + `from_*.rs` + `to_*.rs` |
 | 修改桌面壁纸 | `wallpaper/mod.rs` + `wallpaper/win.rs` / `wallpaper/macos.rs` + `src/components/WallpaperScene.tsx` |
-| 修改本地模型 | `src-tauri/src/local/{mod,engine,backend,hf}.rs` + `api/handlers/local.rs` + `docs/specs/module-local-models.md` |
+| 修改本地模型 | `src-tauri/src/local/{mod,engine,backend}.rs` + `api/handlers/local.rs` + `docs/specs/module-local-models.md` |

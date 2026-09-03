@@ -127,8 +127,8 @@
 | F-59 | Service Key 创建时设置白名单 | 创建密钥时即可限定可用模型 |
 | F-60 | 插件系统改进 | PluginRegisterDialog 自监听事件、支持编辑插件供应商 |
 | F-61 | StatsView 数字翻动动画 | useAnimatedStats + easeOutSine 缓动 |
-| F-62 | 本地模型管理 | HuggingFace 浏览 + GGUF 下载 + llama-server 引擎生命周期 |
-| F-63 | HuggingFace 模型浏览 | 搜索/仓库详情/文件选择，支持镜像切换 |
+| F-62 | 本地模型管理 | GGUF 导入 + llama-server 引擎生命周期 |
+| F-63 | 本地模型导入权重 | 文件选择器导入本地 GGUF 文件 |
 | F-64 | 本地模型崩溃自重启 | 5s/15s/45s 退避，最多 3 次 |
 | F-65 | 本地模型自启动 | 应用启动时自动拉起标记 autostart 的引擎 |
 
@@ -227,17 +227,16 @@
 
 ## 10. 本地模型规格
 
-在本机下载并运行 GGUF 模型，自动注册为网关内 Provider，对外暴露方式与云端 Provider 一致。
+在本机导入并运行 GGUF 模型，自动注册为网关内 Provider，对外暴露方式与云端 Provider 一致。
 
 ### 10.1 模型获取
 
 | 项 | 规则 |
 |----|------|
-| 来源 | HuggingFace Hub（搜索 + 仓库详情 + 文件下载） |
+| 来源 | 用户自行从 HuggingFace 或其他渠道下载 GGUF 文件，通过文件选择器导入 |
 | 格式 | 仅 GGUF |
-| 镜像 | 可切换 HF Mirror（settings 持久化） |
 | 存储 | `app_data_dir/models/{id}/model.gguf` |
-| 下载中断 | 支持取消，`.part` 临时文件自动清理 |
+| 导入失败 | 校验失败或拷贝错误时不产生半成品记录 |
 
 ### 10.2 引擎生命周期
 

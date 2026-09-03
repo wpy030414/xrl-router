@@ -105,7 +105,7 @@ pub struct Combo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalModel {
     pub id: String,
-    /// HF 仓库 ID，如 "Qwen/Qwen3-8B-Instruct-GGUF"
+    /// 来源标识，如 "local" 或原 HF 仓库 ID
     pub repo_id: String,
     /// 权重文件名（GGUF）
     pub filename: String,
@@ -113,7 +113,7 @@ pub struct LocalModel {
     pub format: String,
     /// auto | cpu | cuda | vulkan | rocm | metal（auto 表示检测后持久化的实际值）
     pub backend: String,
-    /// downloading | downloaded | running | error
+    /// downloaded | running | error
     pub status: String,
     /// 对外暴露的模型名（models.display_name）
     pub model_id: String,
@@ -123,7 +123,7 @@ pub struct LocalModel {
     pub autostart: i64,
     /// 1 = 引擎启动时启用思考模式（llama-server --reasoning on）
     pub thinking: i64,
-    /// 目标字节数（HF tree API），下载中/后非空
+    /// 目标字节数
     pub file_size: Option<i64>,
     /// 权重文件绝对路径
     pub local_path: String,

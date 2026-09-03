@@ -5,11 +5,8 @@ interface LocalModelsState {
   models: LocalModel[];
   loading: boolean;
   backends: BackendDetect | null;
-  /** 下载进度：id → { downloaded, total } */
-  progress: Record<string, { downloaded: number; total: number }>;
   fetchModels: () => Promise<void>;
   fetchBackends: () => Promise<void>;
-  updateProgress: (id: string, downloaded: number, total: number) => void;
   updateStatus: (id: string, status: string, port?: number | null) => void;
 }
 
@@ -17,7 +14,6 @@ export const useLocalModelsStore = create<LocalModelsState>((set) => ({
   models: [],
   loading: false,
   backends: null,
-  progress: {},
 
   async fetchModels() {
     set({ loading: true });
@@ -36,12 +32,6 @@ export const useLocalModelsStore = create<LocalModelsState>((set) => ({
     } catch {
       // ignore
     }
-  },
-
-  updateProgress(id, downloaded, total) {
-    set((state) => ({
-      progress: { ...state.progress, [id]: { downloaded, total } },
-    }));
   },
 
   updateStatus(id, status, port) {

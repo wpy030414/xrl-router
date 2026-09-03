@@ -1,7 +1,7 @@
-//! 本地模型管理（私有化）：下载 → 引擎启动 → provider 注册 → 生命周期。
+//! 本地模型管理（私有化）：导入 GGUF 权重 → 引擎启动 → provider 注册 → 生命周期。
 //!
 //! 契约见 docs/specs/spec-local-models.md。要点：
-//! - 事件经 `AppState.key_stats_tx` 广播：`local_progress` / `local_status`。
+//! - 事件经 `AppState.key_stats_tx` 广播：`local_status`。
 //! - 对外暴露：每台本地模型注册一个 Chat Completions provider（id = `local-{model_id}`）
 //!   + 一条模型（display_name = 用户命名）+ 一条随机密钥（AES 加密入库、同步进 KeyPool）。
 //! - 引擎：llama-server（GGUF）。
@@ -9,11 +9,10 @@
 
 pub mod backend;
 pub mod engine;
-pub mod hf;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,7 +26,6 @@ use crate::providers::ProviderRegistry;
 use crate::types::{ApiKey, LocalModel, Model, Provider, ProviderKind};
 
 use backend::{Backend, BackendDetect};
-use hf::{HfClient, HfRepoDetail, HfRepoSummary};
 
 /// 引擎健康检查超时。llama-server 加载完模型才起 HTTP 服务，大模型（如 27B Q8_0）
 /// 在 CPU 上加载可能 1-2 分钟，120s 覆盖常规场景，超时后引导看引擎日志。
@@ -85,8 +83,6 @@ pub struct LocalManager {
     events_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// model id → 运行中引擎。
     running: Arc<Mutex<HashMap<String, RunningEngine>>>,
-    /// model id → 下载取消标志。
-    downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl LocalManager {
@@ -113,44 +109,7 @@ impl LocalManager {
             keys,
             events_tx,
             running: Arc::new(Mutex::new(HashMap::new())),
-            downloads: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    // ---------- HF 只读 ----------
-
-    fn hf_client(&self) -> HfClient {
-        let mirror = self
-            .db
-            .get_setting("hf_mirror")
-            .ok()
-            .flatten()
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false);
-        HfClient::new(HfClient::base_from_setting(mirror), self.http_client.clone())
-    }
-
-    pub async fn hf_search(
-        &self,
-        q: &str,
-        filter: &str,
-        limit: u32,
-    ) -> anyhow::Result<Vec<HfRepoSummary>> {
-        self.hf_client().search(q, filter, limit).await
-    }
-
-    pub async fn hf_repo(&self, repo: &str) -> anyhow::Result<HfRepoDetail> {
-        self.hf_client().repo_detail(repo).await
-    }
-
-    /// 文件大小查询（下载前校验目标大小）。
-    pub async fn hf_file_size(&self, repo: &str, file: &str) -> anyhow::Result<Option<i64>> {
-        let detail = self.hf_client().repo_detail(repo).await?;
-        Ok(detail
-            .files
-            .iter()
-            .find(|f| f.path == file)
-            .and_then(|f| f.size))
     }
 
     // ---------- 查询 ----------
@@ -159,31 +118,13 @@ impl LocalManager {
         backend::detect()
     }
 
-    /// 当前是否启用 HF 镜像（前端展示）。
-    pub fn hf_mirror_enabled(&self) -> bool {
-        self.db
-            .get_setting("hf_mirror")
-            .ok()
-            .flatten()
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false)
-    }
-
-    /// 切换 HF 镜像开关（持久化到 settings）。
-    pub fn set_hf_mirror(&self, on: bool) -> Result<(), String> {
-        self.db
-            .set_setting("hf_mirror", if on { "1" } else { "0" })
-            .map_err(|e| e.to_string())
-    }
-
     pub fn list(&self) -> anyhow::Result<Vec<LocalModel>> {
         self.db.list_local_models()
     }
 
-    // ---------- 下载 ----------
+    // ---------- 导入 ----------
 
-    /// 创建本地模型：校验撞名 → 落库（downloading → 后台下载 /
-    /// 导入本地权重 → 拷贝文件后直接 downloaded）。
+    /// 导入本地权重：校验撞名 → 拷贝文件入库 → 注册为 downloaded 状态。
     pub async fn create(&self, req: CreateLocalModelReq) -> Result<LocalModel, String> {
         if self.db.alias_taken(&req.model_id) {
             return Err(format!("模型名 '{}' 已被占用", req.model_id));
@@ -192,19 +133,18 @@ impl LocalManager {
             return Err(format!("不支持的格式: {}", req.format));
         }
 
-        // 导入路径：文件必须存在且为 .gguf
-        let import_src = req
+        // local_path 必填：指向磁盘上的 .gguf 文件
+        let src_path = req
             .local_path
             .as_deref()
             .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from);
-        if let Some(src) = &import_src {
-            if !src.is_file() {
-                return Err(format!("文件不存在: {}", src.display()));
-            }
-            if src.extension().map(|e| e != "gguf").unwrap_or(true) {
-                return Err("仅支持导入 .gguf 格式的权重文件".to_string());
-            }
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| "请指定要导入的权重文件路径".to_string())?;
+        if !src_path.is_file() {
+            return Err(format!("文件不存在: {}", src_path.display()));
+        }
+        if src_path.extension().map(|e| e != "gguf").unwrap_or(true) {
+            return Err("仅支持导入 .gguf 格式的权重文件".to_string());
         }
 
         let id = format!("lm-{}", uuid::Uuid::new_v4().simple().to_string());
@@ -215,12 +155,11 @@ impl LocalManager {
             filename: req.filename.clone(),
             format: req.format.clone(),
             backend: resolve_backend(&req.backend, &req.format),
-            status: if import_src.is_some() { "downloaded" } else { "downloading" }.to_string(),
+            status: "downloaded".to_string(),
             model_id: req.model_id.clone(),
             ctx_size: req.ctx_size.max(1024),
             n_gpu_layers: req.n_gpu_layers.max(0),
             autostart: if req.autostart { 1 } else { 0 },
-            // 新建默认开启思考（V21 DB 默认值语义）；开关在编辑页调整
             thinking: 1,
             file_size: None,
             local_path: self.model_file_path(&id, &req.format).to_string_lossy().to_string(),
@@ -229,41 +168,25 @@ impl LocalManager {
             updated_at: now,
         };
 
-        match &import_src {
-            Some(src) => {
-                // 本地导入：拷贝到应用数据目录，文件元数据取大小（拷贝中途失败则回滚）
-                let dest = self.model_file_path(&id, &req.format);
-                if let Some(parent) = dest.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::copy(src, &dest) {
-                    return Err(format!("拷贝权重文件失败: {}", e));
-                }
-                match std::fs::metadata(&dest) {
-                    Ok(md) => m.file_size = Some(md.len() as i64),
-                    Err(_) => {
-                        let _ = std::fs::remove_file(&dest);
-                        return Err("无法读取导入文件的元数据".to_string());
-                    }
-                }
-                info!(id = %m.id, src = %src.display(), "imported local weights");
-            }
-            None => {
-                // 目标大小：tree API 查一次（失败不阻断，下载时用 Content-Length）
-                match self.hf_file_size(&req.repo_id, &req.filename).await {
-                    Ok(Some(size)) => m.file_size = Some(size),
-                    Ok(None) => warn!(repo = %req.repo_id, file = %req.filename, "file not found in HF tree"),
-                    Err(e) => warn!(error = %e, "hf tree fetch failed, size unknown"),
-                }
+        // 拷贝到应用数据目录，失败则回滚
+        let dest = self.model_file_path(&id, &req.format);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::copy(&src_path, &dest) {
+            return Err(format!("拷贝权重文件失败: {}", e));
+        }
+        match std::fs::metadata(&dest) {
+            Ok(md) => m.file_size = Some(md.len() as i64),
+            Err(_) => {
+                let _ = std::fs::remove_file(&dest);
+                return Err("无法读取导入文件的元数据".to_string());
             }
         }
+        info!(id = %m.id, src = %src_path.display(), "imported local weights");
 
         self.db.save_local_model(&m).map_err(|e| e.to_string())?;
-        if import_src.is_none() {
-            self.spawn_download(m.clone());
-        } else {
-            self.broadcast_status(&m, None);
-        }
+        self.broadcast_status(&m, None);
         Ok(m)
     }
 
@@ -326,77 +249,6 @@ impl LocalManager {
         self.models_dir.join(id).join("model.gguf")
     }
 
-    fn spawn_download(&self, m: LocalModel) {
-        let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let mut map = self.downloads.lock().unwrap();
-            map.insert(m.id.clone(), cancel.clone());
-        }
-        let this = self.clone();
-        info!(id = %m.id, repo = %m.repo_id, file = %m.filename, "download started");
-        tokio::spawn(async move {
-            let result = this.run_download(&m, cancel.clone()).await;
-            this.downloads.lock().unwrap().remove(&m.id);
-            match result {
-                Ok(()) => {
-                    let mut m2 = m.clone();
-                    m2.status = "downloaded".to_string();
-                    m2.updated_at = chrono::Utc::now().timestamp();
-                    let _ = this.db.save_local_model(&m2);
-                    this.broadcast_status(&m2, None);
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    let mut m2 = m.clone();
-                    m2.status = "error".to_string();
-                    m2.updated_at = chrono::Utc::now().timestamp();
-                    let _ = this.db.save_local_model(&m2);
-                    this.broadcast_status(&m2, Some(msg));
-                    let _ = std::fs::remove_file(
-                        this.model_file_path(&m.id, &m.format).with_extension("part"),
-                    );
-                }
-            }
-        });
-    }
-
-    async fn run_download(
-        &self,
-        m: &LocalModel,
-        cancel: Arc<AtomicBool>,
-    ) -> anyhow::Result<()> {
-        let dest = self.model_file_path(&m.id, &m.format);
-        self.hf_client()
-            .download(
-                &m.repo_id,
-                &m.filename,
-                &dest,
-                m.file_size.map(|s| s as u64),
-                &cancel,
-                |d, t| {
-                    let _ = self.events_tx.send(serde_json::json!({
-                        "type": "local_progress",
-                        "id": m.id,
-                        "downloaded": d,
-                        "total": t,
-                    }));
-                },
-            )
-            .await?;
-        Ok(())
-    }
-
-    pub fn cancel(&self, id: &str) -> Result<(), String> {
-        let flag = self.downloads.lock().unwrap().get(id).cloned();
-        match flag {
-            Some(f) => {
-                f.store(true, Ordering::Relaxed);
-                Ok(())
-            }
-            None => Err("没有进行中的下载".to_string()),
-        }
-    }
-
     // ---------- 引擎生命周期 ----------
 
     /// 启动：resolve 后端 → 确保引擎 → spawn → 健康检查 → 注册 provider。
@@ -406,9 +258,6 @@ impl LocalManager {
             .get_local_model(id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "本地模型不存在".to_string())?;
-        if m.status == "downloading" {
-            return Err("权重仍在下载中，请稍候".to_string());
-        }
         if self.running.lock().unwrap().contains_key(id) {
             return Ok(());
         }
@@ -713,7 +562,7 @@ impl LocalManager {
         Ok(())
     }
 
-    /// 应用启动 autostart：status=downloaded 且 autostart=1 的模型顺序启动。
+    /// 应用启动 autostart：autostart=1 的模型顺序启动。
     pub async fn auto_start_all(&self) {
         let models = match self.db.list_local_models() {
             Ok(v) => v,
@@ -723,7 +572,7 @@ impl LocalManager {
             }
         };
         for m in models {
-            if m.autostart == 1 && m.status != "downloading" {
+            if m.autostart == 1 {
                 if let Err(e) = self.start(&m.id).await {
                     error!(id = %m.id, error = %e, "autostart failed");
                 }

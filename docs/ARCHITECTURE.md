@@ -76,7 +76,7 @@ main.rs
             │    ├─ websocket.rs  (/ws 端点)
             │    ├─ plugin.rs     (插件 REST + WS)
             │    ├─ fm.rs         Claude FM 播放引擎 (含 scene_t 时钟)
-            │    └─ local.rs      本地模型管理 (CRUD + 引擎生命周期 + HF 浏览)
+            │    └─ local.rs      本地模型管理 (CRUD + 引擎生命周期 + 文件导入)
             └─ proxy/         LLM 代理核心
                  ├─ handler.rs     薄入口层: 认证 + 请求体准备
                  ├─ stream.rs      流式引擎核心: 路由解析 → 立即返回 Response → 后台 spawn
@@ -116,10 +116,9 @@ main.rs
   │    ├─ win.rs              Windows 透明 WebView + tauri-plugin-desktop-underlay
   │    └─ macos.rs            macOS kCGDesktopIconWindowLevel（objc2）
   ├─ local/                   本地模型管理（私有化部署）
-  │    ├─ mod.rs              LocalManager（下载/启动/停止/删除/自启动/崩溃重启）
+  │    ├─ mod.rs              LocalManager（导入/启动/停止/删除/自启动/崩溃重启）
   │    ├─ engine.rs           llama-server 引擎二进制管理 + 健康检查
-  │    ├─ backend.rs          GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
-  │    └─ hf.rs               HuggingFace API 客户端（搜索/仓库详情/文件下载）
+  │    └─ backend.rs          GPU 后端检测（Metal/CUDA/Vulkan/ROCm/CPU）
   └─ types/                   数据结构定义
 ```
 
@@ -211,8 +210,7 @@ src/
 │    InstallView.tsx       局域网分发页
 │    CombosView.tsx        组合列表
 │    ComboFormView.tsx     组合创建/编辑
-│    LocalModelsView.tsx   本地模型管理（下载/启动/停止/编辑）
-│    HfBrowseView.tsx      HuggingFace 模型浏览（搜索/仓库/文件选择）
+│    LocalModelsView.tsx   本地模型管理（导入/启动/停止/编辑）
 │
 ├── components/
 │    AppShell.tsx              导航抽屉 + Windows 自定义窗口控制

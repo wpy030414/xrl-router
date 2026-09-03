@@ -186,17 +186,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/plugins/:id/confirm", post(handlers::confirm_plugin))
         // 本机局域网 IP 查询（供 UI 拼分发链接）
         .route("/api/install/local-ip", get(handlers::get_local_ip))
-        // 本地模型（私有化）：GGUF 权重下载 + 引擎管理
+        // 本地模型（私有化）：GGUF 权重导入 + 引擎管理
         .route("/api/local/models", get(handlers::local::list_local_models).post(handlers::local::create_local_model))
         .route("/api/local/models/:id", axum::routing::delete(handlers::local::delete_local_model))
         .route("/api/local/models/:id/edit", post(handlers::local::edit_local_model))
         .route("/api/local/models/:id/start", post(handlers::local::start_local_model))
         .route("/api/local/models/:id/stop", post(handlers::local::stop_local_model))
-        .route("/api/local/models/:id/cancel", post(handlers::local::cancel_local_download))
         .route("/api/local/backends", get(handlers::local::get_local_backends))
-        .route("/api/local/hf/mirror", post(handlers::local::set_hf_mirror))
-        .route("/api/local/hf/search", get(handlers::local::hf_search))
-        .route("/api/local/hf/repo/:owner/:repo", get(handlers::local::hf_repo_detail))
         // admin_ip_guard：非 loopback IP → 403 Forbidden
         .layer(middleware::from_fn(crate::middleware::admin_ip_guard));
 

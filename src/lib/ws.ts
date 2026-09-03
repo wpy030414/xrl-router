@@ -1,7 +1,6 @@
 export type WsEvent =
   | { type: 'key_stats'; provider_id: string; green: number; total: number }
   | { type: 'usage_stats_changed'; timestamp: number }
-  | { type: 'local_progress'; id: string; downloaded: number; total: number | null }
   | { type: 'local_status'; id: string; model_id: string; status: string; port: number | null; error: string | null };
 
 type EventHandler = (event: WsEvent) => void;

@@ -251,11 +251,11 @@ CREATE TABLE plugins (
 ```sql
 CREATE TABLE local_models (
     id TEXT PRIMARY KEY,                -- lm-{uuid}
-    repo_id TEXT NOT NULL,              -- HuggingFace 仓库 ID
+    repo_id TEXT NOT NULL,              -- 来源标识
     filename TEXT NOT NULL,             -- GGUF 文件名
     format TEXT NOT NULL DEFAULT 'gguf',
     backend TEXT NOT NULL DEFAULT 'auto',  -- auto/metal/cuda/vulkan/rocm/cpu
-    status TEXT NOT NULL DEFAULT 'downloaded',  -- downloading/downloaded/running/error
+    status TEXT NOT NULL DEFAULT 'downloaded',  -- downloaded/running/error
     model_id TEXT NOT NULL,             -- 用户命名（display_name）
     ctx_size INTEGER NOT NULL DEFAULT 32768,
     n_gpu_layers INTEGER NOT NULL DEFAULT 99,
