@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
-import { Plus, Inbox, GripVertical, MoreVertical, Pencil, Trash2, ArrowUpDown, Check, Loader2 } from 'lucide-react';
+import { Plus, Inbox, GripVertical, MoreVertical, Pencil, Trash2, ArrowUpDown, Check, Loader2, LogIn } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -29,14 +29,16 @@ import {
 } from '@/components/ui/dialog';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useProvidersStore } from '@/stores/providers';
 import { useApiKeysStore } from '@/stores/apiKeys';
 import { useModelsStore } from '@/stores/models';
-import { providersApi, pluginsApi, type Provider, type Model, type ApiKey } from '@/lib/api';
+import { providersApi, pluginsApi, type Provider, type Model, type ApiKey, type PluginListItem } from '@/lib/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -65,9 +67,15 @@ interface ProviderCardProps {
   keys: ApiKey[];
   isPlugin?: boolean;
   pluginOnline?: boolean;
+  /** 插件记录（Tauri 桌面端加载；LAN 浏览器端无 → 不显示伴生启动/登录入口） */
+  plugin?: PluginListItem;
+  /** node + pnpm 均可用（伴生启动前置条件） */
+  hostingAvailable?: boolean;
   sortMode: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onToggleAutostart?: (next: boolean) => void;
+  onLogin?: () => void;
 }
 
 function ProviderCard({
@@ -76,9 +84,13 @@ function ProviderCard({
   keys,
   isPlugin,
   pluginOnline,
+  plugin,
+  hostingAvailable,
   sortMode,
   onEdit,
   onDelete,
+  onToggleAutostart,
+  onLogin,
 }: ProviderCardProps) {
   const t = useT();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -156,8 +168,9 @@ function ProviderCard({
           </div>
         )}
 
-        {/* 密钥可用性：每密钥一个小方块，按密钥列表顺序一一对应，宽度不够自动换行 */}
-        {keys.length > 0 && (
+        {/* 密钥可用性：每密钥一个小方块，按密钥列表顺序一一对应，宽度不够自动换行。
+            插件供应商无密钥（V24 契约：凭证由插件方持有），不渲染 */}
+        {!isPlugin && keys.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-1.5">
             {keys.map((k) => (
               <span
@@ -184,6 +197,40 @@ function ProviderCard({
             <Pencil className="w-4 h-4 mr-2" />
             {t('common.edit')}
           </DropdownMenuItem>
+          {/* 插件卡片：伴生启动开关 + 登录入口（仅桌面端有插件记录时显示） */}
+          {isPlugin && plugin && (
+            <>
+              <DropdownMenuCheckboxItem
+                checked={plugin.autostart}
+                onCheckedChange={(checked) => onToggleAutostart?.(!!checked)}
+                disabled={!hostingAvailable || !plugin.work_dir}
+                title={
+                  !hostingAvailable
+                    ? t('providers.plugin_hosting_no_runtime')
+                    : !plugin.work_dir
+                    ? t('providers.plugin_hosting_no_workdir')
+                    : t('providers.plugin_autostart_tip')
+                }
+              >
+                {t('providers.plugin_autostart')}
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuItem
+                onClick={onLogin}
+                disabled={!plugin.work_dir || !hostingAvailable}
+                title={
+                  !plugin.work_dir
+                    ? t('providers.plugin_hosting_no_workdir')
+                    : !hostingAvailable
+                    ? t('providers.plugin_hosting_no_runtime')
+                    : undefined
+                }
+              >
+                <LogIn className="w-4 h-4 mr-2" />
+                {t('providers.plugin_login')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
             <Trash2 className="w-4 h-4 mr-2" />
             {t('common.delete')}
@@ -205,6 +252,13 @@ export function ProvidersView() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
   const [pluginOnlineMap, setPluginOnlineMap] = useState<Record<string, boolean>>({});
+  // 插件记录（provider_id → PluginListItem）：伴生启动开关 / work_dir / 登录入口
+  const [pluginMap, setPluginMap] = useState<Record<string, PluginListItem>>({});
+  // node + pnpm 均可用（伴生启动前置条件；null = 未探测，如 LAN 浏览器端）
+  const [hostingAvailable, setHostingAvailable] = useState<boolean>(false);
+  // 插件操作行内提示（登录已启动 / 失败原因），数秒后自动消失
+  const [pluginNotice, setPluginNotice] = useState<string | null>(null);
+  const pluginNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 排序模式：进入后显示拖拽手柄、拖动只改本地顺序，点「保存」才落库
   const [sortMode, setSortMode] = useState(false);
   const [savingSort, setSavingSort] = useState(false);
@@ -290,15 +344,26 @@ export function ProvidersView() {
       try {
         await Promise.all([fetchProviders(), fetchKeys(), fetchModels()]);
 
-        // Load plugin statuses
+        // Load plugin statuses + hosting runtime
         if (isTauri()) {
           try {
             const plugins = await pluginsApi.list();
             const map: Record<string, boolean> = {};
+            const pmap: Record<string, PluginListItem> = {};
             for (const p of plugins) {
-              if (p.provider_id) map[p.provider_id] = !!p.connected;
+              if (p.provider_id) {
+                map[p.provider_id] = !!p.connected;
+                pmap[p.provider_id] = p;
+              }
             }
             setPluginOnlineMap(map);
+            setPluginMap(pmap);
+          } catch {
+            // ignore
+          }
+          try {
+            const rt = await pluginsApi.runtime();
+            setHostingAvailable(!!(rt.node && rt.pnpm));
           } catch {
             // ignore
           }
@@ -361,6 +426,41 @@ export function ProvidersView() {
     await fetchProviders();
   };
 
+  // ── 插件托管操作 ──
+
+  const showPluginNotice = useCallback((msg: string) => {
+    setPluginNotice(msg);
+    if (pluginNoticeTimer.current) clearTimeout(pluginNoticeTimer.current);
+    pluginNoticeTimer.current = setTimeout(() => setPluginNotice(null), 6000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pluginNoticeTimer.current) clearTimeout(pluginNoticeTimer.current);
+    };
+  }, []);
+
+  const handleToggleAutostart = async (plugin: PluginListItem, next: boolean) => {
+    try {
+      const updated = await pluginsApi.update(plugin.id, { autostart: next });
+      setPluginMap((prev) => ({
+        ...prev,
+        [plugin.provider_id!]: { ...plugin, autostart: updated.autostart, work_dir: updated.work_dir },
+      }));
+    } catch (e: any) {
+      showPluginNotice(t('providers.plugin_autostart_failed', { msg: e.message }));
+    }
+  };
+
+  const handlePluginLogin = async (plugin: PluginListItem) => {
+    try {
+      await pluginsApi.login(plugin.id);
+      showPluginNotice(t('providers.plugin_login_launched'));
+    } catch (e: any) {
+      showPluginNotice(t('providers.plugin_login_failed', { msg: e.message }));
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -395,6 +495,7 @@ export function ProvidersView() {
       </div>
 
       {sortError && <p className="text-sm text-destructive">{sortError}</p>}
+      {pluginNotice && <p className="text-sm text-muted-foreground">{pluginNotice}</p>}
 
       {loading ? (
         <div className="flex flex-col items-center justify-center py-16">
@@ -415,6 +516,7 @@ export function ProvidersView() {
             <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
               {providers.map((provider) => {
                 const isPlugin = !!(provider.config as any)?.plugin_id;
+                const plugin = isPlugin ? pluginMap[provider.id] : undefined;
                 return (
                   <ProviderCard
                     key={provider.id}
@@ -423,9 +525,13 @@ export function ProvidersView() {
                     keys={keysByProvider.get(provider.id) ?? []}
                     isPlugin={isPlugin}
                     pluginOnline={pluginOnlineMap[provider.id]}
+                    plugin={plugin}
+                    hostingAvailable={hostingAvailable}
                     sortMode={sortMode}
                     onEdit={() => handleEdit(provider)}
                     onDelete={() => handleDelete(provider)}
+                    onToggleAutostart={plugin ? (next) => handleToggleAutostart(plugin, next) : undefined}
+                    onLogin={plugin ? () => handlePluginLogin(plugin) : undefined}
                   />
                 );
               })}

@@ -21,8 +21,8 @@ interface PluginRegisterPayload {
   kind?: string;
   base_url?: string;
   api_path?: string;
+  workdir?: string | null;
   models?: { model_id: string; display_name: string; tier: string }[];
-  key_count?: number;
 }
 
 /** 与 ProviderFormView 的 KIND_OPTIONS 标签保持一致（复用 providerForm.kind.* 键） */
@@ -81,9 +81,6 @@ export function PluginRegisterDialog() {
   }
   if (info?.base_url) detailParts.push(t('plugin.dialog.base_url', { url: info.base_url }));
   if (info?.models && info.models.length > 0) detailParts.push(t('plugin.dialog.models', { count: info.models.length }));
-  if (typeof info?.key_count === 'number' && info.key_count > 0) {
-    detailParts.push(t('plugin.dialog.keys', { count: info.key_count }));
-  }
 
   return (
     <Dialog open={visible} onOpenChange={setVisible}>

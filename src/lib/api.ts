@@ -345,18 +345,23 @@ export const installApi = {
 };
 
 // --- Plugins（委托供应商注册；注册事件走 Tauri 桌面端，LAN 浏览器无此列表使用场景）---
+// V24 契约：Router 不为插件管密钥；work_dir/autostart 支撑伴生启动托管。
 export interface PluginListItem {
   id: string;
   provider_id: string | null;
   status: string;
   last_heartbeat_at: number | null;
   connected: boolean;
+  work_dir: string | null;
+  autostart: boolean;
 }
 
 export interface PluginDetail {
   plugin_id: string;
   status: string;
   connected: boolean;
+  work_dir: string | null;
+  autostart: boolean;
   provider: {
     id: string;
     name: string;
@@ -365,13 +370,25 @@ export interface PluginDetail {
     api_path: string;
   };
   models: { model_id: string; display_name: string; tier: string }[];
-  key_count: number;
+}
+
+/** node / pnpm 可用性（版本串，null = 不可用；伴生启动前置条件） */
+export interface PluginRuntime {
+  node: string | null;
+  pnpm: string | null;
 }
 
 export const pluginsApi = {
   list: () => request<PluginListItem[]>('/api/plugins'),
   get: (pluginId: string) => request<PluginDetail>(`/api/plugins/${pluginId}`),
+  runtime: () => request<PluginRuntime>('/api/plugins/runtime'),
+  update: (pluginId: string, body: { autostart?: boolean; work_dir?: string }) =>
+    request<{ plugin_id: string; autostart: boolean; work_dir: string | null }>(`/api/plugins/${pluginId}`, {
+      method: 'PATCH',
+      body,
+    }),
   confirm: (pluginId: string) => request<{ status: string }>(`/api/plugins/${pluginId}/confirm`, { method: 'POST' }),
+  login: (pluginId: string) => request<{ status: string }>(`/api/plugins/${pluginId}/login`, { method: 'POST' }),
   remove: (pluginId: string) => request<{ status: string }>(`/api/plugins/${pluginId}`, { method: 'DELETE' }),
 };
 

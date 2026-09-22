@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -78,7 +78,7 @@ export function ProviderFormView() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const { fetchProviders } = useProvidersStore();
-  const { keys, fetchKeys, createKey } = useApiKeysStore();
+  const { createKey } = useApiKeysStore();
 
   const isEdit = !!id;
   const queryPluginId = searchParams.get('plugin_id');
@@ -94,6 +94,8 @@ export function ProviderFormView() {
   const [apiPath, setApiPath] = useState(DEFAULT_PATHS.messages);
   const [apiKeysText, setApiKeysText] = useState('');
   const [modelsText, setModelsText] = useState('');
+  // 插件项目目录（workdir）：伴生启动 `pnpm run serve/login` 的 cwd
+  const [workDir, setWorkDir] = useState('');
   const [saving, setSaving] = useState(false);
   // 仅在需要拉取远端数据（编辑 / 插件预填）时进入加载态；新建直接渲染表单。
   const [loading, setLoading] = useState(isEdit || isPlugin);
@@ -111,7 +113,16 @@ export function ProviderFormView() {
         // 插件供应商（config_json 含 plugin_id）：同样进入插件模式——
         // 隐藏 API Key 输入、禁用 kind/base_url；名字保持可编辑
         const cfgPluginId = provider.config?.plugin_id as string | undefined;
-        if (cfgPluginId) setEditPluginId(cfgPluginId);
+        if (cfgPluginId) {
+          setEditPluginId(cfgPluginId);
+          // workdir 来自 plugins 表（register 上报 / 用户编辑）
+          try {
+            const detail = await pluginsApi.get(cfgPluginId);
+            setWorkDir(detail.work_dir || '');
+          } catch {
+            // 插件记录缺失不阻断表单（provider 数据仍可编辑）
+          }
+        }
         setName(provider.name);
         setKind(provider.kind);
         setBaseUrl(provider.base_url);
@@ -123,13 +134,11 @@ export function ProviderFormView() {
           models = (provider.config?.models || []) as { model_id: string; display_name: string }[];
         }
         setModelsText(modelsToText(models));
-        // 回填明文密钥（一行一个）；插件模式密钥由插件托管，仅显示数量
+        // 回填明文密钥（一行一个）；插件模式无密钥（凭证由插件方持有）
         if (!provider.config?.plugin_id) {
           const keys = await keysApi.list(id);
           setApiKeysText(keys.map((k) => k.key_plain || '').filter(Boolean).join('\n'));
         }
-        // 拉取密钥列表，供插件模式显示「已自动同步」数量
-        await fetchKeys(id);
       } catch (e: any) {
         setError(t('providerForm.load_failed', { msg: e.message }));
       } finally {
@@ -138,7 +147,7 @@ export function ProviderFormView() {
     };
 
     load();
-  }, [id, isEdit, fetchKeys]);
+  }, [id, isEdit, t]);
 
   // Load plugin info for plugin mode（仅弹窗跳转的查询串模式触发；
   // 编辑模式的数据由上方编辑 effect 从 provider + models 表回填）
@@ -154,6 +163,7 @@ export function ProviderFormView() {
         setKind((data.provider.kind as Provider['kind']) || 'chat_completions');
         setBaseUrl(data.provider.base_url || '');
         setApiPath(data.provider.api_path || DEFAULT_PATHS[data.provider.kind] || '');
+        setWorkDir(data.work_dir || '');
         // 插件自带模型列表（注册时已写入 models 表），预填进编辑区
         setModelsText(
           (data.models || [])
@@ -178,15 +188,6 @@ export function ProviderFormView() {
       setApiPath(DEFAULT_PATHS[newKind]);
     }
   };
-
-  // Count synced keys
-  const syncedKeysCount = useMemo(() => {
-    if (!isPlugin) return 0;
-    // 新插件模式：注册时同步的密钥数来自插件详情
-    if (pluginInfo?.key_count != null) return pluginInfo.key_count;
-    // 编辑插件模式：从 keys store 按 provider 过滤（编辑时已 fetchKeys(id)）
-    return keys.filter((k) => k.provider_id === id).length;
-  }, [pluginInfo, keys, id, isPlugin]);
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -225,6 +226,16 @@ export function ProviderFormView() {
         savedProvider = await providersApi.create(data);
       }
 
+      // 插件模式：同步 work_dir 到 plugins 表（空串 = 清除；伴生启动的 cwd）。
+      // 失败非致命——provider 已保存，目录可稍后在卡片菜单的伴生启动入口修正。
+      if (isPlugin && pluginId) {
+        try {
+          await pluginsApi.update(pluginId, { work_dir: workDir });
+        } catch (e: any) {
+          console.error('Plugin work_dir sync failed:', e.message);
+        }
+      }
+
       // 模型全量对账到 models 表（代理按该表路由，config.models 只是记录）：
       // 新增缺失的、同步别名改名的，仅删除从输入里移除的——已在用的模型
       // 不做删旧建新，避免 usage_log 的 model_id 外键引用被清掉。
@@ -252,7 +263,7 @@ export function ProviderFormView() {
 
       // API Key（一行一个）全量对账：新增缺失的、删除从输入里移除的；
       // 明文相同的保留原 key id，不破坏用量统计归属。插件模式跳过——
-      // 密钥由插件从 .env 自动同步到密钥池。
+      // V24 契约下 Router 不为插件管密钥，凭证由插件方 login 流程持有。
       if (!isPlugin) {
         try {
           const inputKeys = parseKeysText(apiKeysText);
@@ -379,15 +390,29 @@ export function ProviderFormView() {
           />
         </div>
 
-        {/* API Key（一行一个）。编辑模式回填明文密钥；插件模式的密钥由插件
-            自动同步、不在此编辑，仅显示数量 */}
-        {isPlugin ? (
-          syncedKeysCount > 0 && (
-            <p className="text-sm text-muted-foreground">
-              {t('providerForm.keys_synced', { count: syncedKeysCount })}
+        {/* 插件模式：项目目录（workdir）——伴生启动 `pnpm run serve/login` 的 cwd */}
+        {isPlugin && (
+          <div className="space-y-1.5">
+            <Label htmlFor="provider-workdir">
+              {t('providerForm.workdir_label')}
+            </Label>
+            <Input
+              id="provider-workdir"
+              type="text"
+              value={workDir}
+              onChange={(e) => setWorkDir(e.target.value)}
+              className="font-mono"
+              placeholder={t('providerForm.workdir_placeholder')}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('providerForm.workdir_hint')}
             </p>
-          )
-        ) : (
+          </div>
+        )}
+
+        {/* API Key（一行一个）。仅非插件模式渲染——V24 契约下插件的凭证
+            由插件方 login 流程持有，Router 不接管密钥 */}
+        {!isPlugin && (
           <div className="space-y-1.5">
             <Label htmlFor="provider-api-key">
               {t('providerForm.api_key_label')}
