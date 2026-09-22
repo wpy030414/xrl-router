@@ -182,8 +182,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/data/reset", post(handlers::reset_data))
         // Plugin management
         .route("/api/plugins", get(handlers::list_plugins))
-        .route("/api/plugins/:id", get(handlers::get_plugin).delete(handlers::delete_plugin))
+        // 静态段 /runtime 需先于参数路由 /:id 声明（matchit 静态优先，显式排序更直观）
+        .route("/api/plugins/runtime", get(handlers::get_plugin_runtime))
+        .route("/api/plugins/:id", get(handlers::get_plugin).patch(handlers::update_plugin).delete(handlers::delete_plugin))
         .route("/api/plugins/:id/confirm", post(handlers::confirm_plugin))
+        .route("/api/plugins/:id/login", post(handlers::login_plugin))
         // 本机局域网 IP 查询（供 UI 拼分发链接）
         .route("/api/install/local-ip", get(handlers::get_local_ip))
         // 本地模型（私有化）：GGUF 权重导入 + 引擎管理

@@ -33,8 +33,10 @@ pub struct PluginRegisterMsg {
     pub provider: PluginProviderInfo,
     #[serde(default)]
     pub models: Vec<PluginModel>,
+    /// 插件项目根目录（TS + Hono 网关所在目录），供伴生启动 `pnpm run serve/login` 使用。
+    /// 缺省不覆盖已存值（COALESCE 语义）。
     #[serde(default)]
-    pub keys: Vec<String>,
+    pub workdir: Option<String>,
 }
 
 /// Provider info within a register message.
@@ -46,13 +48,8 @@ pub struct PluginProviderInfo {
 }
 
 /// keys_update message.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginKeysUpdateMsg {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub keys: Vec<String>,
-}
+/// V24 契约已废除密钥同步：Router 不再为插件管理密钥（收到即回错断开）。
+/// 结构保留仅用于文档对照，实际不再反序列化。
 
 /// heartbeat message.
 #[allow(dead_code)]
@@ -94,6 +91,10 @@ pub struct PluginRecord {
     pub provider_id: Option<String>,
     pub status: String,
     pub last_heartbeat_at: Option<i64>,
+    /// 插件上报的项目根目录（TS + Hono 网关），伴生启动的 cwd。
+    pub work_dir: Option<String>,
+    /// 伴生启动开关：Router 启动时自动 `pnpm run serve` 拉起该网关。
+    pub autostart: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }

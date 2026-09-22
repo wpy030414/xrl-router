@@ -42,6 +42,8 @@ pub struct AppState {
     pub provider_cooldowns: Arc<std::sync::RwLock<std::collections::HashMap<String, i64>>>,
     /// Plugin manager: tracks connected plugins and their delegated providers.
     pub plugins: PluginManager,
+    /// 插件伴生启动（进程托管）：autostart=1 的插件网关在 Router 启动时拉起。
+    pub plugin_host: crate::plugin::PluginProcessManager,
     /// 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
     pub http_client: reqwest::Client,
     /// FM 广播电台引擎（单例，进程级广播）。
@@ -117,6 +119,7 @@ impl AppState {
         let provider_cooldowns = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
 
         let plugins = PluginManager::new(database.clone(), providers.providers_map());
+        let plugin_host = crate::plugin::PluginProcessManager::new(database.clone(), data_dir.to_path_buf());
 
         // 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
         // 复用后同一上游的后续请求无需重新 TCP+TLS 握手，减少首次响应延迟。
@@ -156,6 +159,7 @@ impl AppState {
             session_inject,
             provider_cooldowns,
             plugins,
+            plugin_host,
             http_client,
             fm,
             search_http: Default::default(),

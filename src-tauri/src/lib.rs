@@ -491,6 +491,9 @@ pub fn run() {
                 if let Err(e) = gateway::server::start_gateway(state.clone()).await {
                     error!("Gateway server failed: {}", e);
                 }
+                // 插件伴生启动：autostart=1 的插件网关（TS + Hono）自动 `pnpm run serve`
+                // 拉起（已启动则不重复）。放在本地模型之前——插件网关轻量、WS 早注册早可用。
+                state.plugin_host.auto_start_all().await;
                 // 本地模型 autostart：网关就绪后启动标记了自动启动的本地引擎
                 state.local.auto_start_all().await;
             });
@@ -517,6 +520,14 @@ pub fn run() {
                 if let Some(w) = _app_handle.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
+                }
+            }
+            // ── 退出清理：回收 Router 托管的插件网关进程（伴生启动拉起的 serve）。
+            // 托盘「退出」与系统退出最终都汇到 Exit；窗口关闭是 hide-to-tray 不触发。
+            // 只杀 Router 自己 spawn 的进程，用户手动启动的网关不受影响。
+            tauri::RunEvent::Exit => {
+                if let Some(state) = _app_handle.try_state::<std::sync::Arc<AppState>>() {
+                    state.plugin_host.kill_all();
                 }
             }
             _ => {}

@@ -17,7 +17,7 @@ pub(super) struct ResolvedRoute {
     /// 模型上下文窗口（token），超限预检用。
     pub(super) context_window: usize,
     /// Plugin ID if this is a delegated provider (None for regular providers).
-    #[allow(dead_code)]
+    /// 委托候选：pick_key_for 据此返回占位密钥（V24：Router 不为插件管密钥）。
     pub(super) plugin_id: Option<String>,
 }
 

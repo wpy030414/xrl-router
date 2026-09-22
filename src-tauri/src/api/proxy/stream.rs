@@ -258,7 +258,11 @@ pub async fn proxy_stream(
             }
             last_candidate = cand.clone();
 
-            let max_attempts = state.keys.get_stats(&cand.provider_id).map(|s| s.total as u32).unwrap_or(1);
+            // 插件候选恒单次尝试（占位密钥，无轮换）；常规 provider = 池内密钥总数。
+            // `.max(1)` 堵死「零密钥入池」的理论路径（Some(0) 会导致 1>0 立即 break）。
+            let max_attempts = if cand.plugin_id.is_some() { 1 } else {
+                state.keys.get_stats(&cand.provider_id).map(|s| s.total.max(1) as u32).unwrap_or(1)
+            };
             let mut attempts: u32 = 0;
             loop {
                 attempts += 1;
@@ -269,7 +273,7 @@ pub async fn proxy_stream(
                     }
                     break;
                 }
-                let picked = match pick_key_for(&state, &cand.provider_id) {
+                let picked = match pick_key_for(&state, cand) {
                     Some(p) => p,
                     None => {
                         if failover && ci + 1 < candidates.len() {

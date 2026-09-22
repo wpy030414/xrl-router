@@ -383,4 +383,15 @@ CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
 ALTER TABLE conversations ADD COLUMN last_message TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversations ADD COLUMN last_message_raw TEXT NOT NULL DEFAULT '';
 "#,
+    // V24: 插件密钥职责剥离 + 伴生启动。契约见 docs/specs/module-plugin-system.md。
+    // - work_dir：插件 register 上报的项目根目录（TS + Hono 网关），伴生启动
+    //   `pnpm run serve/login` 的 cwd；
+    // - autostart：伴生启动开关（Router 启动时自动拉起插件网关，默认关）；
+    // - Router 不再为插件管理密钥：清掉历史版本由插件同步进来的密钥行。
+    //   迁移先于 KeyPool 加载执行，内存池天然干净，无需运行时二次清理。
+    r#"
+ALTER TABLE plugins ADD COLUMN work_dir TEXT;
+ALTER TABLE plugins ADD COLUMN autostart INTEGER NOT NULL DEFAULT 0;
+DELETE FROM api_keys WHERE provider_id IN (SELECT provider_id FROM plugins WHERE provider_id IS NOT NULL);
+"#,
 ];

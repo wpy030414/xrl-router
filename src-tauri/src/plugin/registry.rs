@@ -1,12 +1,13 @@
 //! 插件生命周期：注册（首次/重连）、确认激活、断连清理。
 //!
 //! 调用 `mod.rs` 的共享私有 helper（emit_event、save_plugin、
-//! update_plugin_status、get_plugin_by_id）与 `keys::sync_keys`。
+//! update_plugin_status、get_plugin_by_id）。
+//!
+//! V24 契约：Router 不再为插件管理密钥——注册消息不含 keys，
+//! 凭证由插件（TS + Hono 反向代理网关）自行登录持有。
 
 use tracing::{info, warn};
 
-use crate::crypto::MasterKey;
-use crate::keys::KeyPool;
 use crate::types::{Provider, ProviderKind};
 
 use super::types::*;
@@ -14,13 +15,7 @@ use super::types::*;
 impl super::PluginManager {
     /// Handle a plugin register message.
     /// Returns (provider_id, needs_confirmation).
-    pub fn register(
-        &self,
-        msg: PluginRegisterMsg,
-        keys: Vec<String>,
-        master_key: &MasterKey,
-        key_pool: &KeyPool,
-    ) -> anyhow::Result<(String, bool)> {
+    pub fn register(&self, msg: PluginRegisterMsg) -> anyhow::Result<(String, bool)> {
         let now = chrono::Utc::now().timestamp();
 
         // Check if plugin already exists in DB
@@ -45,10 +40,14 @@ impl super::PluginManager {
                     rusqlite::params![now, provider_id],
                 )?;
                 self.update_plugin_status(&msg.plugin_id, "active", Some(provider_id))?;
-
-                // Sync keys if provided
-                if !keys.is_empty() {
-                    self.sync_keys(provider_id, &keys, master_key, key_pool)?;
+                // workdir 仅在有值时覆盖（COALESCE），不破坏已有目录
+                if let Some(ref wd) = msg.workdir {
+                    if !wd.trim().is_empty() {
+                        self.database.execute(
+                            "UPDATE plugins SET work_dir = ?2, updated_at = ?3 WHERE id = ?1",
+                            rusqlite::params![msg.plugin_id, wd.trim(), now],
+                        )?;
+                    }
                 }
 
                 self.emit_event("plugin-online", serde_json::json!({
@@ -104,8 +103,13 @@ impl super::PluginManager {
             self.database.save_model(&model)?;
         }
 
-        // Save plugin record
-        self.save_plugin(&msg.plugin_id, Some(&provider_id), "pending", now)?;
+        // Save plugin record（work_dir 走 COALESCE 语义，仅非空覆盖）
+        let work_dir = msg
+            .workdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        self.save_plugin(&msg.plugin_id, Some(&provider_id), "pending", work_dir, now)?;
 
         // Store connection in memory
         let conn = PluginConnection {
@@ -119,11 +123,6 @@ impl super::PluginManager {
         };
         self.connections.insert(msg.plugin_id.clone(), conn);
 
-        // Sync initial keys
-        if !keys.is_empty() {
-            self.sync_keys(&provider_id, &keys, master_key, key_pool)?;
-        }
-
         // Emit event to frontend to show registration dialog
         self.emit_event("plugin-register", serde_json::json!({
             "plugin_id": msg.plugin_id,
@@ -132,12 +131,12 @@ impl super::PluginManager {
             "kind": provider.kind.to_string(),
             "base_url": provider.base_url,
             "api_path": provider.api_path,
+            "workdir": work_dir,
             "models": msg.models.iter().map(|m| serde_json::json!({
                 "model_id": m.model_id,
                 "display_name": m.display_name,
                 "tier": m.tier,
             })).collect::<Vec<_>>(),
-            "key_count": keys.len(),
         }));
 
         info!("Plugin registered: {} → provider {}", msg.plugin_id, provider_id);
