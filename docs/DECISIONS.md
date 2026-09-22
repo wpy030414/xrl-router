@@ -847,3 +847,39 @@ ADR-043 的透明 WebView + WorkerW 挂载真机反馈：**壁纸窗口盖住桌
   接受任何存在的 display_name）；
 - 路由优先级依赖 `tier='local'` 字段，仅 `LocalManager::register_provider()` 写入，
   前端无法手动设置（ProviderFormView 默认 `tier='custom'`）——单用户本地应用可接受。
+
+---
+
+## ADR-051：插件系统契约升级——密钥职责剥离 + 伴生启动
+
+**日期**: 2026-09-22
+**状态**: 已采纳
+
+### 背景
+
+原契约（V11）中插件经 WS 推送 keys，Router 入密钥池并注入上游请求的鉴权头。这导致：
+
+1. 密钥双写（插件侧 + Router 密钥池），安全边界复杂
+2. 插件更新凭证需主动 keys_update，易漂移
+3. 插件进程生命周期不受 Router 管理，用户需手动启动
+
+### 决策
+
+1. **密钥职责完全剥离**：Router 不再为插件存储/轮换/注入密钥。register 消息的 `keys` 字段与 `keys_update` 消息严格拒绝（回 `keys_not_supported` 并断开），强制插件方升级。
+2. **虚拟占位密钥**：代理层对插件候选恒返回合成 `PickedKey { key_hash: "xrl-router" }`，鉴权头注入代码零改动；`update_key_health` 对合成 key 天然 no-op（无红色黏性）。usage_log.key_id 存伪 id（V12 起已无 FK 约束，安全入库）。
+3. **反向代理实现契约**：每个插件实现必须是 TypeScript + Hono 网关，package.json 提供 `login`（弹系统浏览器网页登录，不要求客户端到位）与 `serve`（启动网关 + WS 注册；幂等；Router 未就绪时重试）脚本。
+4. **伴生启动（进程托管）**：插件 register 上报 `workdir`，Router 启动时 `pnpm run serve` 拉起（已启动不重复拉起，TCP 探测防重）。Windows 用 `pnpm.cmd` + `CREATE_NO_WINDOW` + `taskkill /T /F`（杀祖孙进程树）；unix 用 `process_group(0)` + `kill -9 -- -pgid`（杀进程组）。只杀 Router 自己 spawn 的进程。
+
+### 代价
+
+- 旧版插件必须升级到无密钥契约，否则被 Router 断开并拒绝重连
+- 占位凭证 `xrl-router` 会出现在插件的上游请求日志中（无害，但需插件忽略）
+- 伴生启动要求系统内 node + pnpm 可用，缺失时 UI 入口禁用
+
+### 关键文件
+
+- `src-tauri/src/api/handlers/plugin.rs`（WS 严格拒绝）
+- `src-tauri/src/api/proxy/key_rotation.rs`（虚拟占位密钥）
+- `src-tauri/src/plugin/host.rs`（伴生启动）
+- `src-tauri/src/db/schema.rs` V24（迁移）
+

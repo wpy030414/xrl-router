@@ -432,3 +432,83 @@ pub(crate) async fn login_plugin(
 fn internal_err(e: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_register_msg_success_with_workdir() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong","provider":{"kind":"chat_completions","base_url":"http://127.0.0.1:19067","api_path":"/v1/chat"},"models":[],"workdir":"/tmp/wukong"}"#
+        ).unwrap();
+        let msg = parse_register_msg(&v).unwrap();
+        assert_eq!(msg.plugin_id, "wukong");
+        assert_eq!(msg.workdir.as_deref(), Some("/tmp/wukong"));
+    }
+
+    #[test]
+    fn parse_register_msg_success_without_workdir() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[]}"#
+        ).unwrap();
+        let msg = parse_register_msg(&v).unwrap();
+        assert_eq!(msg.workdir, None);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_keys_empty_array() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[],"keys":[]}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::KeysNotSupported);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_keys_nonempty() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[],"keys":["sk-xxx"]}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::KeysNotSupported);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_keys_null() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[],"keys":null}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::KeysNotSupported);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_empty_plugin_id() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"   ","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[]}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::EmptyPluginId);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_missing_type() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[]}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::NotRegister);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_wrong_type() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"heartbeat","plugin_id":"wukong","provider":{"kind":"messages","base_url":"http://x","api_path":"/y"},"models":[]}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::NotRegister);
+    }
+
+    #[test]
+    fn parse_register_msg_rejects_bad_json() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"type":"register","plugin_id":"wukong"}"#
+        ).unwrap();
+        assert_eq!(parse_register_msg(&v).unwrap_err(), RegisterReject::BadJson);
+    }
+}

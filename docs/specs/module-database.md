@@ -62,6 +62,7 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V19 | MCP 桌面通知工具 notify 的设置键：`mcp_notify` 默认行 |
 | V20 | 新增 local_models 表（本地模型私有化：GGUF 权重 + llama-server 引擎运行时元数据） |
 | V21 | local_models 新增 thinking 列（思考模式开关，默认 1，引擎启动时映射 `--reasoning on\|off`） |
+| V24 | 插件系统契约升级——plugins 表新增 `work_dir TEXT` 与 `autostart INTEGER NOT NULL DEFAULT 0` 两列（伴生启动支撑）；清理历史版本由插件同步的密钥行（Router 不再为插件管密钥） |
 
 ## 当前表结构（V21 最终状态）
 
@@ -239,12 +240,14 @@ CREATE TABLE plugins (
     provider_id TEXT REFERENCES providers(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     last_heartbeat_at INTEGER,
+    work_dir TEXT,                        -- V24: 插件工作目录（伴生启动用）
+    autostart INTEGER NOT NULL DEFAULT 0, -- V24: 伴生启动开关（1 = Router 启动时自动拉起）
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
 ```
 
-**注意**: `provider_id` 使用 `ON DELETE SET NULL`（非 CASCADE），删除 provider 时插件记录保留但 provider_id 置空。
+**注意**: `provider_id` 使用 `ON DELETE SET NULL`（非 CASCADE），删除 provider 时插件记录保留但 provider_id 置空。V24 起 Router 不再为插件管理密钥，历史同步的密钥行已被迁移清理。
 
 ### local_models（V20 + V21：本地模型）
 
