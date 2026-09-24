@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { create } from 'zustand';
 import zhCN from './zh-CN';
 import en from './en';
@@ -35,15 +36,23 @@ export function useT() {
   const locale = useI18nStore((s) => s.locale);
   const dict = dictionaries[locale];
 
-  return (key: string, params?: Record<string, string | number>): string => {
-    let text = dict[key] ?? key;
-    if (params) {
-      for (const [k, v] of Object.entries(params)) {
-        text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+  // 必须记忆化：t 的身份若每次渲染都变，写进 effect 依赖数组的组件
+  // （如 ProviderFormView）会陷入「setState → 重渲染 → 依赖变化 → effect
+  // 重跑」的死循环。dict 是模块级常量表按 locale 查出的引用，身份稳定。
+  const t = useCallback(
+    (key: string, params?: Record<string, string | number>): string => {
+      let text = dict[key] ?? key;
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+        }
       }
-    }
-    return text;
-  };
+      return text;
+    },
+    [dict]
+  );
+
+  return t;
 }
 
 export function initI18n() {
