@@ -3,7 +3,7 @@ import { router } from './router';
 import { useEffect } from 'react';
 import { wsClient } from './lib/ws';
 import { useSettingsStore } from '@/stores/settings';
-import { isTauri, listen } from './lib/tauri';
+import { isTauri, listen, emit } from './lib/tauri';
 
 export function App() {
   useEffect(() => {
@@ -12,13 +12,6 @@ export function App() {
 
     // 连接 WebSocket
     wsClient.connect();
-
-    // 淡出启动画面
-    const splash = document.getElementById('splash');
-    if (splash) {
-      splash.classList.add('fade-out');
-      splash.addEventListener('transitionend', () => splash.remove());
-    }
 
     // Tauri 事件监听
     if (isTauri()) {
@@ -31,6 +24,9 @@ export function App() {
       listen('plugin-online', (payload: any) => {
         console.log('[Plugin] Online:', payload);
       });
+
+      // 通知 Rust 关闭冷启动原生环形进度条（React 首帧已渲染）
+      emit('app-ready', {});
     }
 
     return () => {

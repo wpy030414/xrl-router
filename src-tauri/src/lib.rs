@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::db::Database;
 use std::sync::Arc;
 use tauri::Manager;
+use tauri::Listener;
 use tracing::{info, error};
 
 mod config;
@@ -29,6 +30,8 @@ mod types;
 mod wallpaper;
 // 系统资源监控（CPU/内存/显存占用）
 mod system;
+// 冷启动原生环形进度条（tiny-skia 渲染，平台原生窗口——比 WebView 先出现）
+mod splash;
 
 // SDK 合规验证（fixtures 导出 + Python 官方 SDK 校验脚本）。
 // 本目录仅 test 构建；正式构建不编译任何测试代码。
@@ -253,6 +256,12 @@ pub fn run() {
         info!("Silent start (--minimized): window will be hidden to tray");
     }
 
+    // ── 冷启动原生环形加载动画（在 Tauri Builder 之前创建，WebView2/WKWebView
+    //    初始化期间保持流畅动画——不依赖 WebView）──
+    // 静默启动（开机自启 --minimized）不弹动画：窗口隐藏到托盘，
+    // 屏幕中心闪一个环再消失反而突兀。
+    let splash = if silent_start { None } else { splash::SplashScreen::new() };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
@@ -300,6 +309,17 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_decorations(false);
                 info!("Window decorations removed (Windows)");
+            }
+
+            // ── 将原生环形动画吸附到主窗口客户区的严格中心 ──
+            // "center": true 只保证装饰期外框的工作区居中；去装饰后用户
+            // 看到的窗口中心是客户区中心——按实测 inner_position/inner_size
+            // 对齐，不复刻 Tauri 的边框换算（DPI / 任务栏 / 多屏全免疫）。
+            if let Some(s) = splash.as_ref() {
+                if let Some(w) = app.get_webview_window("main") {
+                    s.recenter_to_window(&w);
+                    info!("Splash: recentered to main window client area");
+                }
             }
 
             let db_path = data_dir.join("xrl-router.db");
@@ -497,6 +517,14 @@ pub fn run() {
                 // 本地模型 autostart：网关就绪后启动标记了自动启动的本地引擎
                 state.local.auto_start_all().await;
             });
+
+            // ── 监听前端 'app-ready' 事件：React 首次渲染完成后关闭原生环形动画 ──
+            if let Some(s) = splash {
+                app.listen("app-ready", move |_event| {
+                    info!("Splash: closing native spinner");
+                    s.close();
+                });
+            }
 
             Ok(())
         })

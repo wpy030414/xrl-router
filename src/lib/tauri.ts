@@ -3,7 +3,7 @@
 // 各模块顶层不触碰 window，浏览器中静态导入无副作用。
 
 import { invoke as invokeCore } from '@tauri-apps/api/core';
-import { listen as listenEvent } from '@tauri-apps/api/event';
+import { listen as listenEvent, emit as emitEvent } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 
@@ -40,6 +40,15 @@ export async function listen<T>(
     return unlisten;
   } catch {
     return () => {};
+  }
+}
+
+export async function emit(event: string, payload?: unknown): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await emitEvent(event, payload);
+  } catch {
+    // ignore
   }
 }
 

@@ -93,11 +93,28 @@ htmd = "0.2"
 # 系统资源监控（CPU/内存/显存占用）
 sysinfo = "0.33"
 
+# ── Splash screen（冷启动环形加载动画）──
+# 纯 Rust 2D 矢量绘图：抗锯齿环形旋转动画。
+tiny-skia = "0.11"
+
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    # splash：DComp 合成器驱动的环形旋转动画
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_DirectComposition",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# splash：NSWindow/NSScreen 建窗；CA 渲染服务器驱动旋转动画
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
+objc2-quartz-core = { version = "0.3", features = ["CATransaction"] }
 
 [features]
 default = ["custom-protocol"]
