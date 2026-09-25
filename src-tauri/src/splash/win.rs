@@ -241,6 +241,13 @@ pub(crate) struct WinSplash {
     hwnd: HWND,
 }
 
+// SAFETY：HWND 仅作为句柄跨线程携带（listen 回调 → run_on_main_thread），
+// 本类型对它的全部操作都是 PostMessageW——Win32 明确线程安全的投递 API，
+// 不解引用窗口资源，不与动画线程的消息泵产生数据竞争；跨线程侧仅
+// clone Arc、从不触碰内部字段。
+unsafe impl Send for WinSplash {}
+unsafe impl Sync for WinSplash {}
+
 impl WinSplash {
     pub(crate) fn new() -> Option<Self> {
         let close = Arc::new(Mutex::new(false));

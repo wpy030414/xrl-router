@@ -29,6 +29,7 @@ pub fn premultiply_alpha(buf: &mut [u8]) {
 }
 
 /// RGBA → BGRA 原地交换（Windows 32bpp DIB 与 swapchain 均为 BGRA 字节序）。
+#[cfg(target_os = "windows")]
 pub fn to_bgra_inplace(buf: &mut [u8]) {
     for chunk in buf.chunks_exact_mut(4) {
         chunk.swap(0, 2);
@@ -108,6 +109,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn bgra_swap() {
         // arc_color = (48, 171, 232)（蓝）：R/B 交换后首字节应为 232
         let mut buf = vec![48u8, 171, 232, 255];

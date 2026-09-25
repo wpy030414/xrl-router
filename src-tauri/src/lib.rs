@@ -519,10 +519,18 @@ pub fn run() {
             });
 
             // ── 监听前端 'app-ready' 事件：React 首次渲染完成后关闭原生环形动画 ──
+            // listen 回调的执行线程不保证是主线程，而 AppKit/Win32 窗口操作
+            // （macOS 侧尤其严格）必须在主线程——run_on_main_thread 派发；
+            // 回调是 Fn（可多次触发），Splash 句柄经 Arc 克隆进闭包。
             if let Some(s) = splash {
+                let s = std::sync::Arc::new(s);
+                let app_handle = app.handle().clone();
                 app.listen("app-ready", move |_event| {
-                    info!("Splash: closing native spinner");
-                    s.close();
+                    let s = s.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        info!("Splash: closing native spinner");
+                        s.close();
+                    });
                 });
             }
 

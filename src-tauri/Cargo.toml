@@ -112,7 +112,8 @@ windows = { version = "0.61", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 # splash：NSWindow/NSScreen 建窗；CA 渲染服务器驱动旋转动画
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen"] }
+# （NSGraphics：initWithContentRect 强类型 init + NSBackingStoreType）
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSGraphics"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
 objc2-quartz-core = { version = "0.3", features = ["CATransaction"] }
 
