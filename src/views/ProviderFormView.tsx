@@ -1,11 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert } from '@/components/ui/alert';
+import { Switch } from '@/components/ui/switch';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Select,
   SelectContent,
@@ -40,28 +48,13 @@ const DEFAULT_PATHS: Record<string, string> = {
   responses: '/v1/responses',
 };
 
-/** 解析模型列表文本为配置 */
-function parseModelsText(text: string): { model_id: string; display_name: string }[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const arrowIdx = line.indexOf('<-');
-      if (arrowIdx !== -1) {
-        const model_id = line.slice(0, arrowIdx).trim();
-        const display_name = line.slice(arrowIdx + 2).trim();
-        return { model_id, display_name };
-      }
-      return { model_id: line, display_name: line };
-    });
-}
-
-/** 将模型配置转为文本 */
-function modelsToText(models: { model_id: string; display_name: string }[]): string {
-  return models
-    .map((m) => (m.model_id === m.display_name ? m.model_id : `${m.model_id}<-${m.display_name}`))
-    .join('\n');
+/** 模型草稿行：增删/改名/启停全部是草稿操作，点总表单"保存"时统一对账到 models 表 */
+interface DraftModel {
+  /** 行渲染 key（服务端行直接用行 id，新行用本地自增 key） */
+  key: string;
+  model_id: string;
+  display_name: string;
+  enabled: boolean;
 }
 
 /** 解析密钥文本为明文密钥数组（一行一个，忽略空行）。 */
@@ -93,7 +86,11 @@ export function ProviderFormView() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_URLS.messages);
   const [apiPath, setApiPath] = useState(DEFAULT_PATHS.messages);
   const [apiKeysText, setApiKeysText] = useState('');
-  const [modelsText, setModelsText] = useState('');
+  // 模型草稿列表（统一数据源：新增/编辑/删除/行级启停都只改草稿，保存后对账生效）
+  const [draftModels, setDraftModels] = useState<DraftModel[]>([]);
+  // 新行 key 自增序号（ref 保证重渲染间稳定）
+  const localKeySeq = useRef(0);
+  const nextLocalKey = () => `local-${++localKeySeq.current}`;
   // 插件项目目录（workdir）：伴生启动 `pnpm run serve/login` 的 cwd
   const [workDir, setWorkDir] = useState('');
   const [saving, setSaving] = useState(false);
@@ -101,6 +98,13 @@ export function ProviderFormView() {
   const [loading, setLoading] = useState(isEdit || isPlugin);
   const [error, setError] = useState<string | null>(null);
   const [pluginInfo, setPluginInfo] = useState<PluginDetail | null>(null);
+
+  // 模型新增/编辑 dialog 状态（editingModelKey 为 null = 新增模式）
+  const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [editingModelKey, setEditingModelKey] = useState<string | null>(null);
+  const [dialogModelId, setDialogModelId] = useState('');
+  const [dialogAlias, setDialogAlias] = useState('');
+  const [modelDialogError, setModelDialogError] = useState<string | null>(null);
 
   // Load existing provider data for edit mode
   useEffect(() => {
@@ -128,12 +132,28 @@ export function ProviderFormView() {
         setBaseUrl(provider.base_url);
         setApiPath(provider.api_path);
         // 模型以 models 表为准（代理按该表路由）；config.models 是旧版
-        // 新 UI 的写入位置，仅在表里没有数据时作兼容回退。
-        let models = await modelsApi.list(id);
-        if (models.length === 0) {
-          models = (provider.config?.models || []) as { model_id: string; display_name: string }[];
+        // 遗留数据，仅在表里没有数据时作兼容回退（视为新增行，保存时入库）。
+        const dbModels = await modelsApi.list(id);
+        if (dbModels.length > 0) {
+          setDraftModels(
+            dbModels.map((m) => ({
+              key: m.id,
+              model_id: m.model_id,
+              display_name: m.display_name,
+              enabled: m.enabled,
+            })),
+          );
+        } else {
+          const legacy = (provider.config?.models || []) as { model_id: string; display_name: string }[];
+          setDraftModels(
+            legacy.map((m) => ({
+              key: nextLocalKey(),
+              model_id: m.model_id,
+              display_name: m.display_name || m.model_id,
+              enabled: true,
+            })),
+          );
         }
-        setModelsText(modelsToText(models));
         // 回填明文密钥（一行一个）；插件模式无密钥（凭证由插件方持有）
         if (!provider.config?.plugin_id) {
           const keys = await keysApi.list(id);
@@ -164,11 +184,14 @@ export function ProviderFormView() {
         setBaseUrl(data.provider.base_url || '');
         setApiPath(data.provider.api_path || DEFAULT_PATHS[data.provider.kind] || '');
         setWorkDir(data.work_dir || '');
-        // 插件自带模型列表（注册时已写入 models 表），预填进编辑区
-        setModelsText(
-          (data.models || [])
-            .map((m) => (m.display_name && m.display_name !== m.model_id ? `${m.model_id}<-${m.display_name}` : m.model_id))
-            .join('\n')
+        // 插件自带模型列表（注册时已写入 models 表），预填为草稿行，保存时对账
+        setDraftModels(
+          (data.models || []).map((m) => ({
+            key: nextLocalKey(),
+            model_id: m.model_id,
+            display_name: m.display_name || m.model_id,
+            enabled: true,
+          })),
         );
       } catch (e: any) {
         setError(t('providerForm.plugin_load_failed', { msg: e.message }));
@@ -189,6 +212,58 @@ export function ProviderFormView() {
     }
   };
 
+  // ---- 模型草稿操作：只改本地状态，等总表单"保存"统一对账生效 ----
+
+  const toggleDraftEnabled = (key: string, next: boolean) => {
+    setDraftModels((prev) =>
+      prev.map((m) => (m.key === key ? { ...m, enabled: next } : m)),
+    );
+  };
+
+  const removeDraft = (key: string) => {
+    setDraftModels((prev) => prev.filter((m) => m.key !== key));
+  };
+
+  const openAddModelDialog = () => {
+    setEditingModelKey(null);
+    setDialogModelId('');
+    setDialogAlias('');
+    setModelDialogError(null);
+    setModelDialogOpen(true);
+  };
+
+  const openEditModelDialog = (m: DraftModel) => {
+    setEditingModelKey(m.key);
+    // 别名与模型名相同时视为"未设置"，输入框留空更直观
+    setDialogModelId(m.model_id);
+    setDialogAlias(m.display_name === m.model_id ? '' : m.display_name);
+    setModelDialogError(null);
+    setModelDialogOpen(true);
+  };
+
+  const confirmModelDialog = () => {
+    const mid = dialogModelId.trim();
+    const alias = dialogAlias.trim();
+    if (!mid) {
+      setModelDialogError(t('providerForm.model_dialog.empty_error'));
+      return;
+    }
+    // model_id 是对账主键，禁止与本供应商其他行重复
+    if (draftModels.some((m) => m.key !== editingModelKey && m.model_id === mid)) {
+      setModelDialogError(t('providerForm.model_dialog.duplicate_error'));
+      return;
+    }
+    setDraftModels((prev) => {
+      if (editingModelKey) {
+        return prev.map((m) =>
+          m.key === editingModelKey ? { ...m, model_id: mid, display_name: alias || mid } : m,
+        );
+      }
+      return [...prev, { key: nextLocalKey(), model_id: mid, display_name: alias || mid, enabled: true }];
+    });
+    setModelDialogOpen(false);
+  };
+
   const handleSave = async () => {
     if (!name.trim()) return;
 
@@ -196,7 +271,10 @@ export function ProviderFormView() {
     setError(null);
 
     try {
-      const models = parseModelsText(modelsText);
+      const models = draftModels.map((m) => ({
+        model_id: m.model_id,
+        display_name: m.display_name || m.model_id,
+      }));
       // 插件模式：config 与注册时保持一致（PUT 整包替换 config，必须带全）；
       // models 以表为准，config.models 已是旧版遗留（Vue 版同样不带）
       const config: Record<string, any> = isPlugin
@@ -236,28 +314,40 @@ export function ProviderFormView() {
         }
       }
 
-      // 模型全量对账到 models 表（代理按该表路由，config.models 只是记录）：
-      // 新增缺失的、同步别名改名的，仅删除从输入里移除的——已在用的模型
+      // 模型草稿全量对账到 models 表（代理按该表路由，config.models 只是记录）：
+      // 删除草稿里移除的、新增缺失的、同步别名改名与启停——已在用的模型
       // 不做删旧建新，避免 usage_log 的 model_id 外键引用被清掉。
+      // 注意 create 固定 enabled=true，新增即停用的行需补一次 update。
       const existingModels = await modelsApi.list(savedProvider.id);
-      const wantModels = new Map(models.map((m) => [m.model_id, m]));
+      const wantIds = new Set(draftModels.map((m) => m.model_id));
+      const seenIds = new Set<string>();
       for (const m of existingModels) {
-        if (!wantModels.has(m.model_id)) {
+        if (!wantIds.has(m.model_id)) {
           await modelsApi.delete(m.id);
         }
       }
-      for (const [modelId, m] of wantModels) {
-        const displayName = m.display_name || modelId;
-        const ex = existingModels.find((e) => e.model_id === modelId);
+      for (const draft of draftModels) {
+        if (seenIds.has(draft.model_id)) continue; // 防御：脏数据重复行只对账一次
+        seenIds.add(draft.model_id);
+        const displayName = draft.display_name || draft.model_id;
+        const ex = existingModels.find((e) => e.model_id === draft.model_id);
         if (!ex) {
-          await modelsApi.create({
+          const created = await modelsApi.create({
             provider_id: savedProvider.id,
-            model_id: modelId,
+            model_id: draft.model_id,
             display_name: displayName,
             tier: 'custom',
           });
-        } else if (ex.display_name !== displayName) {
-          await modelsApi.update(ex.id, { display_name: displayName });
+          if (!draft.enabled) {
+            await modelsApi.update(created.id, { enabled: false });
+          }
+        } else {
+          if (ex.display_name !== displayName) {
+            await modelsApi.update(ex.id, { display_name: displayName });
+          }
+          if (ex.enabled !== draft.enabled) {
+            await modelsApi.update(ex.id, { enabled: draft.enabled });
+          }
         }
       }
 
@@ -430,20 +520,142 @@ export function ProviderFormView() {
           </div>
         )}
 
-        {/* Models */}
+        {/* Models：统一草稿列表（沿用"已注册模型"行样式）。增删/编辑/启停
+            全部是草稿操作，需点击底部保存按钮统一生效 */}
         <div className="space-y-1.5">
-          <Label htmlFor="provider-models">
-            {t('providerForm.models_label')}
-          </Label>
-          <Textarea
-            id="provider-models"
-            value={modelsText}
-            onChange={(e) => setModelsText(e.target.value)}
-            rows={6}
-            className="font-mono"
-            placeholder={t('providerForm.models_placeholder')}
-          />
+          <div className="flex items-center justify-between">
+            <Label>{t('providerForm.models_label')}</Label>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={openAddModelDialog}
+              title={t('providerForm.model_dialog.add_title')}
+              aria-label={t('providerForm.model_dialog.add_title')}
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
+          </div>
+          {draftModels.length === 0 ? (
+            <div className="border border-dashed rounded-md px-3 py-6 text-center text-xs text-muted-foreground">
+              {t('providerForm.models_empty')}
+            </div>
+          ) : (
+            <div className="border rounded-md divide-y divide-border">
+              {draftModels.map((m) => (
+                <div key={m.key} className="flex items-center gap-2 px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-sm truncate" title={m.display_name}>
+                      {m.display_name || m.model_id}
+                    </p>
+                    {m.display_name && m.display_name !== m.model_id && (
+                      <p className="text-xs text-muted-foreground font-mono truncate">
+                        {m.model_id}
+                      </p>
+                    )}
+                  </div>
+                  <span
+                    className={cn(
+                      'text-xs shrink-0',
+                      m.enabled ? 'text-muted-foreground' : 'text-destructive',
+                    )}
+                  >
+                    {m.enabled
+                      ? t('providerForm.model_state_on')
+                      : t('providerForm.model_state_off')}
+                  </span>
+                  <Switch
+                    checked={m.enabled}
+                    onCheckedChange={(v) => toggleDraftEnabled(m.key, v)}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0"
+                    onClick={() => openEditModelDialog(m)}
+                    title={t('common.edit')}
+                    aria-label={t('common.edit')}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => removeDraft(m.key)}
+                    title={t('common.delete')}
+                    aria-label={t('common.delete')}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* 模型新增/编辑弹窗 */}
+        <Dialog open={modelDialogOpen} onOpenChange={setModelDialogOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>
+                {editingModelKey
+                  ? t('providerForm.model_dialog.edit_title')
+                  : t('providerForm.model_dialog.add_title')}
+              </DialogTitle>
+            </DialogHeader>
+            <form
+              className="space-y-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                confirmModelDialog();
+              }}
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="model-dialog-id">
+                  {t('providerForm.model_dialog.id_label')}
+                </Label>
+                <Input
+                  id="model-dialog-id"
+                  autoFocus
+                  value={dialogModelId}
+                  onChange={(e) => setDialogModelId(e.target.value)}
+                  className="font-mono"
+                  spellCheck={false}
+                  placeholder={t('providerForm.model_dialog.id_placeholder')}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="model-dialog-alias">
+                  {t('providerForm.model_dialog.alias_label')}
+                </Label>
+                <Input
+                  id="model-dialog-alias"
+                  value={dialogAlias}
+                  onChange={(e) => setDialogAlias(e.target.value)}
+                  className="font-mono"
+                  spellCheck={false}
+                  placeholder={t('providerForm.model_dialog.alias_placeholder')}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t('providerForm.model_dialog.alias_hint')}
+                </p>
+              </div>
+              {modelDialogError && (
+                <p className="text-xs text-destructive">{modelDialogError}</p>
+              )}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setModelDialogOpen(false)}>
+                  {t('common.cancel')}
+                </Button>
+                <Button type="submit" disabled={!dialogModelId.trim()}>
+                  {editingModelKey
+                    ? t('common.save')
+                    : t('providerForm.model_dialog.add_confirm')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         {/* Actions */}
         <div className="flex items-center gap-3 pt-2">

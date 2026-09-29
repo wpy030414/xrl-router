@@ -260,6 +260,8 @@ export interface RequestLogRow {
   request_type: string;
   prompt_tokens: number;
   completion_tokens: number;
+  /** 缓存命中 tokens（prompt_tokens 为互斥的未命中口径） */
+  cache_read_input_tokens: number;
   latency_ms: number;
   success: boolean;
   error_message: string | null;
@@ -275,11 +277,11 @@ export const requestLogApi = {
 };
 
 // --- App Settings ---
+// failover_enabled 已移除：故障转移强制常开（后端恒 true），不再是可配置项
 export interface AppSettings {
   mcp_websearch: boolean;
   mcp_webfetch: boolean;
   mcp_notify: boolean;
-  failover_enabled: boolean;
   audit_enabled: boolean;
   session_inject: string;
   theme: string;
@@ -289,7 +291,7 @@ export interface AppSettings {
 
 export const settingsApi = {
   get: () => request<AppSettings>('/api/settings'),
-  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; failover_enabled?: boolean; audit_enabled?: boolean; session_inject?: string; theme?: string; hue?: number; locale?: string }) =>
+  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; audit_enabled?: boolean; session_inject?: string; theme?: string; hue?: number; locale?: string }) =>
     request<{ status: string }>('/api/settings', { method: 'PUT', body: data }),
 };
 

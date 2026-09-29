@@ -15,7 +15,6 @@ import {
   Copy,
   Check,
   Loader2,
-  Zap,
   Info,
   Database,
   Eye,
@@ -388,23 +387,7 @@ export function SettingsView() {
       {/* Routing Tab */}
       {activeTab === 'routing' && settings && (
         <div className="space-y-6">
-          {/* Failover */}
-          <section className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Zap className="w-5 h-5" />
-              <h3 className="text-lg font-semibold">{t('settings.failover.title')}</h3>
-            </div>
-            <p className="text-sm text-muted-foreground">{t('settings.failover.desc')}</p>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={settings.failover_enabled}
-                onCheckedChange={(v) => handleSettingToggle('failover_enabled', v)}
-              />
-              <span className="text-sm">
-                {settings.failover_enabled ? t('settings.failover.on') : t('settings.failover.off')}
-              </span>
-            </div>
-          </section>
+          {/* Failover 已移除：恒开启（同名模型多供应商默认语义），不再提供开关 */}
 
           {/* MCP Connection Info（在 MCP Tools 之上：先接入、再开关工具） */}
           <section className="space-y-3">

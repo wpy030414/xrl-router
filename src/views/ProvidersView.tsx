@@ -154,15 +154,26 @@ function ProviderCard({
           ) : null}
         </div>
 
-        {/* 可用模型 chips（样式与「组合」页成员一致），按可用宽度自动换行 */}
+        {/* 可用模型 chips（样式与「组合」页成员一致），按可用宽度自动换行；
+            已停用的模型灰显删除线（路由不再使用，见供应商编辑页行级开关） */}
         {models.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {models.map((m) => (
               <span
                 key={m.id}
-                className="inline-flex items-center px-2 py-1 rounded-md bg-background border text-xs"
+                className={cn(
+                  'inline-flex items-center px-2 py-1 rounded-md bg-background border text-xs',
+                  !m.enabled && 'opacity-40',
+                )}
+                title={
+                  m.enabled
+                    ? m.display_name || m.model_id
+                    : t('providers.model_disabled_tip')
+                }
               >
-                <span className="font-mono">{m.display_name || m.model_id}</span>
+                <span className={cn('font-mono', !m.enabled && 'line-through')}>
+                  {m.display_name || m.model_id}
+                </span>
               </span>
             ))}
           </div>

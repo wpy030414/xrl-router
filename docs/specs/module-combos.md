@@ -47,7 +47,7 @@ CREATE TABLE combo_members (
 
 ### 回退触发（`api/proxy/stream.rs` 双循环）
 
-组合命中后强制 `failover = true`（`global_failover || is_combo_req`）——**成员间回退不受全局「故障转移」开关影响**；普通别名保持现有行为。外层循环所有 `continue 'provider` 门（冷却跳过、密钥耗尽、网络错误、响应头超时、5xx）自动生效。
+组合命中后强制 `failover = true`（`global_failover || is_combo_req`；全局开关已恒开，组合语义不变）——**成员间回退总是生效**。外层循环所有 `continue 'provider` 门（冷却跳过、密钥耗尽、网络错误、响应头超时、5xx）自动生效。
 
 | 上游行为 | 分类 | 组合处理 |
 |---|---|---|
@@ -119,7 +119,7 @@ CREATE TABLE combo_members (
 | 成员全部不可解析 | `Some(vec![])` → 400 |
 | 成员别名被删/禁用 | 运行时跳过该成员 |
 | 插件离线的委托成员 | 跳过（继承 `resolve_route_candidates` 语义） |
-| 全局 failover 关闭 + 组合 5xx | 仍换成员（强制回退） |
+| 组合 5xx | 仍换成员（强制回退） |
 | 组合 + 普通 400 | 立即透传错误体，不换成员 |
 | 组合 + 400 配额错误 | 换成员 |
 | 白名单含组合名 | 放行 |

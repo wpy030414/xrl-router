@@ -631,6 +631,7 @@ export function StatsView() {
                     <TableHead>{t('stats.log.col_model')}</TableHead>
                     <TableHead className="text-right">{t('stats.log.col_input')}</TableHead>
                     <TableHead className="text-right">{t('stats.log.col_output')}</TableHead>
+                    <TableHead className="text-right">{t('stats.log.col_cache')}</TableHead>
                     <TableHead className="text-center">{t('stats.log.col_status')}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -652,6 +653,26 @@ export function StatsView() {
                       </TableCell>
                       <TableCell className="text-xs text-right tabular-nums">
                         {row.completion_tokens.toLocaleString()}
+                      </TableCell>
+                      {/* 缓存命中：主值 + 次行命中率（cache/(cache+prompt)，
+                          prompt_tokens 为互斥的未命中口径）；无命中显示 — */}
+                      <TableCell className="text-xs text-right tabular-nums">
+                        {row.cache_read_input_tokens > 0 ? (
+                          (() => {
+                            const base = row.cache_read_input_tokens + row.prompt_tokens;
+                            const rate = base > 0 ? (row.cache_read_input_tokens / base) * 100 : 0;
+                            return (
+                              <span className="flex flex-col items-end leading-tight">
+                                <span>{row.cache_read_input_tokens.toLocaleString()}</span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {rate.toFixed(1)}%
+                                </span>
+                              </span>
+                            );
+                          })()
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge

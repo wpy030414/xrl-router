@@ -61,6 +61,39 @@ function formatAbbrev(n: number, t: (key: string) => string): string {
   return String(n);
 }
 
+/** 已失效分组：白名单里对应模型已被删除的别名（存量残留），取消勾选即移除。 */
+function StalePermGroup({
+  entries,
+  onToggle,
+  t,
+}: {
+  entries: string[];
+  onToggle: (model: string) => void;
+  t: (key: string) => string;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <div>
+      <p className="text-xs font-medium text-destructive mb-1.5">
+        {t('keys.perm_group_stale')}
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5">
+        {entries.map((m) => (
+          <label
+            key={m}
+            className="flex items-center gap-2 text-sm cursor-pointer select-none"
+          >
+            <Checkbox checked onCheckedChange={() => onToggle(m)} />
+            <span className="font-mono text-xs truncate line-through text-muted-foreground">
+              {m}
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** 限额列窗口行：仅展示设了上限的窗口；used >= limit 视为触顶。 */
 function quotaLines(k: ServiceKeyRow, t: (key: string) => string): { key: string; resets_in: string; percent: number; over: boolean }[] {
   const now = Math.floor(Date.now() / 1000);
@@ -111,7 +144,8 @@ export function KeysView() {
   const [permDialogOpen, setPermDialogOpen] = useState(false);
   const [permTarget, setPermTarget] = useState<ServiceKeyRow | null>(null);
   const [permSet, setPermSet] = useState<Set<string>>(new Set());
-  const [permGroups, setPermGroups] = useState<{ name: string; models: string[] }[]>([]);
+  // 分组：name = 分组标题；shared 标记跨供应商同名（别名级授权，勾选即全部生效）
+  const [permGroups, setPermGroups] = useState<{ name: string; models: string[]; shared?: boolean }[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
   // Quota
@@ -229,14 +263,33 @@ export function KeysView() {
         combosApi.list(),
       ]);
       const providerName = new Map(providers.map((p) => [p.id, p.name]));
-      const groupsMap = new Map<string, string[]>();
+      // 别名 → 供应商名集合。同名模型跨供应商时合并为一行：授权按别名存储
+      // （勾选一家 = 授予全部同名条目），分开渲染只会制造"可按供应商授权"的错觉。
+      const aliasProviders = new Map<string, Set<string>>();
       for (const m of models) {
-        const pname = providerName.get(m.provider_id) || t('common.unknown');
         const name = m.display_name || m.model_id;
-        if (!groupsMap.has(pname)) groupsMap.set(pname, []);
-        if (!groupsMap.get(pname)!.includes(name)) groupsMap.get(pname)!.push(name);
+        const pname = providerName.get(m.provider_id) || t('common.unknown');
+        if (!aliasProviders.has(name)) aliasProviders.set(name, new Set());
+        aliasProviders.get(name)!.add(pname);
       }
-      const groups = Array.from(groupsMap.entries()).map(([name, ms]) => ({ name, models: ms.sort() }));
+      const groupsMap = new Map<string, string[]>();
+      const shared: string[] = [];
+      for (const [alias, pset] of aliasProviders) {
+        if (pset.size > 1) {
+          shared.push(alias);
+        } else {
+          const pname = [...pset][0];
+          if (!groupsMap.has(pname)) groupsMap.set(pname, []);
+          if (!groupsMap.get(pname)!.includes(alias)) groupsMap.get(pname)!.push(alias);
+        }
+      }
+      const groups: { name: string; models: string[]; shared?: boolean }[] = Array.from(
+        groupsMap.entries(),
+      ).map(([name, ms]) => ({ name, models: ms.sort() }));
+      if (shared.length) {
+        // 跨供应商同名放最前并显式标注，消除歧义
+        groups.unshift({ name: t('keys.perm_group_shared'), models: shared.sort(), shared: true });
+      }
       // 组合别名独立分组：授予组合名 = 授予其全部成员
       const comboGroup = combos.filter((c) => c.enabled).map((c) => c.name).sort();
       if (comboGroup.length) {
@@ -247,6 +300,12 @@ export function KeysView() {
       setModelsLoading(false);
     }
   }
+
+  // 全部仍存在的可选别名（供"已失效"分组判定）
+  const knownAliases = useMemo(
+    () => new Set(permGroups.flatMap((g) => g.models)),
+    [permGroups],
+  );
 
   const togglePerm = (model: string) => {
     setPermSet((prev) => {
@@ -537,6 +596,11 @@ export function KeysView() {
                   <p className="text-sm text-muted-foreground py-3">{t('keys.perm_no_models')}</p>
                 ) : (
                   <div className="max-h-[32vh] overflow-y-auto space-y-4 pr-2 mt-2 border border-border rounded-md p-3">
+                    <StalePermGroup
+                      entries={[...createSet].filter((m) => !knownAliases.has(m)).sort()}
+                      onToggle={toggleCreatePerm}
+                      t={t}
+                    />
                     {permGroups.map((g) => (
                       <div key={g.name}>
                         <p className="text-xs font-medium text-muted-foreground mb-1.5">{g.name}</p>
@@ -627,6 +691,11 @@ export function KeysView() {
             <p className="text-sm text-muted-foreground py-4">{t('keys.perm_no_models')}</p>
           ) : (
             <div className="max-h-[40vh] overflow-y-auto space-y-4 pr-2">
+              <StalePermGroup
+                entries={[...permSet].filter((m) => !knownAliases.has(m)).sort()}
+                onToggle={togglePerm}
+                t={t}
+              />
               {permGroups.map((g) => (
                 <div key={g.name}>
                   <p className="text-xs font-medium text-muted-foreground mb-1.5">{g.name}</p>

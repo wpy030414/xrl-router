@@ -73,17 +73,27 @@ export function ComboFormView() {
       // 构建 provider id -> name 映射
       const providerMap = new Map(currentProviders.map((p) => [p.id, p.name]));
 
-      // 组合成 ModelOption，用 display_name 作为成员标识（后端校验用 display_name）
-      const options: ModelOption[] = currentModels.map((m) => ({
-        id: m.display_name, // combo members 存的是 display_name
-        display_name: m.display_name,
-        provider_name: providerMap.get(m.provider_id) || 'Unknown',
-      }));
+      // 组合成员存 display_name（别名级软引用）——同名模型跨供应商时合并为
+      // 一个选项，供应商名并列展示，避免两行几乎相同的按钮造成"可选某一家"的错觉
+      const aliasProviders = new Map<string, Set<string>>();
+      for (const m of currentModels) {
+        const name = m.display_name || m.model_id;
+        const pname = providerMap.get(m.provider_id) || t('common.unknown');
+        if (!aliasProviders.has(name)) aliasProviders.set(name, new Set());
+        aliasProviders.get(name)!.add(pname);
+      }
+      const options: ModelOption[] = [...aliasProviders.entries()]
+        .map(([alias, pset]) => ({
+          id: alias,
+          display_name: alias,
+          provider_name: [...pset].sort().join(' / '),
+        }))
+        .sort((a, b) => a.display_name.localeCompare(b.display_name));
       setAvailableModels(options);
     };
 
     loadModels();
-  }, [fetchModels, fetchProviders]);
+  }, [fetchModels, fetchProviders, t]);
 
   // Add model to selected members
   const handleAddModel = (modelId: string) => {
