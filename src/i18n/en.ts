@@ -13,6 +13,8 @@ export default {
   // ── Claude FM ──
   'fm.play': 'Play',
   'fm.pause': 'Pause',
+  'fm.mute': 'Mute',
+  'fm.unmute': 'Unmute',
   'fm.setWallpaper': 'Set as desktop background',
   'fm.unsetWallpaper': 'Remove desktop background',
 

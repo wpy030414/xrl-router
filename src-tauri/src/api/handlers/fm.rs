@@ -11,6 +11,12 @@
 //! 切到下一首了，与真正的收音机一致。首次播放时用点击时刻的墙钟位置 re-anchor
 //! （修正启动下载的 1~3s 漂移），之后时间轴与墙钟严格对齐。
 //!
+//! 「静音」（`FmControl::SetMuted`）与「暂停」是两个正交状态：
+//! - **暂停**：`playing=false`，音量 0，时间轴照走但 `scene_t` 冻结（待机画面），
+//!   SMTC/托盘同步为 Paused；
+//! - **静音**：`playing=true` 保持不变，仅音量为 0——「播放无声音乐」：切歌、
+//!   预加载、`scene_t` 推进、SMTC Playing/托盘勾选全部照常，只是听不见。
+//!
 //! # 数据流
 //!
 //! ```text
@@ -85,17 +91,21 @@ pub enum FmControl {
     Toggle,
     Play,
     Pause,
+    /// 静音开关（与暂停正交）：true = 播放无声音乐，false = 有声。
+    SetMuted(bool),
 }
 
 /// 播放状态快照（供 Tauri command `fm_get_state` 读取）。
 #[derive(Clone, Serialize)]
 pub struct FmPlaybackState {
     pub playing: bool,
+    /// 用户静音标志（与暂停正交）：true = 播放无声音乐（时间轴/切歌/动画照常）。
+    pub muted: bool,
     pub ready: bool,
     pub artist: String,
     pub title: String,
     pub index: usize,
-    /// 像素场景动画时钟（秒）：仅播放（未静音）时按真实流逝累计，暂停冻结。
+    /// 像素场景动画时钟（秒）：仅播放（未暂停）时按真实流逝累计，暂停冻结。
     /// 主窗口与壁纸窗口统一经 `fm_scene_t` 采样，保证两处画面严格同步。
     pub scene_t: f64,
 }
@@ -129,6 +139,7 @@ impl FmEngine {
             control_rx: Arc::new(Mutex::new(Some(control_rx))),
             state: Arc::new(Mutex::new(FmPlaybackState {
                 playing: false,
+                muted: false,
                 ready: false,
                 artist: String::new(),
                 title: String::new(),
@@ -142,6 +153,11 @@ impl FmEngine {
     /// 切换播放/暂停。
     pub fn toggle(&self) {
         let _ = self.control_tx.send(FmControl::Toggle);
+    }
+
+    /// 设置静音开关（与暂停正交）：静音 = 播放无声音乐，不改变播放态。
+    pub fn set_muted(&self, muted: bool) {
+        let _ = self.control_tx.send(FmControl::SetMuted(muted));
     }
 
     /// 返回播放控制消息发送端的 clone（供 souvlaki 回调使用）。
@@ -161,6 +177,7 @@ impl FmEngine {
             .map(|s| s.clone())
             .unwrap_or(FmPlaybackState {
                 playing: false,
+                muted: false,
                 ready: false,
                 artist: String::new(),
                 title: String::new(),
@@ -268,9 +285,12 @@ fn engine_loop(
     }
 
     // Radio 模式状态：
-    // - muted=true：静音广播（暂停），时间轴照常走；
+    // - paused=true：暂停（radio 静音），时间轴照走但 scene_t 冻结；
+    // - user_muted=true：静音——播放无声音乐（时间轴/切歌/scene_t 全部照常，仅音量 0）；
     // - pending_seek：首曲/重对齐时 seek 到曲内偏移。
-    let mut muted = true;
+    // sink 音量 = 若未暂停且未静音 → 1.0，否则 0.0。
+    let mut paused = true;
+    let mut user_muted = false;
     let mut pending_seek: Option<u64> = Some(seed_offset);
     let mut next_preload: Option<Preload> = None;
 
@@ -300,7 +320,8 @@ fn engine_loop(
         let track = &TRACKS[idx];
 
         // 场景时钟按真实流逝推进（切曲下载/解码的静默间隙照走，与音频一致）。
-        tick_scene_t(&state, muted, &mut last_tick);
+        // 静音（user_muted）不算暂停：动画照常播放，只有声音消失。
+        tick_scene_t(&state, paused, &mut last_tick);
 
         // ── 获取音频字节：优先使用预加载结果，否则实时下载 ──
 
@@ -353,14 +374,14 @@ fn engine_loop(
         };
         sink.append(source);
 
-        // 音量恢复：muted=false（播放中）时确保有声。
-        // - 正常切歌：音量已是 1.0，幂等；
+        // 音量恢复：未暂停时按静音开关决定音量（静音 = 播放无声音乐）。
+        // - 正常切歌：音量已是目标值，幂等；
         // - re-anchor 切歌（continue 'outer）：clear() 后重新 append，
-        //   恢复播放状态（clear 内部 pause）+ 音量。
-        // - 静音（暂停）期间：保持 0。
-        if !muted {
+        //   恢复播放状态（clear 内部 pause）+ 音量；
+        // - 暂停期间：保持 0（时间轴照走，待机画面）。
+        if !paused {
             sink.play();
-            sink.set_volume(1.0);
+            sink.set_volume(if user_muted { 0.0 } else { 1.0 });
         } else {
             sink.set_volume(0.0);
         }
@@ -414,16 +435,17 @@ fn engine_loop(
         // ── 等待曲目结束 + 处理控制消息 ──
 
         // Radio 模式：暂停 = 静音（sink.set_volume(0.0)），时间轴照常走。
-        // 恢复播放时 re-anchor 到墙钟此刻的位置——静音期间可能已切到下一首。
+        // 恢复播放时 re-anchor 到墙钟此刻的位置——暂停期间可能已切到下一首。
         'wait: loop {
             // 100ms 轮询：检查控制消息 + sink 是否播完。
             match control_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(FmControl::Toggle) => {
-                    if muted {
+                    if paused {
                         // 恢复播放（re-anchor 逻辑见 helper）。
-                        if resume_playback_if_muted(
+                        if resume_playback(
                             &sink,
-                            &mut muted,
+                            &mut paused,
+                            user_muted,
                             &mut idx,
                             &cum_start,
                             &mut pending_seek,
@@ -436,17 +458,18 @@ fn engine_loop(
                     } else {
                         // 暂停 = 静音（radio 模式）：时间轴继续走，声音消失。
                         sink.set_volume(0.0);
-                        muted = true;
+                        paused = true;
                         set_playing(&state, false);
                         update_playback(&app_handle, false, None);
                         let _ = app_handle.emit("fm-state-changed", false);
                     }
                 }
                 Ok(FmControl::Play) => {
-                    if muted {
-                        if resume_playback_if_muted(
+                    if paused {
+                        if resume_playback(
                             &sink,
-                            &mut muted,
+                            &mut paused,
+                            user_muted,
                             &mut idx,
                             &cum_start,
                             &mut pending_seek,
@@ -459,21 +482,34 @@ fn engine_loop(
                     }
                 }
                 Ok(FmControl::Pause) => {
-                    if !muted {
+                    if !paused {
                         // 暂停 = 静音（radio 模式）。
                         sink.set_volume(0.0);
-                        muted = true;
+                        paused = true;
                         set_playing(&state, false);
                         update_playback(&app_handle, false, None);
                         let _ = app_handle.emit("fm-state-changed", false);
                     }
                 }
+                Ok(FmControl::SetMuted(m)) => {
+                    // 静音开关：与暂停正交，不改变 playing/SMTC/托盘/scene_t。
+                    // 播放中立即应用音量（静音 = 无声播放，解除 = 恢复有声）；
+                    // 暂停中只记标志（音量本就是 0，恢复播放时生效）。
+                    user_muted = m;
+                    if !paused {
+                        sink.set_volume(if user_muted { 0.0 } else { 1.0 });
+                    }
+                    if let Ok(mut s) = state.lock() {
+                        s.muted = m;
+                    }
+                    let _ = app_handle.emit("fm-muted-changed", m);
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
 
-            // 场景时钟：每 100ms 轮询迭代表推进一次（取控制消息之后的 muted 值）。
-            tick_scene_t(&state, muted, &mut last_tick);
+            // 场景时钟：每 100ms 轮询迭代表推进一次（取控制消息之后的 paused 值）。
+            tick_scene_t(&state, paused, &mut last_tick);
 
             if sink.empty() {
                 break 'wait;
@@ -482,24 +518,25 @@ fn engine_loop(
 
         // 曲目结束 → 下一首（预加载已就绪，零等待）。
         idx = (idx + 1) % TRACKS.len();
-        // 静音期间切歌：音量保持 0，继续静音广播；有声时保持 1.0。
+        // 暂停期间切歌：音量保持 0，继续无声广播；播放中则按静音开关恢复音量。
     }
 }
 
-/// 若当前处于静音（暂停）状态，尝试恢复播放：用墙钟此刻位置 re-anchor。
+/// 若当前处于暂停（radio 静音）状态，恢复播放：用墙钟此刻位置 re-anchor。
 ///
-/// - 同一曲内：seek 修正漂移 + 恢复音量。
+/// - 同一曲内：seek 修正漂移 + 恢复音量（静音开关生效：静音时恢复为无声播放）。
 /// - 已切到下一曲：清空 sink、设置 pending_seek、返回 `true` 触发外层重开循环。
-fn resume_playback_if_muted(
+fn resume_playback(
     sink: &rodio::Sink,
-    muted: &mut bool,
+    paused: &mut bool,
+    user_muted: bool,
     idx: &mut usize,
     cum_start: &[u64],
     pending_seek: &mut Option<u64>,
     state: &Arc<Mutex<FmPlaybackState>>,
     app_handle: &tauri::AppHandle,
 ) -> bool {
-    if !*muted {
+    if !*paused {
         return false;
     }
     let now_sec = wallclock_now();
@@ -507,28 +544,28 @@ fn resume_playback_if_muted(
     let new_idx = seed_from_wallclock(now_sec, cum_start);
     let new_offset = pos - cum_start[new_idx];
     if new_idx != *idx {
-        // 静音期间切歌了：清掉当前播放，外层循环重新下载/播放新曲。
+        // 暂停期间切歌了：清掉当前播放，外层循环重新下载/播放新曲。
         sink.clear(); // 注意：clear() 内部会 pause，下一轮恢复播放时需 play()
         *idx = new_idx;
         *pending_seek = Some(new_offset);
-        *muted = false;
+        *paused = false;
         return true;
     }
     // 同一曲：seek 修正漂移后恢复音量 + 解除 clear() 可能留下的 pause。
     sink.play();
     let _ = sink.try_seek(Duration::from_secs(new_offset));
-    sink.set_volume(1.0);
-    *muted = false;
+    sink.set_volume(if user_muted { 0.0 } else { 1.0 });
+    *paused = false;
     set_playing(state, true);
     update_playback(app_handle, true, Some(new_offset));
     let _ = app_handle.emit("fm-state-changed", true);
     false
 }
 
-/// 推进像素场景动画时钟：仅未静音（播放中）时按真实流逝累计，暂停/静音冻结。
-fn tick_scene_t(state: &Arc<Mutex<FmPlaybackState>>, muted: bool, last: &mut Instant) {
+/// 推进像素场景动画时钟：仅未暂停（播放中，含静音）时按真实流逝累计，暂停冻结。
+fn tick_scene_t(state: &Arc<Mutex<FmPlaybackState>>, paused: bool, last: &mut Instant) {
     let now = Instant::now();
-    if !muted {
+    if !paused {
         if let Ok(mut s) = state.lock() {
             s.scene_t += now.duration_since(*last).as_secs_f64();
         }

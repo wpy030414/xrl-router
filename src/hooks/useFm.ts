@@ -10,6 +10,8 @@ export interface FmMeta {
 export interface FmState {
   ready: boolean;
   playing: boolean;
+  /** 静音开关（与暂停正交）：true = 播放无声音乐，播放态/动画照常。 */
+  muted: boolean;
   track: FmMeta;
 }
 
@@ -24,6 +26,7 @@ export function useFm(): FmState {
   const [fmState, setFmState] = useState<FmState>({
     ready: false,
     playing: false,
+    muted: false,
     track: { artist: '', title: '', index: 0 },
   });
 
@@ -36,11 +39,14 @@ export function useFm(): FmState {
     const init = async () => {
       // Get initial state
       try {
-        const ps = await invoke<FmMeta & { playing: boolean; ready: boolean }>('fm_get_state');
+        const ps = await invoke<
+          FmMeta & { playing: boolean; muted: boolean; ready: boolean }
+        >('fm_get_state');
         if (ps && mounted) {
           setFmState({
             ready: ps.ready,
             playing: ps.playing,
+            muted: ps.muted,
             track: { artist: ps.artist, title: ps.title, index: ps.index },
           });
         }
@@ -73,7 +79,13 @@ export function useFm(): FmState {
         invoke('fm_set_playing', { playing: payload }).catch(() => {});
       });
 
-      unlisteners = [unlistenMeta, unlistenReady, unlistenStateChanged];
+      // 静音开关变化（与播放态正交：静音 = 播放无声音乐，不影响托盘/SMTC）
+      const unlistenMutedChanged = await listen<boolean>('fm-muted-changed', (payload) => {
+        if (!mounted) return;
+        setFmState((prev) => ({ ...prev, muted: payload }));
+      });
+
+      unlisteners = [unlistenMeta, unlistenReady, unlistenStateChanged, unlistenMutedChanged];
     };
 
     init();

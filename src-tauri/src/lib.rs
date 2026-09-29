@@ -111,6 +111,14 @@ fn fm_toggle(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 设置 FM 静音开关（与暂停正交）：静音 = 播放无声音乐，播放态不变。
+#[tauri::command]
+fn fm_set_muted(app: tauri::AppHandle, muted: bool) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>();
+    state.fm.set_muted(muted);
+    Ok(())
+}
+
 /// 获取 FM 播放状态快照（前端初始化时调用）。
 #[tauri::command]
 fn fm_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -118,6 +126,7 @@ fn fm_get_state(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let ps = state.fm.get_state();
     Ok(serde_json::json!({
         "playing": ps.playing,
+        "muted": ps.muted,
         "ready": ps.ready,
         "artist": ps.artist,
         "title": ps.title,
@@ -275,6 +284,7 @@ pub fn run() {
             set_locale,
             fm_set_playing,
             fm_toggle,
+            fm_set_muted,
             fm_get_state,
             fm_ready,
             fm_scene_t,

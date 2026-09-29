@@ -29,18 +29,25 @@
 
 - **暂停 = 静音，不是停时间轴**：`sink.set_volume(0.0)`，音频继续按实时速率消费，
   `sink.empty()` 照常触发切歌——与真正的收音机一致。
+- **静音与暂停正交**（`fm_set_muted`，默认有声）：静音 = **播放无声音乐**——
+  `playing` 保持 true，仅 sink 音量归 0；时间轴/切歌/预加载/`scene_t` 动画/
+  SMTC Playing/托盘勾选全部照常，只是听不见。暂停时 scene_t 冻结（待机画面），
+  静音时动画照常播放——这是两者的可观测区别。
 - **墙钟种子**：歌单总时长 `TOTAL_DURATION`（当前 4306s，21 首）作为取模周期；
   启动时用墙钟 `now % TOTAL_DURATION` 二分定位曲目 + 曲内偏移，首轮 `try_seek`
   到「此刻该在的位置」续播（修正启动下载的 1~3s 漂移）。
-- **恢复播放 = re-anchor**：静音期间可能已切歌；恢复时重算墙钟位置——
-  同曲则 seek 对齐 + 恢复音量，已切歌则 `sink.clear()` 后外层循环重新下载新曲。
+- **恢复播放 = re-anchor**：暂停期间可能已切歌；恢复时重算墙钟位置——
+  同曲则 seek 对齐 + 恢复音量（静音开关此时生效），已切歌则 `sink.clear()`
+  后外层循环重新下载新曲。解除静音无需 re-anchor：静音期间时间轴一直在走，
+  直接恢复音量即可。
 
 ## 输入契约（Tauri command）
 
 | Command | 功能 |
 |---------|------|
 | `fm_toggle` / `fm_play` / `fm_pause` | 播放控制（前端 / 托盘 / 系统媒体键共用） |
-| `fm_get_state` | 状态快照：`{ready, playing, artist, title, index, scene_t}` |
+| `fm_set_muted` | 静音开关（与暂停正交）：true = 播放无声音乐 |
+| `fm_get_state` | 状态快照：`{ready, playing, muted, artist, title, index, scene_t}` |
 | `fm_scene_t` | 像素场景动画时钟（秒），供渲染侧轮询采样 |
 | `fm_ready` | 前端预热完成回调 → 托盘菜单加入 FM 勾选项 |
 | `fm_set_playing` | 前端状态变化回调 → 同步托盘勾选态 |
@@ -56,14 +63,16 @@ Now Playing 元数据与进度。
 | `fm-ready` | OutputStream 创建成功 | `()` |
 | `fm-meta` | 引擎启动 + 每次切歌 | `{artist, title, index}` |
 | `fm-state-changed` | 播放/暂停切换 | `bool` |
+| `fm-muted-changed` | 静音开关切换（不影响播放态） | `bool` |
 
 主窗口 `FmView` 与壁纸窗口 `WallpaperScene` 共用同一套事件接线。
 
 ## 场景时钟（`scene_t`，引擎权威）
 
-像素艺术动画的唯一时钟源：仅播放（未静音）时按真实流逝累计，暂停冻结
-（`tick_scene_t`，100ms 轮询推进）。主窗口与壁纸窗口各自经 `fm_scene_t`
-采样同一共享状态——两处画面严格同步。切曲下载/解码的静默间隙照走，与音频一致。
+像素艺术动画的唯一时钟源：仅播放（未暂停）时按真实流逝累计，暂停冻结
+（`tick_scene_t`，100ms 轮询推进）；静音不算暂停，动画照常播放。
+主窗口与壁纸窗口各自经 `fm_scene_t` 采样同一共享状态——两处画面严格同步。
+切曲下载/解码的静默间隙照走，与音频一致。
 
 ## 音源获取
 
@@ -111,3 +120,5 @@ Now Playing 元数据与进度。
 - [x] Now Playing 元数据 + 播放态同步（macOS/Windows）
 - [x] 双缓冲预加载切歌零等待
 - [x] `scene_t` 引擎权威时钟，主窗口/壁纸画面同步
+- [x] 静音按钮（播放键右侧，默认有声）：静音 = 播放无声音乐，
+      播放态/切歌/动画/SMTC/托盘全部照常
