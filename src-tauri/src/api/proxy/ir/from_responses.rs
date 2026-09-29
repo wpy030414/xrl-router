@@ -161,7 +161,10 @@ fn parse_responses_input(req: &Value) -> (Option<IrSystemContent>, Vec<IrMessage
         let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
 
         match item_type {
-            "message" => {
+            // type 可缺省（Responses 规范中为可选字段）：裸 {role, content}
+            // 即合法 message——缺省/空值必须按消息处理，否则整段对话被
+            // 静默丢弃、上游收到空 input（Bug：上游 502 极难排查）。
+            "message" | "" => {
                 let ir_role = match role {
                     "system" => {
                         // System 消息
@@ -253,7 +256,14 @@ fn parse_responses_input(req: &Value) -> (Option<IrSystemContent>, Vec<IrMessage
                     }],
                 });
             }
-            _ => {}
+            other => {
+                // 无法识别的条目记 warn 而非静默丢弃——客户端（尤其第三方
+                // SDK）发送新类型时，丢消息问题至少能在日志里定位。
+                tracing::warn!(
+                    item_type = %other,
+                    "unrecognized Responses input item type, dropping item"
+                );
+            }
         }
     }
 
@@ -279,12 +289,24 @@ fn parse_responses_input(req: &Value) -> (Option<IrSystemContent>, Vec<IrMessage
 }
 
 /// 解析 Responses message 的 content。
+///
+/// content 允许两种形态（与 Chat Completions 一致）：
+/// - 纯字符串 → 单个文本块
+/// - 内容块数组 → 按 type 逐块翻译
 fn parse_responses_content(item: &Value) -> Vec<IrContentBlock> {
     let mut blocks = vec![];
 
-    if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-        for part in content {
-            let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match item.get("content") {
+        // content 兼容纯字符串（Responses 规范允许，之前被静默丢弃）
+        Some(Value::String(s)) => {
+            blocks.push(IrContentBlock::Text {
+                text: s.clone(),
+                cache_control: None,
+            });
+        }
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
             match part_type {
                 "input_text" | "output_text" | "text" => {
@@ -329,7 +351,10 @@ fn parse_responses_content(item: &Value) -> Vec<IrContentBlock> {
                 }
                 _ => {}
             }
+            }
         }
+        // content 缺失 / null / 非法形态：无内容块（上层 is_empty 会跳过该消息）
+        _ => {}
     }
 
     blocks
@@ -697,6 +722,75 @@ mod tests {
         assert!(matches!(ir.system, Some(IrSystemContent::Text(ref t)) if t == "You are helpful."));
         assert_eq!(ir.messages.len(), 1);
         assert_eq!(ir.max_tokens, Some(4096));
+    }
+
+    /// Bug 回归：type 是可选字段——裸 {role, content} 条目必须按消息处理，
+    /// 不得静默丢弃（此前上游会收到空 input 导致 502）。
+    #[test]
+    fn test_input_items_without_type_are_messages() {
+        // 裸条目 + 数组 content（主人复现用例）
+        let req = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        let ir = responses_req_to_ir(&req);
+        assert_eq!(ir.messages.len(), 1, "裸消息不得被丢弃");
+        assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "hi"));
+
+        // 裸条目 + 纯字符串 content（规范同样允许）
+        let req2 = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "user", "content": "hello there"},
+                {"role": "assistant", "content": "hi"},
+                {"role": "user", "content": [{"type": "input_text", "text": "bye"}]}
+            ]
+        });
+        let ir2 = responses_req_to_ir(&req2);
+        assert_eq!(ir2.messages.len(), 3, "字符串与数组 content 混排应全部保留");
+        assert_eq!(ir2.messages[0].role, IrRole::User);
+        assert_eq!(ir2.messages[1].role, IrRole::Assistant);
+        assert!(matches!(&ir2.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "hello there"));
+
+        // 带 type:"message" + 纯字符串 content（既有形态 + content 简写）
+        let req3 = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"type": "message", "role": "user", "content": "plain string"}
+            ]
+        });
+        let ir3 = responses_req_to_ir(&req3);
+        assert_eq!(ir3.messages.len(), 1);
+        assert!(matches!(&ir3.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "plain string"));
+
+        // 裸 system 条目同样生效（并入 system 而非消息流）
+        let req4 = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"role": "system", "content": "be brief"},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let ir4 = responses_req_to_ir(&req4);
+        assert!(matches!(ir4.system, Some(IrSystemContent::Text(ref t)) if t == "be brief"));
+        assert_eq!(ir4.messages.len(), 1);
+    }
+
+    /// 未知 type 的条目被丢弃（warn 日志），但不影响其余消息解析。
+    #[test]
+    fn test_unknown_type_dropped_but_rest_kept() {
+        let req = json!({
+            "model": "gpt-4o",
+            "input": [
+                {"type": "some_future_item", "payload": {"x": 1}},
+                {"type": "message", "role": "user", "content": "keep me"}
+            ]
+        });
+        let ir = responses_req_to_ir(&req);
+        assert_eq!(ir.messages.len(), 1, "未知条目丢弃，其余保留");
+        assert!(matches!(&ir.messages[0].content[0], IrContentBlock::Text { text, .. } if text == "keep me"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! 统计聚合 + 应用设置（mcp_websearch / mcp_webfetch / failover 开关）handler。
+//! 统计聚合 + 应用设置（mcp_websearch / mcp_webfetch / mcp_notify 等开关）handler。
 
 use std::sync::Arc;
 
@@ -90,7 +90,6 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
         "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_webfetch": state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_notify": state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
-        "failover_enabled": state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
         "audit_enabled": state.audit_enabled.load(std::sync::atomic::Ordering::Relaxed),
         "session_inject": session_inject,
         "theme": theme,
@@ -104,7 +103,6 @@ pub(crate) struct UpdateSettingsRequest {
     mcp_websearch: Option<bool>,
     mcp_webfetch: Option<bool>,
     mcp_notify: Option<bool>,
-    failover_enabled: Option<bool>,
     audit_enabled: Option<bool>,
     session_inject: Option<String>,
     theme: Option<String>,
@@ -140,16 +138,6 @@ pub(crate) async fn update_settings(
         state.mcp_notify.store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_notify", val) {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ));
-        }
-    }
-    if let Some(v) = req.failover_enabled {
-        state.failover_enabled.store(v, std::sync::atomic::Ordering::Relaxed);
-        let val = if v { "true" } else { "false" };
-        if let Err(e) = state.database.set_setting("failover_enabled", val) {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),

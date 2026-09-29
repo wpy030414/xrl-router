@@ -32,7 +32,9 @@ pub struct AppState {
     pub mcp_webfetch: Arc<std::sync::atomic::AtomicBool>,
     /// MCP Notify 开关：开启 = /mcp 提供 notify 工具（发送系统桌面通知）。
     pub mcp_notify: Arc<std::sync::atomic::AtomicBool>,
-    /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个（运行时可改）。
+    /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个。
+    /// 恒为 true——同名模型多供应商自此成为默认路由语义（别名级授权 +
+    /// 模型行级启停已能表达供应商粒度的排除），不再提供关闭入口。
     pub failover_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// 用户对话审查开关：开启 = 代理请求时捕获消息内容并存储到 conversations 表。
     pub audit_enabled: Arc<std::sync::atomic::AtomicBool>,
@@ -93,14 +95,9 @@ impl AppState {
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ));
-        let failover_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
-            database
-                .get_setting("failover_enabled")
-                .ok()
-                .flatten()
-                .map(|v| v == "true")
-                .unwrap_or(false),
-        ));
+        // failover 强制常开：历史上的 failover_enabled setting 不再读取
+        // （存量值留在 settings 表中无害；数据导出仍自包含）。
+        let failover_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let audit_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
             database
                 .get_setting("audit_enabled")
@@ -527,8 +524,8 @@ mod tests {
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
         db.save_service_key("sk-failover", "故障转移测试", &sk_hash, "***key", None).unwrap();
 
-        // 开关开：AppState 构造前写入 settings（AppState::new 读取）
-        db.set_setting("failover_enabled", "true").unwrap();
+        // 不写 failover_enabled setting：开关已强制常开（不读 settings），
+        // 构造后应恒为 true——这里同时防止回归到「读 settings 默认 false」。
         let config = Config {
             port: 0,
             host: "127.0.0.1".to_string(),
@@ -540,6 +537,10 @@ mod tests {
             master_key,
             &std::env::temp_dir(),
         ));
+        assert!(
+            state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
+            "failover 必须强制常开，不受 settings 影响"
+        );
         let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -575,15 +576,18 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("hello from B"), "响应应来自备选 provider B: {}", text);
 
-        // 开关关：主 provider A 的 500 → 非流式路径以真实状态码 + JSON 错误体透传
-        // （非流式客户端没有 SSE 通道，错误用真实 HTTP 状态码表达）
+        // failover 已强制常开：即使 settings 表写 false，重启构造后仍为 true
         db.set_setting("failover_enabled", "false").unwrap();
-        state.failover_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-        state.provider_cooldowns.write().unwrap().clear();
-        let resp = send().send().await.unwrap();
-        assert_eq!(resp.status(), 500, "failover 关闭时上游 5xx 以真实状态码透传（非流式路径）");
-        let text = resp.text().await.unwrap();
-        assert!(text.contains("boom from A"), "错误体应含上游错误信息: {}", text);
+        let state2 = AppState::new(
+            Config { port: 0, host: "127.0.0.1".to_string(), ..Default::default() },
+            db.clone(),
+            master_key,
+            &std::env::temp_dir(),
+        );
+        assert!(
+            state2.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
+            "settings 里的 false 不得关闭强制常开的 failover"
+        );
     }
 
     /// 组合别名（combo）E2E：全局 failover **关闭**（默认）时组合仍强制成员间回退；
@@ -733,7 +737,8 @@ mod tests {
         let raw_service_key = "xrl-test-combo-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
         db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key", None).unwrap();
-        // 不写 failover_enabled setting：保持默认关闭，证明组合强制回退
+        // 不写 failover_enabled setting：开关已强制常开（组合回退语义不变，
+        // 普通 5xx 也自此默认换供应商）
         let config = Config {
             port: 0,
             host: "127.0.0.1".to_string(),
@@ -745,7 +750,7 @@ mod tests {
             master_key,
             &std::env::temp_dir(),
         ));
-        assert!(!state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed));
         let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -779,11 +784,11 @@ mod tests {
         let text = resp.text().await.unwrap();
         assert!(text.contains("hello from B"), "配额 400 应换成员到 B: {}", text);
 
-        // 2. 组合 + 500（供应商级）：pa 失败 → 换 pb（全局 failover 关闭也强制回退）
+        // 2. 组合 + 500（供应商级）：pa 失败 → 换 pb（组合强制回退）
         let resp = send("c-fail").send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let text = resp.text().await.unwrap();
-        assert!(text.contains("hello from B"), "全局 failover 关闭时组合仍应换成员: {}", text);
+        assert!(text.contains("hello from B"), "组合成员间应强制回退: {}", text);
 
         // 3. 组合 + 普通 400（请求级）：立即透传，不换成员
         let resp = send("c-400").send().await.unwrap();

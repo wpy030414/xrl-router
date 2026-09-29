@@ -165,6 +165,13 @@ pub(crate) async fn delete_provider(
         ));
     }
 
+    // 级联清理软引用：models 行已随外键级联删除，但 allowed_models（JSON 列）
+    // 与 combo_members（TEXT 别名）无外键——清掉悬空的模型别名引用，防止
+    // 白名单/组合成员永久残留（Bug 3）。清理失败不阻断删除主流程。
+    if let Err(e) = state.database.purge_dangling_model_refs() {
+        tracing::warn!(provider_id = %id, error = %e, "purge dangling model refs failed");
+    }
+
     Ok(Json(serde_json::json!({"status": "deleted"})))
 }
 

@@ -883,3 +883,48 @@ ADR-043 的透明 WebView + WorkerW 挂载真机反馈：**壁纸窗口盖住桌
 - `src-tauri/src/plugin/host.rs`（伴生启动）
 - `src-tauri/src/db/schema.rs` V24（迁移）
 
+
+---
+
+## ADR-052：cargo test 产物嵌入 Common-Controls v6 清单
+
+**日期**: 2026-09-29
+**状态**: 已采纳
+
+### 背景
+
+Windows 上 `cargo test` 生成的测试 exe 长期无法启动，报错极具迷惑性：
+
+```
+exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND
+```
+
+且**主程序完全正常**。排查结论（本次逐层验证）：
+
+1. `tauri_build` 只给**主程序**嵌入 RT_MANIFEST（声明 Common-Controls v6 依赖）；
+2. cargo test 的测试 exe **没有应用清单** → Windows SxS 加载器把 `comctl32.dll`
+   绑到旧 v5 → v5 缺 v6 的入口点 → **加载期**失败（进程未进 main）；
+3. 报错不指明缺失的 DLL/符号；外部 manifest（`<exe>.manifest`）对测试 exe 不生效，
+   事件日志与 WER 均无记录——是"幽灵故障"，逐台机器复发、重复浪费排查时间。
+
+### 决策
+
+1. 仓库内置 `src-tauri/tests.manifest`（Common-Controls v6 依赖声明，与主程序同源）。
+2. `src-tauri/build.rs` 通过 `cargo:rustc-link-arg-tests=/MANIFEST:EMBED` +
+   `/MANIFESTINPUT:<tests.manifest>` 把清单嵌入**全部测试产物**（MSVC target 条件生效）。
+   该指令不影响主程序（`cargo:rustc-link-arg-bins` 才作用于 bin）。
+3. `src-tauri/tests/manifest_carrier.rs` 是**载体 target**：`rustc-link-arg-tests`
+   要求包内存在显式 test target 才合法（内联 `#[cfg(test)]` 单元测试不构成 target）。
+   该文件不含实际测试逻辑，**不得删除**，否则 build.rs 输出非法指令、cargo test 直接报错。
+4. 效果：普通 `cargo test` 无需任何环境变量/额外步骤，测试 exe 自带清单。
+
+### 代价
+
+- `tests/` 目录存在一个载体文件（与"测试内联"约定无冲突，它不是测试代码）。
+- 仅 MSVC 工具链生效（本项目 Windows/macOS 双平台，macOS 不受影响，条件已隔离）。
+
+### 关键文件
+
+- `src-tauri/tests.manifest`（清单本体）
+- `src-tauri/build.rs`（按 target 条件注入 link args）
+- `src-tauri/tests/manifest_carrier.rs`（载体 target，勿删）

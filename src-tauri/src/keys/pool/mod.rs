@@ -74,6 +74,49 @@ impl KeyPool {
         index_map.remove(provider_id);
     }
 
+    /// 运行时追加单个 key（create_key 热生效用）。
+    ///
+    /// 池内 key_hash 存明文（与 load_all_keys_from_db 装池口径一致），
+    /// 由调用方构造 entry 时保证。追加只会增大 total，既有轮询指针不会
+    /// 因此越界，无需修正；新 provider 分组初始化指针为 0。
+    /// 返回 false 表示同 id 已在池内（幂等保护，不重复入池）。
+    pub fn add_key(&self, entry: KeyEntry) -> bool {
+        let provider_id = entry.provider_id.clone();
+        let added = {
+            let mut keys_map = self.keys.write().unwrap();
+            if let Some(list) = keys_map.get_mut(&provider_id) {
+                if list.iter().any(|k| k.id == entry.id) {
+                    false
+                } else {
+                    list.push(entry);
+                    true
+                }
+            } else {
+                keys_map.insert(provider_id.clone(), vec![entry]);
+                true
+            }
+        };
+        // write lock 释放后再广播（broadcast 内部要读 keys，否则死锁）
+        if added {
+            let mut index_map = self.current_index.write().unwrap();
+            index_map.entry(provider_id.clone()).or_insert(0);
+            drop(index_map);
+            self.broadcast_key_stats(&provider_id);
+        }
+        added
+    }
+
+    /// 运行时同步 key 名称（update_key 热生效用；仅展示字段，不动状态/指针）。
+    /// 返回 true 表示池内找到并更新。
+    pub fn rename_key(&self, provider_id: &str, key_id: &str, name: &str) -> bool {
+        let mut keys_map = self.keys.write().unwrap();
+        keys_map
+            .get_mut(provider_id)
+            .and_then(|list| list.iter_mut().find(|k| k.id == key_id))
+            .map(|k| k.name = name.to_string())
+            .is_some()
+    }
+
     /// 删除单个 key（运行时同步内存 + 修正指针）。
     /// 删除后如果指针越界（指向了被删的位置），自动回退到 0 重新开始轮询。
     /// 返回 true 表示 key 存在并被移除；false 表示未找到（可能已在内存外）。
@@ -193,6 +236,50 @@ mod tests {
             total_requests: 0,
             total_tokens: 0,
         }
+    }
+
+    #[test]
+    fn test_add_key_runtime_hot_effective() {
+        // Bug 1 回归：运行中 create_key 必须热生效——不重启也能从池里取到新 key。
+        let pool = KeyPool::new();
+
+        // 空 provider 分组：直接 add → 建组 + 轮询从 0
+        assert!(pool.add_key(create_test_key("k1", KeyStatus::Green)));
+        let k = pool.get_next_key("test_provider").unwrap();
+        assert_eq!(k.id, "k1", "新 provider 的首个 key 应立即可轮询");
+
+        // 追加第二个：单 key 阶段指针已回绕到 0，新 key 排在队尾参与轮询——
+        // 两次取 key 应恰好覆盖 k1、k2 各一次（证明 k2 已热入池）
+        assert!(pool.add_key(create_test_key("k2", KeyStatus::Green)));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let k = pool.get_next_key("test_provider").unwrap();
+            seen.insert(k.id.clone());
+        }
+        assert_eq!(seen, ["k1", "k2"].into_iter().map(String::from).collect(), "两个 key 都应可轮询到");
+
+        // 同 id 重复入池：幂等拒绝，池内仍只有 2 个
+        assert!(!pool.add_key(create_test_key("k1", KeyStatus::Green)));
+        let stats = pool.get_stats("test_provider").unwrap();
+        assert_eq!(stats.total, 2);
+
+        // 池内明文口径：key_hash 应是构造时传入的明文（hash_{id}）
+        let k = pool.get_next_key("test_provider").unwrap();
+        assert_eq!(k.key_hash, format!("hash_{}", k.id));
+    }
+
+    #[test]
+    fn test_rename_key_runtime_sync() {
+        let pool = KeyPool::new();
+        pool.add_provider_keys("p", vec![create_test_key("key1", KeyStatus::Green)]);
+
+        assert!(pool.rename_key("p", "key1", "New Name"));
+        let k = pool.get_next_key("p").unwrap();
+        assert_eq!(k.name, "New Name");
+
+        // 未知 id / 未知 provider：返回 false 不 panic
+        assert!(!pool.rename_key("p", "ghost", "x"));
+        assert!(!pool.rename_key("ghost", "key1", "x"));
     }
 
     #[test]

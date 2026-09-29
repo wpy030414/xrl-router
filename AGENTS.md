@@ -127,8 +127,12 @@ Agent 倾向于扩展。以下功能**不要主动实现**：
 ### 测试
 
 - 测试写在内联 `#[cfg(test)] mod tests` 块里，**不要**新建 `tests/` 目录
+  （唯一例外：`src-tauri/tests/manifest_carrier.rs` 是 Windows 测试产物嵌入
+  Common-Controls v6 清单的载体 target，见 ADR-052，**不得删除**）
 - 用 `Database::open_in_memory()` 跑内存数据库，**不要**写文件
 - 前端**没有测试框架**，暂时不要加
+- Windows 上测试 exe 曾因缺应用清单加载期失败（0xC0000139），已由 build.rs
+  自动嵌入 `src-tauri/tests.manifest` 修复——直接 `cargo test` 即可，无需环境变量
 
 ### 什么时候该拒绝用户的请求
 

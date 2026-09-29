@@ -256,6 +256,7 @@ impl super::Database {
                 key_name, key_masked,
                 request_type,
                 prompt_tokens, completion_tokens, latency_ms,
+                cache_read_input_tokens,
                 success, error_message
              FROM usage_log u{}
              ORDER BY timestamp DESC, id DESC
@@ -278,8 +279,10 @@ impl super::Database {
                 "prompt_tokens": row.get::<_, i64>(9)?,
                 "completion_tokens": row.get::<_, i64>(10)?,
                 "latency_ms": row.get::<_, i64>(11)?,
-                "success": row.get::<_, i64>(12)? != 0,
-                "error_message": row.get::<_, Option<String>>(13)?,
+                // 缓存命中 tokens（prompt_tokens 为互斥的未命中口径）
+                "cache_read_input_tokens": row.get::<_, i64>(12)?,
+                "success": row.get::<_, i64>(13)? != 0,
+                "error_message": row.get::<_, Option<String>>(14)?,
             }))
         })?;
 

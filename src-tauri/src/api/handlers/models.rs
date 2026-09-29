@@ -187,6 +187,13 @@ pub(crate) async fn delete_model(
         ));
     }
 
+    // 级联清理软引用：该模型行删除后，若其 display_name 不再被任何模型使用，
+    // 清掉 allowed_models / combo_members 里的悬空别名（Bug 3）。
+    // 失败不阻断删除主流程。
+    if let Err(e) = state.database.purge_dangling_model_refs() {
+        tracing::warn!(model_id = %id, error = %e, "purge dangling model refs failed");
+    }
+
     Ok(Json(serde_json::json!({"status": "deleted"})))
 }
 
