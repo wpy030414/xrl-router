@@ -1,0 +1,10 @@
+# Windows/MSVC：测试与运行包装器。
+#
+# cargo 的 rustc-link-arg-tests（build.rs 注入 /MANIFEST:EMBED）只作用于
+# tests/ 目录的显式 test target；lib 单测 exe（#[cfg(test)] 内联测试）拿不到
+# 清单 → 加载器把 comctl32 绑到 v5 → 0xC0000139 加载期失败。
+# runner 包装器在启动测试 exe 前把 src-tauri/tests.manifest 复制为外部清单
+# （加载器在内嵌清单缺失时接受 <exe>.manifest），对主程序无影响。
+# 细节见 docs/DECISIONS.md ADR-052。
+[target.x86_64-pc-windows-msvc]
+runner = ["src-tauri/scripts/win-test-runner.bat"]
