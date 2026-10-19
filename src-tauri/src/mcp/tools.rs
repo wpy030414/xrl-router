@@ -102,16 +102,41 @@ fn filter_tools(websearch: bool, webfetch: bool, notify: bool) -> Vec<Tool> {
 fn web_search_tool() -> Tool {
     Tool::new(
         "web_search",
-        "Search the web for current information using local Bing search. \
-         Use this when the question requires up-to-date facts, recent events, \
-         or information not in the training data.",
-        Arc::new(schema_with_single_field(
-            "query",
-            "The search query",
-        )),
+        "Search the web for current information using local Bing search, then \
+         enrich each hit with an extractive summary, a rerank_score (0-3, where \
+         >=1.5 means relevant), publish date and site metadata. Prefer results \
+         with higher rerank_score; ignore those near 0. Pass ori_question in \
+         multi-turn conversations so ranking and summaries track the user's \
+         original intent. Use this when the question requires up-to-date facts, \
+         recent events, or information not in the training data.",
+        Arc::new(web_search_schema()),
     )
     .with_title("Web Search")
     .with_annotations(ToolAnnotations::new().read_only(true))
+}
+
+/// web_search 的 JSON Schema：`query`（required）+ `ori_question`（optional）。
+fn web_search_schema() -> JsonObject {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query"
+            },
+            "ori_question": {
+                "type": "string",
+                "description": "Optional. The user's original question or intent that \
+                    led to this search (multi-turn context). Improves relevance ranking \
+                    and summary extraction."
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+    .as_object()
+    .unwrap()
+    .clone()
 }
 
 fn web_fetch_tool() -> Tool {
@@ -187,7 +212,7 @@ fn schema_with_single_field(field: &str, field_desc: &str) -> JsonObject {
     .clone()
 }
 
-/// web_search 执行：本地 Bing 搜索（复用代理劫持时代的同一套搜索实现）。
+/// web_search 执行：本地 Bing 搜索 → 内容增强层（摘要/重排/元数据）。
 async fn run_web_search(args: &JsonObject) -> CallToolResponse {
     let query = match args
         .get("query")
@@ -203,20 +228,35 @@ async fn run_web_search(args: &JsonObject) -> CallToolResponse {
             .into()
         }
     };
+    // ori_question 宽松解析（多轮对话的原始意图，空串视为未提供）
+    let ori_question = args
+        .get("ori_question")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
     let Some(state) = app_state() else {
         return tool_unavailable();
     };
 
-    info!(query = %query, "mcp: web_search executing");
+    info!(query = %query, ori = ?ori_question, "mcp: web_search executing");
     match crate::search::bing::search(&state.search_http, &query).await {
         Ok(results) if results.is_empty() => CallToolResult::success(vec![ContentBlock::text(
             format!("No web search results found for: {query}"),
         )])
         .into(),
         Ok(results) => {
-            info!(query = %query, results = results.len(), "mcp: web_search succeeded");
-            CallToolResult::success(vec![ContentBlock::text(format_search_text(&results))]).into()
+            let raw_count = results.len();
+            let enriched = crate::content::enrich_search_results(
+                &state.http_client,
+                results,
+                &query,
+                ori_question.as_deref(),
+            )
+            .await;
+            info!(query = %query, raw = raw_count, results = enriched.len(), "mcp: web_search succeeded");
+            CallToolResult::success(vec![ContentBlock::text(format_search_text(&enriched))]).into()
         }
         Err(e) => {
             tracing::warn!(query = %query, error = %e, "mcp: web_search failed");
@@ -311,12 +351,35 @@ fn tool_unavailable() -> CallToolResponse {
     .into()
 }
 
-/// 把 Bing 结果格式化成喂给 LLM 的文本（与旧劫持循环同款格式）。
-fn format_search_text(results: &[crate::search::SearchResult]) -> String {
+/// 把增强后的搜索结果格式化成喂给 LLM 的文本。
+///
+/// 格式（面向 LLM 消费）：标题、URL、元数据行（日期/站点/权威度/相关度）、摘要。
+/// 摘要优先用内容增强层生成的长摘要，未抓到正文时退化为 Bing snippet。
+fn format_search_text(results: &[crate::content::EnrichedResult]) -> String {
     results
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("[{}] {}\n{}\n摘要: {}", i + 1, r.title, r.url, r.snippet))
+        .map(|(i, r)| {
+            let date = r.date.as_deref().unwrap_or("未知");
+            let site = r.site_name.as_deref().unwrap_or("未知");
+            // fetched 标记摘要来源：正文提取成功用长摘要，否则退化为 Bing snippet
+            let summary = if r.fetched && !r.summary.trim().is_empty() {
+                &r.summary
+            } else {
+                &r.snippet
+            };
+            format!(
+                "[{}] {}\nURL: {}\n日期: {} | 站点: {} | 权威度: {} | 相关度: {:.1}/3\n摘要: {}",
+                i + 1,
+                r.title,
+                r.url,
+                date,
+                site,
+                r.authority,
+                r.rerank_score,
+                summary,
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -355,23 +418,51 @@ mod tests {
     }
 
     #[test]
+    fn test_web_search_schema_has_optional_ori_question() {
+        let schema = web_search_tool().input_schema;
+        // query 必填；ori_question 可选（在 properties 但不在 required）
+        assert_eq!(schema["required"].as_array().unwrap().len(), 1);
+        assert_eq!(schema["required"][0].as_str(), Some("query"));
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("query"));
+        assert!(props.contains_key("ori_question"), "missing optional ori_question");
+        assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
+    }
+
+    #[test]
     fn test_format_search_text() {
         let results = vec![
-            crate::search::SearchResult {
+            crate::content::EnrichedResult {
                 title: "标题一".to_string(),
                 url: "https://example.com/a".to_string(),
-                snippet: "摘要一".to_string(),
+                snippet: "短摘要一".to_string(),
+                summary: "长摘要一".to_string(),
+                rerank_score: 2.6,
+                date: Some("2026-03-12".to_string()),
+                site_name: Some("Example".to_string()),
+                authority: 3,
+                fetched: true,
             },
-            crate::search::SearchResult {
+            crate::content::EnrichedResult {
                 title: "标题二".to_string(),
                 url: "https://example.com/b".to_string(),
-                snippet: "摘要二".to_string(),
+                snippet: "短摘要二".to_string(),
+                summary: String::new(), // 未抓到正文：退化为 snippet
+                rerank_score: 0.32,
+                date: None,
+                site_name: None,
+                authority: 1,
+                fetched: false,
             },
         ];
         let text = format_search_text(&results);
         assert!(text.contains("[1] 标题一"));
-        assert!(text.contains("https://example.com/a"));
+        assert!(text.contains("URL: https://example.com/a"));
+        assert!(text.contains("日期: 2026-03-12 | 站点: Example | 权威度: 3 | 相关度: 2.6/3"));
+        assert!(text.contains("摘要: 长摘要一"));
+        // 第二条：缺失元数据占位「未知」，空 summary 退化为 snippet
         assert!(text.contains("[2] 标题二"));
-        assert!(text.contains("摘要: 摘要一"));
+        assert!(text.contains("日期: 未知 | 站点: 未知 | 权威度: 1 | 相关度: 0.3/3"));
+        assert!(text.contains("摘要: 短摘要二"));
     }
 }
