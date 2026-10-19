@@ -86,6 +86,13 @@ rmcp = { version = "3", features = ["server", "macros", "transport-streamable-ht
 # 渲染后的 HTML → Markdown（喂给模型前压缩体积、保留结构）
 htmd = "0.2"
 
+# 内容增强层：非 UTF-8 中文页面解码（GBK/GB2312/BIG5）。
+# 已是 reqwest 传递依赖，显式声明零编译体积增量（见 content/readability.rs decode_body）
+encoding_rs = "0.8"
+# 内容增强层：scraper 的 DOM 树类型（NodeId/NodeMut），scraper 未 re-export；
+# 版本与 scraper 的依赖解析一致（0.6.3），同一 crate 实例
+ego-tree = "0.6"
+
 # 桌面壁纸劫持（FM 像素艺术 → 桌面层）：
 # - Windows：透明 WebView 窗口 + 自实现 WorkerW 挂载（配方同社区插件
 #   tauri-plugin-desktop-underlay + Z 序锚定，见 docs/DECISIONS.md ADR-043/049）
