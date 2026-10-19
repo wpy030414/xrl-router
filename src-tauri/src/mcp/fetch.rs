@@ -48,7 +48,7 @@ pub(crate) fn init(app: AppHandle) {
 pub(super) async fn fetch_url(url: &str) -> anyhow::Result<String> {
     let normalized = normalize_url(url)?;
     match render_with_webview(&normalized).await {
-        Ok(html) => Ok(html_to_markdown(&html)),
+        Ok(html) => Ok(html_to_markdown(html, normalized.clone()).await),
         Err(render_err) => {
             tracing::warn!(
                 url = %normalized,
@@ -56,9 +56,9 @@ pub(super) async fn fetch_url(url: &str) -> anyhow::Result<String> {
                 "mcp: webview render failed, falling back to static fetch"
             );
             let html = static_fetch(&normalized).await?;
+            let body = html_to_markdown(html, normalized.clone()).await;
             Ok(format!(
-                "（WebView 渲染不可用：{render_err}。以下为静态抓取内容，可能不含 JS 渲染结果）\n{}",
-                html_to_markdown(&html)
+                "（WebView 渲染不可用：{render_err}。以下为静态抓取内容，可能不含 JS 渲染结果）\n{body}"
             ))
         }
     }
@@ -239,10 +239,43 @@ async fn static_fetch(url: &str) -> anyhow::Result<String> {
     Ok(html)
 }
 
-/// 渲染后 HTML → Markdown → 截断。htmd 失败时退化为原始 HTML 截断。
-fn html_to_markdown(html: &str) -> String {
-    let md = htmd::convert(html).unwrap_or_else(|_| html.to_string());
-    trim_output(md)
+/// 渲染后 HTML → readability 正文提取 → Markdown → 截断。
+///
+/// 提取质量过低（`quality < EXTRACTION_QUALITY_THRESHOLD`）或正文转出的 Markdown
+/// 太短时，降级为整页 `htmd::convert`（现状行为兜底，两层降级链保留）。
+const EXTRACTION_QUALITY_THRESHOLD: f32 = 0.35;
+
+/// 同步转换（在 blocking 线程执行）。
+fn html_to_markdown_sync(html: &str, url: &str) -> String {
+    let page = crate::content::extract(html, url);
+    if page.quality >= EXTRACTION_QUALITY_THRESHOLD && !page.html.is_empty() {
+        if let Ok(md) = htmd::convert(&page.html) {
+            if md.chars().count() >= 80 {
+                let title = page.title.trim();
+                let full = if title.is_empty() {
+                    md
+                } else {
+                    format!("# {title}\n\n{md}")
+                };
+                return trim_output(full);
+            }
+        }
+    }
+    // 降级：整页转换，htmd 失败再退化为原始 HTML
+    trim_output(htmd::convert(html).unwrap_or_else(|_| html.to_string()))
+}
+
+/// 异步入口：`scraper::Html` 非 Send 且大页面解析 CPU 密集，整体卸载到
+/// blocking 线程池。join 失败（极罕见）返回降级提示——原始 html 已 move 进闭包，
+/// 且此处 panic 意味着提取器崩溃，不宜再走重逻辑。
+async fn html_to_markdown(html: String, url: String) -> String {
+    match tokio::task::spawn_blocking(move || html_to_markdown_sync(&html, &url)).await {
+        Ok(md) => md,
+        Err(e) => {
+            tracing::warn!(error = %e, "mcp: html_to_markdown blocking task failed");
+            "（网页内容处理失败，未能提取正文。）".to_string()
+        }
+    }
 }
 
 /// 按字符截断到 `MAX_OUTPUT_CHARS`，截断处附注。
@@ -289,8 +322,47 @@ mod tests {
 
     #[test]
     fn test_html_to_markdown_basic() {
-        let md = html_to_markdown("<html><body><h1>标题</h1><p>正文内容</p></body></html>");
+        let md = html_to_markdown_sync(
+            "<html><body><h1>标题</h1><p>这是一段足够长的正文内容，用于让 readability \
+             提取器判定为有效正文而非空壳页面。</p></body></html>",
+            "https://example.com/a",
+        );
         assert!(md.contains("标题"));
-        assert!(md.contains("正文内容"));
+        assert!(md.contains("这是一段足够长的正文内容"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_extracts_title_and_drops_nav() {
+        let html = r#"<html><head><title>文章标题 - 示例站点</title></head><body>
+            <nav><a href="/">首页</a><a href="/about">关于我们</a><a href="/x">导航链接</a></nav>
+            <article>
+                <p>Tokio JoinSet 是并发任务管理器，允许同时 spawn 多个任务并统一收集结果。</p>
+                <p>配合 timeout 可实现整体超时控制，JoinSet drop 时会自动 abort 残留任务。</p>
+                <p>总体而言，它适合扇出型的并发场景，完成顺序即 join_next 的返回顺序。</p>
+            </article>
+            <footer><p>版权所有 保留一切权利 备案号某某某</p></footer>
+        </body></html>"#;
+        let md = html_to_markdown_sync(html, "https://example.com/article");
+        // 输出以 `# {title}` 开头，且标题已剥站点名后缀
+        assert!(
+            md.starts_with("# 文章标题"),
+            "md head: {}",
+            md.chars().take(30).collect::<String>()
+        );
+        // 正文保留
+        assert!(md.contains("并发任务管理器"));
+        // 导航/页脚被剔除
+        assert!(!md.contains("导航链接"), "nav leaked");
+        assert!(!md.contains("关于我们"), "nav leaked");
+        assert!(!md.contains("版权所有"), "footer leaked");
+    }
+
+    #[test]
+    fn test_html_to_markdown_low_quality_falls_back_to_fullpage() {
+        // 几乎无正文的空壳页：quality 低 → 降级整页转换（仍返回内容，不报错）
+        let html = "<html><body><div id=\"root\"><span>a</span></div></body></html>";
+        let md = html_to_markdown_sync(html, "https://spa.example.com/");
+        // 降级路径不强制 `# title` 头；此处内容极少，断言不 panic 即可
+        assert!(md.chars().count() < 100);
     }
 }
