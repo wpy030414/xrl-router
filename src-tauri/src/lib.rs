@@ -9,6 +9,7 @@ use tauri::Listener;
 use tracing::{info, error};
 
 mod config;
+mod content;
 mod crypto;
 mod db;
 mod error;
