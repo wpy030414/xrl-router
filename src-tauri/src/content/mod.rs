@@ -139,8 +139,11 @@ pub async fn enrich_search_results(
 ///
 /// 过滤链：2xx → content-type 仅 HTML/XHTML → 无意外 Content-Encoding →
 /// Content-Length 预检 → 流式累积截断 2MB → spawn_blocking 提取。
+///
+/// 每个失败分支都记 debug 日志：抓取失败是本层最常见的降级路径（反爬/超时/
+/// 非 HTML），静默失败会让「为什么没有长摘要」无法诊断。
 async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<ExtractedPage>)> {
-    let resp = client
+    let resp = match client
         .get(url)
         .header(reqwest::header::USER_AGENT, CHROME_UA)
         .header(
@@ -148,11 +151,30 @@ async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         )
         .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
+        // Client Hints：真实 Chrome 会发送，与 search/bing.rs 的 SearchHttp 保持一致
+        // （该处实测「关键在完整浏览器头」而非 TLS 指纹或 JS 执行）。
+        //
+        // 注意：这些头**不能**绕过反爬。实测知乎/百度百科对本机直连仍返回 403
+        // （走不走系统代理结果相同），属站点侧风控，只能靠 snippet 降级兜底。
+        // 保留它们是为了不因请求头不完整而被识别为裸爬虫、拿到降级响应。
+        .header(
+            "sec-ch-ua",
+            "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+        )
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Windows\"")
         .timeout(PER_PAGE_TIMEOUT)
         .send()
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(url = %url, error = %e, "content: fetch request failed");
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        tracing::debug!(url = %url, status = resp.status().as_u16(), "content: non-2xx response");
         return None;
     }
     let content_type = resp
@@ -161,21 +183,24 @@ async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     if content_type.as_deref().is_some_and(|ct| !is_html_ct(ct)) {
+        tracing::debug!(url = %url, content_type = ?content_type, "content: not HTML, skipped");
         return None;
     }
     // 防御：未请求压缩却回了压缩体（正常不会发生），解码交给 reqwest 但跳过异常声明
-    if resp
+    if let Some(enc) = resp
         .headers()
         .get(reqwest::header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| !v.eq_ignore_ascii_case("identity") && !v.is_empty())
+        .filter(|v| !v.eq_ignore_ascii_case("identity") && !v.is_empty())
     {
+        tracing::debug!(url = %url, encoding = %enc, "content: unexpected content-encoding");
         return None;
     }
-    if resp
+    if let Some(len) = resp
         .content_length()
-        .is_some_and(|len| len as usize > MAX_BODY_BYTES)
+        .filter(|len| *len as usize > MAX_BODY_BYTES)
     {
+        tracing::debug!(url = %url, len, "content: body too large, skipped");
         return None;
     }
     let final_url = resp.url().to_string();
@@ -183,7 +208,13 @@ async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.ok()?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "content: body stream error");
+                return None;
+            }
+        };
         let remain = MAX_BODY_BYTES.saturating_sub(buf.len());
         if chunk.len() >= remain {
             buf.extend_from_slice(&chunk[..remain]);
@@ -193,11 +224,23 @@ async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<
     }
 
     let url_for_extract = final_url.clone();
-    let page = tokio::task::spawn_blocking(move || {
+    let page = match tokio::task::spawn_blocking(move || {
         readability::extract_bytes(&buf, content_type.as_deref(), &url_for_extract)
     })
     .await
-    .ok()?;
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(url = %url, error = %e, "content: extraction task failed");
+            return None;
+        }
+    };
+    tracing::debug!(
+        url = %url,
+        text_len = page.text_len,
+        quality = %format!("{:.2}", page.quality),
+        "content: page extracted"
+    );
     Some((final_url, Arc::new(page)))
 }
 
@@ -526,6 +569,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "需要真实网络访问 Bing 与结果页"]
     async fn e2e_smoke_real_network() {
+        // 打开 debug 日志：抓取失败是本层最常见的降级路径，需要看到具体原因
+        // （反爬 403 / 超时 / 非 HTML / 正文过短）。忽略已初始化的情况。
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("xrl_router_lib::content=debug")
+            .with_test_writer()
+            .try_init();
+
         let search_http = crate::search::bing::SearchHttp::new();
         let results = crate::search::bing::search(&search_http, "tokio JoinSet 用法")
             .await
