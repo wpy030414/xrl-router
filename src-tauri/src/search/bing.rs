@@ -28,6 +28,10 @@ use tokio::sync::Mutex;
 /// 单次 HTTP 搜索的超时（秒）。
 const SEARCH_TIMEOUT_SECS: u64 = 20;
 
+/// 解析结果上限。取 12 条给内容增强层（重排/摘要）留足候选，最终输出由
+/// `content::enrich_search_results` 按 rerank_score 裁剪到 10 条。
+const MAX_RESULTS: usize = 12;
+
 /// 搜索 HTTP 客户端：完整浏览器头 + cookie_store 复用 + 懒预热。
 ///
 /// 放在 AppState 中全局复用：
@@ -167,12 +171,7 @@ async fn search_domain(
 ) -> anyhow::Result<Vec<SearchResult>> {
     let url = build_search_url(domain, query);
     let html = search.get(url).await?;
-
-    // 诊断日志：把完整 HTML 写到文件，便于分析 Bing 实际返回内容
-    let diag_path = "/tmp/xrl-websearch-debug.html";
-    let _ = std::fs::write(diag_path, &html);
-    let preview: String = html.chars().take(500).collect();
-    tracing::info!(domain, query, html_len = html.len(), preview = %preview, "bing: http html received");
+    tracing::debug!(domain, query, html_len = html.len(), "bing: http html received");
 
     Ok(parse_results(&html))
 }
@@ -247,7 +246,7 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
             url,
             snippet,
         });
-        if results.len() >= 8 {
+        if results.len() >= MAX_RESULTS {
             break;
         }
     }
@@ -408,6 +407,25 @@ mod tests {
     fn test_parse_empty_html() {
         let html = "<html><body></body></html>";
         assert!(parse_results(html).is_empty());
+    }
+
+    /// 结果上限：20 条候选只保留 MAX_RESULTS（12）条，供内容增强层重排筛选
+    #[test]
+    fn test_parse_results_limit() {
+        let items: String = (0..20)
+            .map(|i| {
+                format!(
+                    r#"<li class="b_algo"><h2><a href="https://example.com/p{i}">Title {i}</a></h2><p>Snippet {i}</p></li>"#
+                )
+            })
+            .collect();
+        let html = format!(r#"<html><body><ol id="b_results">{items}</ol></body></html>"#);
+        let results = parse_results(&html);
+        assert_eq!(results.len(), MAX_RESULTS);
+        assert_eq!(
+            results.last().unwrap().title,
+            format!("Title {}", MAX_RESULTS - 1)
+        );
     }
 }
 
