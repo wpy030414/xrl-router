@@ -20,26 +20,35 @@
 
 ### `web_search`（受 `mcp_websearch` 开关控制）
 
-- **参数**：`{ "query": string }`（required）。
-- **实现**：复用 `crate::search::bing::search`（AppState 的 `SearchHttp`：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连）。
-- **输出格式**（`[n] title\nurl\n摘要: snippet` 多条拼接，与旧劫持循环同款）：
+- **参数**：`{ "query": string, "ori_question"?: string }`（`query` required；`ori_question` optional——多轮对话的原始意图，注入后参与重排打分与摘要句子选取，对齐 DeepSeek Search API 同名字段语义）。
+- **实现**：`crate::search::bing::search`（AppState 的 `SearchHttp`：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连，取 ≤12 条候选）→ `crate::content::enrich_search_results` 内容增强：
+  1. 黑名单过滤（文档倒卖/内容农场站）+ URL 去重 + 零成本预排（title/snippet 覆盖度 + 域名权威度）选出 top 5 抓取候选；
+  2. 并发静态抓取候选页（复用 `AppState.http_client` 统一工厂 + 浏览器 UA，单页 8s 超时、整体 10s 预算，deadline 下放到 join 循环保留部分结果）；
+  3. readability 提取正文 → 抽取式 `summary`（600~800 字，查询词覆盖引导）+ `rerank_score`（0~3，相关性 × 域名权威 × 新鲜度 × 内容质量）；
+  4. 按 `rerank_score` 稳定降序，裁剪到 ≤10 条输出。
+  - 慢页/失败页降级为仅 snippet；TTL 提取缓存（容量 32、15min）只服务重复搜索，**web_fetch 不读**（防静态降级内容污染 WebView 渲染路径）。
+- **输出格式**（`[n] title\nURL:\n元数据行\n摘要:` 多条拼接）：
 
 ```
 [1] 标题1
-URL1
-摘要: 摘要1
+URL: https://example.com/1
+日期: 2026-03-12 | 站点: Example Blog | 权威度: 3 | 相关度: 2.6/3
+摘要: 长摘要1（抓到正文时为 600~800 字抽取式摘要；未抓到时退化为 Bing snippet）
 
 [2] 标题2
-URL2
-摘要: 摘要2
+URL: https://example.com/2
+日期: 未知 | 站点: 未知 | 权威度: 1 | 相关度: 0.3/3
+摘要: Bing snippet2
 ```
 
-- **错误处理**：空结果 → "No web search results found for: {query}"；搜索失败 → "Web search unavailable: {error}. Do NOT make up information."（工具级错误，客户端可见）。
+  - `相关度 ≥1.5` 视为相关（工具描述中已告知 LLM 该约定）；缺失元数据显示「未知」。
+- **错误处理**：空结果 → "No web search results found for: {query}"；搜索失败 → "Web search unavailable: {error}. Do NOT make up information."（工具级错误，客户端可见）。enrichment 阶段永不失败——全部抓取失败时退化为纯 snippet 输出。
 
 ### `web_fetch`（受 `mcp_webfetch` 开关控制）
 
 - **参数**：`{ "url": string }`（required）。
-- **实现**：`mcp/fetch.rs`——**Tauri 内置 WebView 渲染**（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）：懒创建隐藏窗口（label `fetcher`，进程级保活）→ `navigate` → 轮询 `eval_with_callback` 等 `readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号）→ eval 取渲染后 HTML（JS 侧先截断 ~1.5MB，防 WebView2 回传体积限制）→ `htmd` 转 Markdown → 截断（约 60K 字符）。
+- **实现**：`mcp/fetch.rs`——**Tauri 内置 WebView 渲染**（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）：懒创建隐藏窗口（label `fetcher`，进程级保活）→ `navigate` → 轮询 `eval_with_callback` 等 `readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号）→ eval 取渲染后 HTML（JS 侧先截断 ~1.5MB，防 WebView2 回传体积限制）→ **`content::readability` 提取正文子树**（剥离 nav/header/footer/aside/script 与 cookie/banner/sidebar/comment 等噪声节点，选出正文容器；提取在 `spawn_blocking` 执行，`scraper::Html` 非 Send）→ `htmd` 转 Markdown → 加 `# {title}` 头 → 截断（约 60K 字符）。
+  - **提取降级链**：quality < 0.35 或正文转出的 Markdown < 80 字符 → 退回整页 `htmd::convert`（现状行为兜底），htmd 失败再退化为原始 HTML 截断。
 - **回退**：WebView 创建失败/超时/eval 异常 → 静态抓取（`crate::http::build_http_client()`，继承系统代理），输出开头附注「WebView 渲染不可用：{原因}。以下为静态抓取内容，可能不含 JS 渲染结果」。
 - **并发**：`tokio::sync::Mutex` 串行（一次渲染一页，跨 await 持有）。
 - **错误处理**：导航失败/超时 → 工具级错误文本。
@@ -68,8 +77,15 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 ## 实现位置
 
 - `src-tauri/src/mcp/mod.rs` — `/mcp` handler（鉴权 + 委托）+ 全局服务单例 + `init()` 注入 AppState 与 AppHandle。
-- `src-tauri/src/mcp/tools.rs` — `ServerHandler` 实现（`list_tools` 按开关动态过滤 / `call_tool` 分发）+ 工具 schema。
-- `src-tauri/src/mcp/fetch.rs` — 隐藏 WebView 窗口管理 + 渲染等待轮询 + eval 提取 + 静态回退 + HTML→Markdown。
+- `src-tauri/src/mcp/tools.rs` — `ServerHandler` 实现（`list_tools` 按开关动态过滤 / `call_tool` 分发）+ 工具 schema + `format_search_text`。
+- `src-tauri/src/mcp/fetch.rs` — 隐藏 WebView 窗口管理 + 渲染等待轮询 + eval 提取 + 静态回退 + readability 提取 + HTML→Markdown。
+- `src-tauri/src/content/` — 内容增强层（search 富化与 fetch 提取共用）：
+  - `mod.rs` — `enrich_search_results` 编排（预排选候选 + JoinSet 并发抓取 + TTL 缓存）
+  - `readability.rs` — trafilatura-lite 正文提取（prune + 自底向上打分选正文 + 元数据 + 质量分 + 编码解码）
+  - `summary.rs` — 抽取式摘要（分句打分 + 贪心选入预算 + 保序拼接）
+  - `rank.rs` — rerank_score 组合打分
+  - `text.rs` — 分词（CJK bigram + Latin 分词）/分句/查询词覆盖度
+  - `authority.rs` — 域名分级表 + 垃圾站黑名单
 - `src-tauri/src/api/proxy/stream.rs` — `strip_search_tools` + 入口调用。
 - `src-tauri/src/api/router.rs` — `/mcp` 路由注册。
 - `src/views/SettingsView.tsx` — 三个开关 + MCP 接入信息卡（端点 + 注册命令 + 复制）。
@@ -79,6 +95,7 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 - `rmcp`（MCP Rust SDK）：`server` + `macros` + `transport-streamable-http-server`。
 - Tauri 内置 WebView（`tauri::WebviewWindow` + `eval_with_callback`）——无额外浏览器依赖，见 ADR-038。
 - `htmd`（HTML → Markdown）。
+- `scraper`（HTML CSS 选择器解析，readability 提取复用）+ `ego-tree`（scraper 的 DOM 树类型 NodeId/NodeMut，原地 detach 修剪）+ `encoding_rs`（非 UTF-8 中文页面 GBK/GB2312 解码）。
 
 > rmcp 的 `StreamableHttpService` 泛型接受任意 `http_body::Body`，返回 `BoxBody`，可直接嵌入 axum 0.7 handler，无需升级 0.8。
 

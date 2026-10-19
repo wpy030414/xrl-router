@@ -928,3 +928,127 @@ exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND
 - `src-tauri/tests.manifest`（清单本体）
 - `src-tauri/build.rs`（按 target 条件注入 link args）
 - `src-tauri/tests/manifest_carrier.rs`（载体 target，勿删）
+
+---
+
+## ADR-053：自研内容提取与重排层（content/）
+
+**日期**: 2026-10-19
+**状态**: 已采纳
+
+### 背景
+
+MCP 的 `web_search` / `web_fetch` 输出信息量不足，喂给模型的上下文质量差：
+
+1. `web_search` 只回 Bing 的机械截断 snippet（≤8 条，`[n] 标题\nURL\n摘要`），
+   模型拿不到正文内容，只能靠一句摘要判断要不要点进去，多轮对话里也容易被无关
+   结果带偏；
+2. `web_fetch` 把 `document.documentElement.outerHTML` **整页**丢给 `htmd` 转
+   Markdown，导航/侧栏/页脚/cookie 横幅/推荐位全部进入上下文，既浪费 token
+   又稀释正文信号；
+3. 无任何垃圾过滤：文档倒卖站（wenku/doc88/book118 等）与 SEO 农场结果和
+   官方文档同权重呈现。
+
+对标 DeepSeek Search & Fetch API 的能力语义（`summary` 长摘要 + `rerank_score`
+0~3 语义重排 + `ori_question` 多轮意图注入 + 干净 Markdown 全文 + 垃圾清洗），
+但**不接入该外部服务**：项目是单用户本地网关，引入按量计费的外部搜索 API 与
+「本地直连 Bing、零外部依赖」的既有设计冲突，且会新增一个必须联网鉴权的故障点。
+
+### 决策
+
+新增 `src-tauri/src/content/` 内容增强层，**纯本地启发式算法，零 LLM 调用、
+零外部服务、零配置项**：
+
+1. **正文提取**（`readability.rs`）：trafilatura-lite 自研实现，复用已有 `scraper`
+   依赖而非引入 readability 类 crate。两阶段——prune（tag 选择器 + class/id 精确
+   token 匹配 + hidden 三路修剪）→ 打分（倒序遍历聚合子树 `{文本量, 链接文本量,
+   逗号数, 段落数}`，`score = (文本量 + 10×逗号) × (1-链接密度) × 段落加成 ×
+   class 偏置` 取最大，再对单一 >90% 文本子节点下钻收紧）。产出 `quality` 0~1
+   质量分，元数据走 JSON-LD → meta → `<time>` → URL 路径四级日期链。
+2. **抽取式摘要**（`summary.rs`）：分句后按查询词覆盖度打分（`2.0×查询覆盖 +
+   0.6×标题词覆盖 + 0.3×导语偏置`），贪心选入 600~800 字符预算，**按原文顺序**
+   重排拼接保持行文连贯。代码样句在候选阶段即剔除。
+3. **语义重排**（`rank.rs`）：`rerank_score` 0~3，四个分量上限合计恰为 3.0——
+   相关度 1.2（title 0.55 / snippet 0.30 / body 0.15）+ 域名权威 0.8 + 新鲜度 0.5
+   + 内容质量 0.5，外加 0.02 名次先验打破并列。`≥1.5` 视为相关（约定写进工具描述）。
+4. **垃圾清洗**（`authority.rs`）：硬编码域名分级表（4=政府/官方文档，3=权威站，
+   2=成熟社区，1=默认，-1=无信号）+ 黑名单（命中整条丢弃）。后缀匹配按段比较，
+   `github.com.evil.com` 不会继承 `github.com` 的权威度。
+5. **意图注入**：`web_search` 新增可选参数 `ori_question`，其词项以 0.5 权重并入
+   `QueryTerms`（query 为 1.0），引导重排与摘要选取。
+6. **抓取策略**：Bing 候选扩到 12 条，先零成本预排选 top 5，用 `AppState.http_client`
+   （统一工厂）并发静态抓取——单页 8s 超时、整体 10s 预算、**deadline 下放到 join
+   循环**（超时时保留已得的部分结果，而非丢弃）。慢页/失败页降级为仅 snippet。
+7. **降级链永不失败**：enrichment 全失败退化为 snippet 输出；`web_fetch` 提取
+   quality < 0.35 或正文 Markdown < 80 字符则退回整页转换（现状行为兜底）。
+8. **`spawn_blocking` 纪律**：`scraper::Html` 非 `Send` 且大页面解析是 CPU 密集，
+   解析与提取整体放 blocking 线程池，绝不跨 await 持有 `Html`——否则会拖累本网关
+   的 SSE 流式转发延迟。
+
+### 代价
+
+- `web_search` 最坏延迟从 ~1-3s 增至 ~13s（Bing 20s 超时链 + 10s enrichment 预算）；
+  实测正常情况因并发抓取与缓存，增量约 2~5s。
+- 强反爬站点（Cloudflare 盾）静态抓取拿不到正文，永远只有 snippet——设计内降级。
+  WebView 渲染路径仅服务 `web_fetch`，不回填 enrichment（缓存隔离，防降级内容污染）。
+- 抽取式摘要质量上限低于生成式：不会改写概括，只做句子选取。这是「零 token 成本 +
+  零额外延迟 + 行为确定可测」的自觉取舍。
+- 域名分级表与黑名单需人工维护，误判风险存在——但权威度只占 0.8/3.0 权重，
+  单因子错判不致命，且清单保守起步（均为 `const`，可即时调整）。
+- 新增两个直接依赖：`ego-tree`（scraper 未 re-export 其 DOM 树类型，原地 detach
+  修剪需要 `NodeId`/`NodeMut`）、`encoding_rs`（reqwest `text()` 只认响应头 charset，
+  meta 声明 GBK/GB2312 的中文老站会乱码；本身已是 reqwest 传递依赖，零体积增量）。
+
+### 关键文件
+
+- `src-tauri/src/content/{mod,text,readability,summary,rank,authority}.rs`
+- `src-tauri/src/mcp/tools.rs`（`web_search_schema` + `format_search_text` 接线）
+- `src-tauri/src/mcp/fetch.rs`（`html_to_markdown_sync` 提取 + 降级链）
+- `src-tauri/src/search/bing.rs`（候选上限 8→12 + 移除调试 HTML 写盘）
+
+---
+
+## ADR-054：cargo test runner 包装器（修正 ADR-052 的覆盖缺口）
+
+**日期**: 2026-10-19
+**状态**: 已采纳（修正 ADR-052 第 2、3 条结论）
+
+### 背景
+
+本机 `cargo test` 仍然 0xC0000139（ADR-052 声称已修复）。逐层验证发现 ADR-052
+的两条结论不成立：
+
+1. **`cargo:rustc-link-arg-tests` 只作用于 `tests/` 目录的显式 test target**，
+   对 lib 内联单测 exe（`--lib`，即 `#[cfg(test)]` 测试所在的产物）**不生效**。
+   `cargo test --lib -v` 的 rustc 命令行里没有任何 `/MANIFEST:EMBED`，而
+   `cargo test --test manifest_carrier -v` 里有——载体 target 自己被修好了，
+   但项目的**全部实际测试**（内联在 `src/` 各模块）依然缺清单。ADR-052 第 3 条
+   把载体 target 当成"让指令对全部测试产物生效"的手段，这个因果是错的。
+2. **外部 manifest 对测试 exe 是生效的**。把 `tests.manifest` 复制为
+   `<exe>.manifest` 后，测试 exe 立即正常运行（ADR-052 第 3 节断言"不生效"）。
+
+### 决策
+
+1. 新增 `.cargo/config.toml`，为 `x86_64-pc-windows-msvc` 配置
+   `runner = ["src-tauri/scripts/win-test-runner.bat"]`。
+2. runner 在启动测试 exe 前把 `src-tauri/tests.manifest` 复制为 `<exe>.manifest`
+   （仅当该 exe 尚无外部清单时），随后 `%*` 原样透传参数与退出码。对已内嵌清单的
+   产物（主程序）无影响：内嵌优先，外部文件被忽略。
+3. runner 脚本**注释必须纯 ASCII**：中文版 Windows 的 cmd 用 GBK 码页读取 `.bat`，
+   UTF-8 中文字节会被误解析成命令碎片，污染输出并破坏退出码（实测曾产生一个
+   0 字节的 mojibake 垃圾文件 `src-tauri/.manifest锛夆€斺€擶indows`）。
+4. 保留 `build.rs` 的 `rustc-link-arg-tests` 与 `tests/manifest_carrier.rs`：
+   它们对显式 test target 仍然有效，且移除会改变既有行为。
+
+### 代价
+
+- 多一层 runner 间接（`cargo test` → bat → exe），Windows 专属；macOS/Linux 不受
+  影响（配置按 target 三元组隔离）。
+- runner 路径相对 workspace 根解析，从 `src-tauri/` 或仓库根运行 `cargo test` 均可。
+- ADR-052 的机制描述需按本条修正理解，原文保留以记录排查过程。
+
+### 关键文件
+
+- `.cargo/config.toml`（runner 配置）
+- `src-tauri/scripts/win-test-runner.bat`（纯 ASCII 注释）
+- `src-tauri/tests.manifest`（清单本体，ADR-052 引入）

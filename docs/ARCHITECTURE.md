@@ -111,6 +111,7 @@ main.rs
   ├─ plugin/             PluginManager
   ├─ middleware/rate_limit.rs  令牌桶
   ├─ search/bing.rs           Bing 搜索
+  ├─ content/                 内容增强层（readability 提取/抽取式摘要/启发式重排）
   ├─ wallpaper/               桌面壁纸劫持（FM 像素艺术 → 桌面层）
   │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建
   │    ├─ win.rs              Windows 透明 WebView + tauri-plugin-desktop-underlay
@@ -374,6 +375,8 @@ xrl-router
   ├── tracing          结构化日志
   ├── reqwest 0.12     HTTP 客户端
   ├── scraper 0.20     HTML 解析 (Bing 搜索)
+  ├── ego-tree 0.6     scraper DOM 树类型 (NodeId/NodeMut，内容增强层遍历)
+  ├── encoding_rs 0.8  非 UTF-8 页面解码 (GBK/GB2312，内容增强层)
   ├── rmcp 3           MCP Rust SDK
   ├── htmd 0.2         HTML → Markdown
   ├── rodio 0.20       音频播放
@@ -415,8 +418,8 @@ xrl-router-plugin-wukong (外部进程)
 
 | 工具 | 功能 | 开关 |
 |------|------|------|
-| `web_search` | 本地 Bing 搜索 | `mcp_websearch` |
-| `web_fetch` | Tauri WebView 渲染页面后取正文 Markdown | `mcp_webfetch` |
+| `web_search` | 本地 Bing 搜索 + 内容增强（并发抓正文生成抽取式摘要、rerank_score 0~3 重排、日期/站点/权威度元数据；`ori_question` 注入多轮意图） | `mcp_websearch` |
+| `web_fetch` | Tauri WebView 渲染页面后经 readability 提取正文再转 Markdown（低质降级整页） | `mcp_webfetch` |
 | `notify` | 发送系统桌面通知 | `mcp_notify` |
 
 **鉴权**：与 `/v1/*` 代理一致，`Authorization: Bearer <service-key>`（Argon2 校验）。
