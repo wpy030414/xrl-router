@@ -152,6 +152,7 @@ src-tauri/src/
 │   ├── handlers/              管理 API（providers/keys/models/stats/settings/data/install/plugin/fm）
 │   └── proxy/                 LLM 代理核心（handler/stream/forward/ir/auth/quota/route/failover）
 ├── mcp/                       MCP 工具服务器（/mcp 端点）
+├── content/                   内容增强层（readability 提取/抽取式摘要/启发式重排，服务 MCP web_search/web_fetch）
 ├── db/                        SQLite 封装（schema + CRUD）
 ├── keys/pool/                 密钥池（轮询 + 健康 + 持久化）
 ├── plugin/                    插件系统（WebSocket 注册）
