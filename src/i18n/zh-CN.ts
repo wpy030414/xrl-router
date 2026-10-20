@@ -297,6 +297,7 @@ export default {
   'stats.log.col_model': '模型',
   'stats.log.col_input': '输入 Tokens',
   'stats.log.col_output': '输出 Tokens',
+  'stats.log.col_output_hint': '次行为生成速度：输出 Tokens ÷（总耗时 − 首字耗时）',
   'stats.log.col_cache': '缓存命中',
   'stats.log.col_status': '状态',
   'stats.log.status_ok': '成功',

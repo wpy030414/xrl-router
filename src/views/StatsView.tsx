@@ -44,6 +44,25 @@ function formatTokens(num: number): string {
   return Math.round(num).toLocaleString();
 }
 
+/**
+ * 输出速度（tokens/s），按「生成窗口」口径：
+ * completion_tokens ÷ (latency_ms − first_token_ms)/1000。
+ * 首字之前的排队 + prefill 等待被剔出分母，长输入请求的速度不再被系统性压低。
+ * 不可算时返回 null（历史行无 TTFT / 失败行 / 无输出 / 生成窗口 ≤ 0），单元格显示 —。
+ */
+function computeOutputSpeed(row: RequestLogRow): number | null {
+  if (row.completion_tokens <= 0) return null;
+  if (row.first_token_ms == null) return null;
+  const genMs = row.latency_ms - row.first_token_ms;
+  if (genMs <= 0) return null;
+  return row.completion_tokens / (genMs / 1000);
+}
+
+/** 速度文案：常规值取整（`\d+ t/s`）；不足 1 时保留 1 位小数，避免显示误导性的 0。 */
+function formatSpeed(speed: number): string {
+  return `${speed < 1 ? speed.toFixed(1) : Math.round(speed)} t/s`;
+}
+
 /** 简略值：亿 / 万 结尾，保留 2 位小数（与 Vue 版一致）。 */
 function formatTokensAuto(num: number, t: (key: string) => string): string {
   const yi = num / 1e8;
@@ -630,7 +649,9 @@ export function StatsView() {
                     <TableHead>{t('stats.log.col_provider')}</TableHead>
                     <TableHead>{t('stats.log.col_model')}</TableHead>
                     <TableHead className="text-right">{t('stats.log.col_input')}</TableHead>
-                    <TableHead className="text-right">{t('stats.log.col_output')}</TableHead>
+                    <TableHead className="text-right" title={t('stats.log.col_output_hint')}>
+                      {t('stats.log.col_output')}
+                    </TableHead>
                     <TableHead className="text-right">{t('stats.log.col_cache')}</TableHead>
                     <TableHead className="text-center">{t('stats.log.col_status')}</TableHead>
                   </TableRow>
@@ -651,8 +672,20 @@ export function StatsView() {
                       <TableCell className="text-xs text-right tabular-nums">
                         {row.prompt_tokens.toLocaleString()}
                       </TableCell>
+                      {/* 输出 Tokens：主值 + 次行生成速度（t/s，生成窗口口径）；
+                          无 TTFT（历史行）/ 无输出 / 失败行显示 — */}
                       <TableCell className="text-xs text-right tabular-nums">
-                        {row.completion_tokens.toLocaleString()}
+                        {(() => {
+                          const speed = computeOutputSpeed(row);
+                          return (
+                            <span className="flex flex-col items-end leading-tight">
+                              <span>{row.completion_tokens.toLocaleString()}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {speed === null ? '—' : formatSpeed(speed)}
+                              </span>
+                            </span>
+                          );
+                        })()}
                       </TableCell>
                       {/* 缓存命中：主值 + 次行命中率（cache/(cache+prompt)，
                           prompt_tokens 为互斥的未命中口径）；无命中显示 — */}
