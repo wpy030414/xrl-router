@@ -15,9 +15,9 @@ use serde_json::json;
 use tracing::info;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, ErrorData,
-    Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerInfo, Tool, ToolAnnotations,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+    ErrorData, Implementation, JsonObject, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -36,6 +36,30 @@ fn app_state() -> Option<Arc<AppState>> {
     APP_STATE.get().cloned()
 }
 
+/// 工具列表的缓存提示（SEP-2549）：不缓存（`ttlMs = 0`）+ 仅请求方可见（`private`）。
+///
+/// MCP 协议修订版 `2026-07-28` 把 `ttlMs` / `cacheScope` 列为 `tools/list` 等
+/// 列表结果的**必填**字段；rmcp 3.x 只在 `#[tool_router]` 宏生成的路径上补发
+/// 它们，手写 `ServerHandler`（本项目为按开关动态过滤而手写）不会补，字段直接
+/// 缺席。严格校验该修订版的客户端（Claude Code ≥2.1.x）会对缺字段的 `tools/list`
+/// 报 schema 错误，三个工具全部不可用。
+///
+/// 取值必须是 0 + Private，不能学宏的默认 Public：工具列表受运行时开关控制，
+/// 任何缓存都会让客户端在开关切换后读到过期清单。rmcp 自身对「不可缓存」的编码
+/// 与此一致（`DiscoverResult::new` 用 0 / Private）。
+const LIST_TOOLS_TTL_MS: u64 = 0;
+
+/// 判断协商出的协议版本是否要求缓存提示（≥ 2026-07-28）。
+///
+/// 收 `Option<&ProtocolVersion>` 而非 `RequestContext`，以便单测直接构造版本、
+/// 无需伪造会话上下文。ISO `YYYY-MM-DD` 版本串按字典序比较即时序比较，与 rmcp
+/// 内部判定一致（`src/handler/server.rs` 的 `sep_2322_supported`）。
+fn version_requires_cache_hints(version: Option<&ProtocolVersion>) -> bool {
+    version
+        .map(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+        .unwrap_or(false)
+}
+
 /// 无状态标记结构：实现 `ServerHandler`，所有状态经全局 `APP_STATE` 访问。
 pub(super) struct XrlMcpTools;
 
@@ -51,7 +75,7 @@ impl ServerHandler for XrlMcpTools {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         // 开关实时读取：客户端（重新）连接时即拿到最新工具列表。
         let (ws, wf, n) = match app_state() {
@@ -62,7 +86,13 @@ impl ServerHandler for XrlMcpTools {
             ),
             None => (false, false, false),
         };
-        Ok(ListToolsResult::with_all_items(filter_tools(ws, wf, n)))
+        let mut result = ListToolsResult::with_all_items(filter_tools(ws, wf, n));
+        // 与 rmcp 宏同构：仅在客户端按新修订版校验时补发，旧版本保持 legacy 线格式。
+        let negotiated = context.protocol_version();
+        if version_requires_cache_hints(negotiated.as_ref()) {
+            result = with_no_cache_hint(result);
+        }
+        Ok(result)
     }
 
     async fn call_tool(
@@ -82,6 +112,13 @@ impl ServerHandler for XrlMcpTools {
             )),
         }
     }
+}
+
+/// 给列表结果补上「不缓存」的缓存提示（纯函数，便于单测锁定线上契约）。
+fn with_no_cache_hint(mut result: ListToolsResult) -> ListToolsResult {
+    result.ttl_ms = Some(LIST_TOOLS_TTL_MS);
+    result.cache_scope = Some(CacheScope::Private);
+    result
 }
 
 /// 按开关组合过滤工具列表（纯函数，便于单测）。
@@ -464,5 +501,81 @@ mod tests {
         assert!(text.contains("[2] 标题二"));
         assert!(text.contains("日期: 未知 | 站点: 未知 | 权威度: 1 | 相关度: 0.3/3"));
         assert!(text.contains("摘要: 短摘要二"));
+    }
+
+    /// 2026-07-28 修订版要求列表结果必带 `ttlMs` / `cacheScope`，取值判定。
+    #[test]
+    fn test_version_requires_cache_hints() {
+        // 无协商版本（legacy 会话）不发。
+        assert!(!version_requires_cache_hints(None));
+        // 旧修订版保持 legacy 线格式。
+        for old in [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ] {
+            assert!(
+                !version_requires_cache_hints(Some(&old)),
+                "{old} 不应要求缓存提示"
+            );
+        }
+        assert!(version_requires_cache_hints(Some(
+            &ProtocolVersion::V_2026_07_28
+        )));
+    }
+
+    /// 补发缓存提示后的线格式必须满足 Claude Code 的 schema：
+    /// `ttlMs` 为非负整数、`cacheScope` ∈ {public,private}、`resultType` 存在。
+    #[test]
+    fn test_list_tools_result_wire_shape_with_cache_hints() {
+        let result = with_no_cache_hint(ListToolsResult::with_all_items(filter_tools(
+            true, true, true,
+        )));
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["ttlMs"].as_u64(), Some(0));
+        assert_eq!(value["cacheScope"].as_str(), Some("private"));
+        assert_eq!(value["resultType"].as_str(), Some("complete"));
+        assert_eq!(value["tools"].as_array().unwrap().len(), 3);
+    }
+
+    /// 开关全关（空列表）也要带上缓存提示——校验对空 tools 同样生效。
+    #[test]
+    fn test_empty_list_tools_still_carries_cache_hints() {
+        let result = with_no_cache_hint(ListToolsResult::with_all_items(filter_tools(
+            false, false, false,
+        )));
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["ttlMs"].as_u64(), Some(0));
+        assert_eq!(value["cacheScope"].as_str(), Some("private"));
+        assert_eq!(value["tools"].as_array().unwrap().len(), 0);
+    }
+
+    /// 未补发时字段缺席——正是回归的成因，锁定 skip_serializing 行为不被误改。
+    #[test]
+    fn test_raw_list_tools_result_omits_cache_hints() {
+        let value = serde_json::to_value(ListToolsResult::with_all_items(filter_tools(
+            true, false, false,
+        )))
+        .unwrap();
+        assert!(value.get("ttlMs").is_none());
+        assert!(value.get("cacheScope").is_none());
+    }
+
+    /// tools/call 结果不受影响：新修订版只要求 resultType 存在。
+    #[test]
+    fn test_call_tool_result_carries_result_type() {
+        for value in [
+            serde_json::to_value(CallToolResult::success(vec![ContentBlock::text(
+                "ok".to_string(),
+            )]))
+            .unwrap(),
+            serde_json::to_value(CallToolResult::error(vec![ContentBlock::text(
+                "bad".to_string(),
+            )]))
+            .unwrap(),
+        ] {
+            assert_eq!(value["resultType"].as_str(), Some("complete"));
+        }
     }
 }

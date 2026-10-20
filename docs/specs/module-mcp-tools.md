@@ -15,6 +15,7 @@
 - **方法**：`any` 路由覆盖 POST（JSON-RPC）/ GET / DELETE；rmcp 负责协议内其余请求的 405/400 处理。
 - **鉴权**：`Authorization: Bearer <service-key>`，复用 `api/proxy/auth.rs::verify_service_key`（argon2）。缺失或无效 → 401 JSON。
 - **开关全关时**：协议请求仍正常应答（initialize 成功、`tools/list` 返回空数组），保证已注册客户端连接不报错。
+- **缓存提示（SEP-2549）**：协议修订版 `2026-07-28` 把 `ttlMs` / `cacheScope` 列为列表结果（`tools/list` 等）的**必填**字段。rmcp 3.x 仅在 `#[tool_router]` 宏生成的路径上补发，本项目为按开关动态过滤而手写 `ServerHandler`，必须在 `list_tools` 里按协商版本条件补发，否则严格校验该修订版的客户端（Claude Code ≥2.1.x）判定结果非法（`Invalid result for tools/list`），内置工具全部不可用。取值固定 `ttlMs = 0` + `cacheScope = private`（工具列表受运行时开关控制，不可缓存；与 `DiscoverResult::new` 表达「不可缓存」的方式一致）。
 
 ## 工具定义
 
