@@ -71,7 +71,8 @@ CREATE TABLE usage_log (
     cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
     latency_ms INTEGER NOT NULL,
     success INTEGER NOT NULL,
-    error_message TEXT
+    error_message TEXT,
+    first_token_ms INTEGER
 );
 ```
 
@@ -80,6 +81,7 @@ CREATE TABLE usage_log (
 - **删除安全**: 删除 Provider/Model/Key 不影响历史统计
 - **缓存追踪**: `cache_read_input_tokens` 记录缓存命中
 - **真实值**: `prompt_tokens` 为上游真实值（覆盖估算占位后）
+- **速度可算**: `first_token_ms`（TTFT，可空）让输出速度按生成窗口口径派生，见下节
 
 ## 输入契约
 
@@ -101,12 +103,19 @@ pub fn insert_usage_log(
     request_type: &str,
     prompt_tokens: i64,
     completion_tokens: i64,
-    cache_read_input_tokens: i64,
     latency_ms: i64,
     success: bool,
     error_message: Option<&str>,
+    cache_read_input_tokens: i64,
+    first_token_ms: Option<i64>,
 ) -> anyhow::Result<()>
 ```
+
+`first_token_ms` = 首个**非空内容增量**相对请求开始的毫秒数（TTFT）。打点口径由
+`api/proxy/forward.rs::is_generation_delta` 单点定义，流式（`forward_stream_ir`）与
+非流式（`collect_upstream_stream`）共用：`message_start` / `content_block_start` /
+空 delta **一律不打点**——它们在响应头之后即刻到达，早于任何 token，计入会让
+首字时刻偏早、速度虚高。失败行与未采集场景传 `None`。
 
 ### 查询统计
 
@@ -127,8 +136,22 @@ pub fn get_usage_log_page(page: i64, page_size: i64) -> anyhow::Result<PagedRows
 
 - **排序**: `timestamp DESC, id DESC`（同秒按 id 逆序，保证稳定分页）
 - **分页**: page 默认 1，page_size 默认 10、clamp 1–100；`COUNT(*)` 总数 + 当页行
-- **行字段**: `provider_name` / `model_display_name` / `service_key_name` / `key_masked` / `prompt_tokens` / `completion_tokens` / `latency_ms` / `success` / `error_message`
+- **行字段**: `provider_name` / `model_display_name` / `service_key_name` / `key_masked` / `prompt_tokens` / `completion_tokens` / `latency_ms` / `first_token_ms` / `cache_read_input_tokens` / `success` / `error_message`
 - **HTTP 端点**: `GET /api/stats/requests?page=N&page_size=M` → `{total, page, page_size, data}`（`api/handlers/stats.rs::get_stats_requests`）
+
+### 输出速度（t/s）（2026-10 新增）
+
+请求日志「输出 Tokens」单元格次行展示本次请求的吐字速度，格式 `<整数> t/s`（如 `42 t/s`）。
+
+- **口径**: 生成窗口，不是整段请求 —— `completion_tokens ÷ (latency_ms − first_token_ms) / 1000`
+- **为什么**: `latency_ms` 含排队 + prefill（长输入可达数秒），直接用它当分母会把
+  速度系统性压低，且与输入长度强相关，失去「模型吐字快慢」的语义。TTFT 作减数
+  把等待期剔除，剩下的才是真正在生成的时间。
+- **降级**: `first_token_ms` 为 null（V25 之前的历史行）、失败行、`completion_tokens ≤ 0`、
+  生成窗口 ≤ 0 一律显示 `—`，**不得**用整段 latency 兜底（两套口径混在一列会误导）。
+- **实现位置**: 纯派生，不落库 —— `src/views/StatsView.tsx` 的 `computeOutputSpeed` /
+  `formatSpeed`；速度 < 1 时保留 1 位小数，避免取整显示 `0 t/s`。
+- **表头提示**: `stats.log.col_output_hint`（zh-CN / en 双语 key）说明计算口径。
 
 ## 输出契约
 
@@ -207,6 +230,9 @@ CREATE INDEX idx_usage_service_key ON usage_log(service_key_id);
 3. **性能测试**: 大量数据插入和查询的性能
 4. **边界测试**: 空数据、时区边界、粒度切换
 5. **usage 语义测试**: 真实值覆盖估算、Responses 增量口径、无缓存/全缓存场景
+6. **TTFT 打点测试**: `is_generation_delta` 只认非空内容增量（元事件与空 delta 不打点）；
+   `first_token_ms` 写读往返（Some → 数字 / None → null）；E2E 假上游埋「首字延迟 +
+   生成期」两段 sleep，实测流式与非流式两条路径的 TTFT 与生成窗口
 
 ## 完成标准
 
@@ -218,6 +244,7 @@ CREATE INDEX idx_usage_service_key ON usage_log(service_key_id);
 - [x] 索引优化查询性能
 - [x] 异步写入（不影响请求延迟）
 - [x] 请求日志分页（`get_usage_log_page` + `GET /api/stats/requests`，含分页单元测试）
+- [x] 输出速度 t/s（`first_token_ms` 生成窗口口径，请求日志输出列次行展示）
 - [x] usage 真实值覆盖估算占位（不用 max）
 - [x] Responses input_tokens 增量口径（减去 cached_tokens）
 - [x] message_delta 补全 input_tokens

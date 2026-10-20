@@ -6,7 +6,7 @@
 
 ## 迁移架构
 
-所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **19**。
+所有 DDL 以 Rust 字符串内联在 `schema.rs` 的 `MIGRATIONS` 数组中，**没有**独立的 `.sql` 文件。版本由 `MIGRATIONS.len()` 动态得出，当前为 **25**。
 
 ```rust
 // db/schema.rs
@@ -63,8 +63,9 @@ pub fn migrate(db: &Database) -> Result<()> {
 | V20 | 新增 local_models 表（本地模型私有化：GGUF 权重 + llama-server 引擎运行时元数据） |
 | V21 | local_models 新增 thinking 列（思考模式开关，默认 1，引擎启动时映射 `--reasoning on\|off`） |
 | V24 | 插件系统契约升级——plugins 表新增 `work_dir TEXT` 与 `autostart INTEGER NOT NULL DEFAULT 0` 两列（伴生启动支撑）；清理历史版本由插件同步的密钥行（Router 不再为插件管密钥） |
+| V25 | usage_log 新增 `first_token_ms INTEGER`（可空）：首个内容增量相对请求开始的毫秒数（TTFT）。请求日志的输出速度按「生成窗口」口径派生 = `completion_tokens / ((latency_ms − first_token_ms)/1000)`。用 NULL 而非 `NOT NULL DEFAULT 0`——历史行/失败行语义是「未知」，0 会被读成「首字即出」导致速度虚高 |
 
-## 当前表结构（V21 最终状态）
+## 当前表结构（V25 最终状态）
 
 ### providers
 
@@ -213,7 +214,8 @@ CREATE TABLE usage_log (
     latency_ms INTEGER NOT NULL,
     success INTEGER NOT NULL,
     error_message TEXT,
-    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0  -- V7: 缓存命中
+    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,  -- V7: 缓存命中
+    first_token_ms INTEGER                               -- V25: TTFT（首个内容增量耗时），NULL = 未知
 );
 ```
 
