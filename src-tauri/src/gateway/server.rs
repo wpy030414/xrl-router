@@ -873,4 +873,220 @@ mod tests {
         client6.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"v6");
     }
+
+    /// 输出速度 E2E：真起网关 + 假上游，实测 usage_log 的 `first_token_ms`（TTFT）。
+    ///
+    /// 假上游刻意把「响应头」和「首个内容增量」拉开：headers 即刻返回、
+    /// 首字前睡 1200ms、之后 3 帧连发。这是 TTFT 口径的唯一可区分场景——
+    /// 若打点错在 headers / message_start 上，first_token_ms 会是 ~0ms。
+    /// 流式与「客户端 stream:false」两条路径都要落出同样的值（共用打点口径），
+    /// 且 first_token_ms < latency_ms，保证前端的生成窗口分母为正。
+    #[tokio::test]
+    async fn test_first_token_ms_recorded_for_output_speed() {
+        use axum::response::IntoResponse;
+        use axum::response::sse::{Event, KeepAlive, Sse};
+        use axum::routing::post;
+        use std::convert::Infallible;
+        use std::time::Duration;
+
+        // 首字等待 1200ms（索引 1 帧之前 sleep）；生成期 300ms（索引 3 帧之前
+        // sleep）。生成期必须可测量：若首字之后的帧全部瞬时到达，并行测试负载下
+        // latency_ms 与 first_token_ms 会截断成同一个整数，生成窗口归零。
+        const FIRST_TOKEN_DELAY_MS: i64 = 1200;
+        const GENERATION_DELAY_MS: i64 = 300;
+        const COMPLETION_TOKENS: i64 = 200;
+
+        let router_u = axum::Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let frames: Vec<String> = vec![
+                    // 0: role 帧——无 content，不构成首字（旧口径会误打点的地方）
+                    r#"{"id":"c1","object":"chat.completion.chunk","model":"real","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#.to_string(),
+                    // 1: 首个非空 content delta = TTFT
+                    r#"{"id":"c1","object":"chat.completion.chunk","model":"real","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#.to_string(),
+                    r#"{"id":"c1","object":"chat.completion.chunk","model":"real","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}"#.to_string(),
+                    format!(
+                        r#"{{"id":"c1","object":"chat.completion.chunk","model":"real","choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":100,"completion_tokens":{},"total_tokens":{}}}}}"#,
+                        COMPLETION_TOKENS,
+                        100 + COMPLETION_TOKENS
+                    ),
+                    "[DONE]".to_string(),
+                ];
+                let s = futures::stream::unfold((0usize, frames), |(i, frames)| async move {
+                    if i >= frames.len() {
+                        return None;
+                    }
+                    if i == 1 {
+                        tokio::time::sleep(Duration::from_millis(FIRST_TOKEN_DELAY_MS as u64)).await;
+                    }
+                    if i == 3 {
+                        tokio::time::sleep(Duration::from_millis(GENERATION_DELAY_MS as u64)).await;
+                    }
+                    Some((Ok::<_, Infallible>(Event::default().data(frames[i].clone())), (i + 1, frames)))
+                });
+                Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(60))).into_response()
+            }),
+        );
+        let listener_u = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_u = listener_u.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener_u, router_u).await.unwrap(); });
+
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let master_key = [7u8; 32];
+        db.save_provider(&crate::types::Provider {
+            id: "p-up".to_string(),
+            name: "P-Up".to_string(),
+            kind: crate::types::ProviderKind::ChatCompletions,
+            base_url: format!("http://{}", addr_u),
+            api_path: "/v1/chat/completions".to_string(),
+            config: serde_json::json!({}),
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            sort_order: 0,
+        })
+        .unwrap();
+        db.save_model(&crate::types::Model {
+            id: "m-up".to_string(),
+            provider_id: "p-up".to_string(),
+            model_id: "real".to_string(),
+            display_name: "gpt-speed".to_string(),
+            tier: "custom".to_string(),
+            context_window: 128000,
+            max_output_tokens: 4096,
+            capabilities: "[\"text\"]".to_string(),
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+        db.save_api_key(&crate::types::ApiKey {
+            id: "k-up".to_string(),
+            provider_id: "p-up".to_string(),
+            name: "K-Up".to_string(),
+            key_hash: crate::crypto::encrypt("sk-up", &master_key).unwrap(),
+            key_masked: "***up".to_string(),
+            key_plain: None,
+            status: "green".to_string(),
+            last_error: None,
+            last_error_code: None,
+            last_error_time: None,
+            last_used_at: None,
+            balance: None,
+            balance_updated_at: None,
+            total_requests: 0,
+            total_tokens: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+        let raw_service_key = "xrl-test-speed-key";
+        let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
+        db.save_service_key("sk-speed", "速度测试", &sk_hash, "***peed", None).unwrap();
+
+        let state = Arc::new(AppState::new(
+            Config { port: 0, host: "127.0.0.1".to_string(), ..Default::default() },
+            db.clone(),
+            master_key,
+            &std::env::temp_dir(),
+        ));
+        let router = crate::api::build_router(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        for _ in 0..50 {
+            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // 两次请求：客户端流式 + 客户端非流式（上游始终流式，走不同收集路径）
+        for (label, stream_flag) in [("stream", "true"), ("non-stream", "false")] {
+            let resp = client
+                .post(format!("http://{}/v1/chat/completions", addr))
+                .header("x-api-key", raw_service_key)
+                .header("Content-Type", "application/json")
+                .body(format!(
+                    r#"{{"model":"gpt-speed","stream":{stream_flag},"messages":[{{"role":"user","content":"hi"}}]}}"#
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{label}: 代理应成功转发");
+            // 把响应读完（流式路径需消费完才走到 usage 落库）
+            let text = resp.text().await.unwrap();
+            assert!(text.contains("Hello"), "{label}: 响应应含上游内容");
+        }
+
+        // 等待后台 spawn 的落库完成（流式路径在 spawn 任务里写 usage_log）
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..100 {
+            let (_, page) = db.get_usage_log_page(1, 10, None, None, None).unwrap();
+            if page.len() == 2 {
+                rows = page;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(rows.len(), 2, "两次请求都应落 usage_log");
+
+        for row in &rows {
+            let label = row["request_type"].to_string();
+            assert_eq!(row["success"], serde_json::json!(true), "{label}: 应为成功行");
+            assert_eq!(row["completion_tokens"], serde_json::json!(COMPLETION_TOKENS));
+            let ft = row["first_token_ms"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{label}: first_token_ms 不应为 null，实际 = {}", row["first_token_ms"]));
+            let latency = row["latency_ms"].as_i64().unwrap();
+
+            // 核心：TTFT 落在「首字前那次 sleep」上，而不是 headers/message_start。
+            // 留 200ms 余量给调度抖动（真实值 ≈ 1200）。
+            assert!(
+                ft >= FIRST_TOKEN_DELAY_MS - 200,
+                "{label}: TTFT 应 ≈ 首字延迟，实际 {ft}ms——过小说明打点错在响应头或元事件上"
+            );
+            // 总耗时 = 首字等待 + 生成期。断言「总耗时 > TTFT」——TTFT 是生成
+            // 窗口的减数，相等或更大都会让前端算不出速度（t/s）。
+            assert!(
+                latency > ft,
+                "{label}: 总耗时({latency}ms) 应大于 TTFT({ft}ms)"
+            );
+            // 生成窗口（分母）应≈刻意埋的生成延迟，即排队 + prefill 被剔除了。
+            // 并行测试负载只让 sleep 变晚、不会变早，故用下界（留 200ms 余量）。
+            assert!(
+                latency - ft >= GENERATION_DELAY_MS - 200,
+                "{label}: 生成窗口 {}ms 应 ≈ 生成延迟 {GENERATION_DELAY_MS}ms（实际 TTFT {ft}ms / 总耗时 {latency}ms）",
+                latency - ft
+            );
+        }
+
+        // 管理 API 把新列透出给前端（LAN 页面同样能算速度）
+        let resp = client
+            .get(format!("http://{}/api/stats/requests?page=1&page_size=10", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let api_rows = body["data"].as_array().unwrap();
+        assert_eq!(api_rows.len(), 2);
+        for r in api_rows {
+            assert!(
+                r.get("first_token_ms").is_some(),
+                "API 响应应含 first_token_ms 字段"
+            );
+            assert!(r["first_token_ms"].as_i64().unwrap() > 0);
+        }
+    }
 }

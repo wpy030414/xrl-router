@@ -263,6 +263,8 @@ export interface RequestLogRow {
   /** 缓存命中 tokens（prompt_tokens 为互斥的未命中口径） */
   cache_read_input_tokens: number;
   latency_ms: number;
+  /** 首个内容增量耗时（TTFT，ms）；历史行与失败行为 null（V25 起有值） */
+  first_token_ms: number | null;
   success: boolean;
   error_message: string | null;
 }

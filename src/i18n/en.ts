@@ -297,6 +297,7 @@ export default {
   'stats.log.col_model': 'Model',
   'stats.log.col_input': 'Input Tokens',
   'stats.log.col_output': 'Output Tokens',
+  'stats.log.col_output_hint': 'Second line: generation speed = output tokens ÷ (latency − first-token time)',
   'stats.log.col_cache': 'Cache Hit',
   'stats.log.col_status': 'Status',
   'stats.log.status_ok': 'Success',
