@@ -386,6 +386,71 @@ mod tests {
         db.migrate().expect("re-migrate must be a no-op");
     }
 
+    /// 回归测试：真实升级路径 V24→V25。usage_log 是**已存在且有数据**的表，
+    /// V25 的 ADD COLUMN 在存量库上执行（全新库走不到这条路径——V12 重建表后
+    /// 直接带上新列，测不出问题）。历史用户升级后必须：新列存在、旧行读为
+    /// NULL（不是 0）、既有用量无损。
+    #[test]
+    fn test_upgrade_from_v24_adds_first_token_ms() {
+        let db = Database::open_in_memory().unwrap();
+        {
+            let conn = db.conn();
+            for (i, m) in super::schema::MIGRATIONS.iter().take(24).enumerate() {
+                conn.execute_batch(m).unwrap();
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![(i + 1) as i64, 1],
+                )
+                .unwrap();
+            }
+            // V24 的表结构（无 first_token_ms）里塞一行历史用量
+            conn.execute(
+                "INSERT INTO usage_log (timestamp, provider_id, provider_name, model_id,
+                    model_display_name, key_id, key_name, key_masked, service_key_id,
+                    service_key_name, service_key_masked, request_type, prompt_tokens,
+                    completion_tokens, latency_ms, success, error_message, cache_read_input_tokens)
+                 VALUES (1000, 'p1', 'P1', 'm1', 'M1', 'k1', 'K1', 'mask', 'sk1',
+                    'SK', 'skmask', '/v1/messages', 100, 50, 2000, 1, NULL, 700)",
+                [],
+            )
+            .unwrap();
+        }
+
+        db.migrate().expect("V24 → latest must succeed");
+
+        let conn = db.conn();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(usage_log)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.contains(&"first_token_ms".to_string()),
+            "V25 必须补上 first_token_ms: {cols:?}"
+        );
+
+        // 旧行数据无损，且新列读为 NULL（不是 0——0 会被前端读成「首字即出」）
+        let (ts, completion, ft): (i64, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT timestamp, completion_tokens, first_token_ms FROM usage_log WHERE timestamp = 1000",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(ts, 1000);
+        assert_eq!(completion, 50);
+        assert_eq!(ft, None, "历史行 TTFT 必须为 NULL，前端据此显示 —");
+
+        // 分页查询也得能读通这一行（列索引对齐，守护 SELECT 未因新列错位）
+        drop(conn);
+        let (_, rows) = db.get_usage_log_page(1, 10, None, None, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["first_token_ms"], serde_json::Value::Null);
+        assert_eq!(rows[0]["completion_tokens"], serde_json::json!(50));
+    }
+
     /// 回归测试：迁移中途失败必须整体回滚——任何语句失败时既不能留下
     /// 半应用的表结构，也不能留下已推进的 schema_version（历史上正因
     /// 非事务执行 + 失败不记账，重跑才撞 duplicate column）。
