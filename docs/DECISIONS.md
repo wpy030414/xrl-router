@@ -1056,3 +1056,44 @@ MCP 的 `web_search` / `web_fetch` 输出信息量不足，喂给模型的上下
 - `.cargo/config.toml`（runner 配置）
 - `src-tauri/scripts/win-test-runner.bat`（纯 ASCII 注释）
 - `src-tauri/tests.manifest`（清单本体，ADR-052 引入）
+
+## ADR-055：输出速度按生成窗口口径，新增 first_token_ms 列
+
+**日期**: 2026-10-20
+**状态**: 已采纳
+
+### 背景
+
+请求日志需要一个「吐字效率」指标（输出 Tokens 单元格次行的 `N t/s`）。
+零成本的算法是直接复用现有列：`completion_tokens ÷ latency_ms`。但
+`latency_ms` 从 handler 入口计时，包含排队、网络 RTT 与 prefill——对
+Claude Code 这类携带 100K+ 输入的场景，首字前等待可达数秒，而真正生成
+只有 1~2 秒。用整段 latency 当分母，速度会被输入长度系统性压低，与
+「模型吐字快慢」的指标语义不符。
+
+### 决策
+
+1. 新增 V25 迁移：`usage_log.first_token_ms INTEGER`（可空）。
+2. TTFT 打点口径由 `forward.rs::is_generation_delta` 单点定义：只认
+   **非空**内容增量（Text/Thinking/InputJson delta）；`message_start`、
+   `content_block_start`、空 delta 不打点。流式与非流式共用。
+3. 速度为纯派生值，不落库：前端
+   `completion_tokens ÷ (latency_ms − first_token_ms)`，列语义与缓存
+   命中率同构。
+4. `first_token_ms` 用 NULL 而非 `NOT NULL DEFAULT 0`：NULL = 未知
+   （历史行/失败行），显示 `—`；0 会被读成「首字即出」，速度虚高。
+   口径缺失时宁可缺显，不掺第二套算法。
+
+### 代价
+
+- 一次 schema 迁移 + insert 路径多一个参数（调用点多，全部机械补齐）。
+- 历史日志永远无速度（迁移前数据无 TTFT，不可回填）。
+- Instant 打点位于帧循环热路径，但仅一次 `Option::is_none` 判断，可忽略。
+
+### 关键文件
+
+- `src-tauri/src/db/schema.rs`（V25）
+- `src-tauri/src/db/usage.rs`（写入 + 分页透出）
+- `src-tauri/src/api/proxy/forward.rs`（`is_generation_delta` + 打点）
+- `src-tauri/src/api/proxy/non_stream.rs`（收集路径同口径打点）
+- `src/views/StatsView.tsx`（`computeOutputSpeed` / `formatSpeed`）
