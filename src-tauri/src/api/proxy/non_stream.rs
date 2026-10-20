@@ -12,7 +12,7 @@
 //!   与流式路径保持一致。
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -233,7 +233,7 @@ pub(super) async fn proxy_non_stream(
                         status,
                         body_str.chars().take(200).collect::<String>()
                     )),
-                    0,
+                    0, None,
                 );
                 return Ok(error_response(
                     client_format,
@@ -271,8 +271,8 @@ pub(super) async fn proxy_non_stream(
                 "Upstream response received (non-stream client, collecting)"
             );
 
-            match collect_upstream_stream(resp, &cand.provider_kind, est_input).await {
-                Ok((acc, usage)) => {
+            match collect_upstream_stream(resp, &cand.provider_kind, est_input, start_time).await {
+                Ok((acc, usage, first_token_ms)) => {
                     let body = match client_format {
                         ClientFormat::Messages => {
                             build_messages_response(&acc, &usage, &model_name)
@@ -309,6 +309,7 @@ pub(super) async fn proxy_non_stream(
                         true,
                         None,
                         usage.cache_read_input_tokens as i64,
+                        first_token_ms,
                     );
                     // 对话审查：请求消息 + 助手回复一起记录
                     if let Some(ref ac) = audit {
@@ -389,7 +390,7 @@ pub(super) async fn proxy_non_stream(
                             "upstream stream error {}: {}",
                             err.status, err.message
                         )),
-                        0,
+                        0, None,
                     );
                     return Ok(error_response(
                         client_format,
@@ -431,7 +432,7 @@ pub(super) async fn proxy_non_stream(
         duration_ms,
         false,
         Some(&msg),
-        0,
+        0, None,
     );
     Ok(error_response(
         client_format,
@@ -526,7 +527,10 @@ impl IrAccumulator {
     }
 }
 
-/// 读取上游 SSE 流 → IR 事件 → 累积成完整内容 + usage。
+/// 读取上游 SSE 流 → IR 事件 → 累积成完整内容 + usage + TTFT。
+///
+/// `first_token_ms` 口径与流式路径一致（见 `forward::is_generation_delta`）：
+/// 只认第一个非空内容增量，供 usage_log 算生成窗口的输出速度。
 ///
 /// 错误语义与 `forward_stream_ir` 对齐：
 /// - 流内错误事件：密钥级（401/402/403/429）→ retryable；其余 → 透传。
@@ -537,7 +541,8 @@ async fn collect_upstream_stream(
     response: reqwest::Response,
     provider_kind: &str,
     est_input: u64,
-) -> Result<(IrAccumulator, IrUsage), CollectError> {
+    start_time: Instant,
+) -> Result<(IrAccumulator, IrUsage, Option<i64>), CollectError> {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut chunk_count = 0u64;
@@ -555,6 +560,9 @@ async fn collect_upstream_stream(
     responses_parse.usage.input_tokens = est_input;
 
     let mut acc = IrAccumulator::default();
+
+    // TTFT 打点：与流式路径同一口径（见 forward::is_generation_delta）。
+    let mut first_token_at: Option<Instant> = None;
 
     'outer: loop {
         let chunk = match tokio::time::timeout(
@@ -638,6 +646,9 @@ async fn collect_upstream_stream(
                     ),
                 };
                 for ev in &ir_events {
+                    if first_token_at.is_none() && super::forward::is_generation_delta(ev) {
+                        first_token_at = Some(Instant::now());
+                    }
                     acc.process_event(ev);
                 }
             }
@@ -669,7 +680,10 @@ async fn collect_upstream_stream(
         _ => chat_parse.usage.clone(),
     };
 
-    Ok((acc, usage))
+    let first_token_ms =
+        first_token_at.map(|t| t.duration_since(start_time).as_millis() as i64);
+
+    Ok((acc, usage, first_token_ms))
 }
 
 // ═══════════════════════════════════════════════════════════════════

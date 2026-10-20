@@ -23,6 +23,22 @@ use super::route::ResolvedRoute;
 use super::stream::{send_error_event, ClientFormat};
 use super::UPSTREAM_CHUNK_TIMEOUT_SECS;
 
+/// 该 IR 事件是否为「真正吐字」的生成事件（非空内容增量）。
+///
+/// 用于 TTFT 打点：message_start / content_block_start 在响应头之后立即到达，
+/// 早于任何 token，若计入会让首字时刻偏早、生成速度虚高。流式与非流式两条
+/// 收集路径共用此判定，保证 usage_log 的 `first_token_ms` 口径一致。
+pub(super) fn is_generation_delta(ev: &IrStreamEvent) -> bool {
+    match ev {
+        IrStreamEvent::ContentBlockDelta { delta, .. } => match delta {
+            IrContentDelta::TextDelta(t) => !t.is_empty(),
+            IrContentDelta::ThinkingDelta(t) => !t.is_empty(),
+            IrContentDelta::InputJsonDelta(t) => !t.is_empty(),
+        },
+        _ => false,
+    }
+}
+
 /// 流式转发结果。
 ///
 /// 上游可能以 HTTP 200 + SSE error event 表达密钥级错误(欠费/限流/认证),
@@ -91,6 +107,12 @@ pub(super) async fn forward_stream_ir(
     responses_parse.usage.input_tokens = est_input;
 
     let mut saw_done = false;
+
+    // 首个内容增量（Text/Thinking/InputJson delta）的时刻 = TTFT。
+    // 供 usage_log 计算「生成窗口」输出速度：把排队 + prefill 等待从分母剥掉。
+    // 只在真正的生成事件上打点：message_start / content_block_start 在响应头
+    // 之后立即到达，早于任何 token，计入会让速度虚高。
+    let mut first_token_at: Option<Instant> = None;
 
     // 对话审查：累积助手回复文本（流式 delta 拼接）
     let mut audit_response_text = String::new();
@@ -196,6 +218,9 @@ pub(super) async fn forward_stream_ir(
 
                 // 2. 渲染 IR 事件 → 客户端 SSE 字节
                 for ev in &ir_events {
+                    if first_token_at.is_none() && is_generation_delta(ev) {
+                        first_token_at = Some(Instant::now());
+                    }
                     let bytes = match client_format {
                         ClientFormat::Messages => anthropic_render.render_event(ev),
                         ClientFormat::ChatCompletions => chat_render.render_event(ev),
@@ -283,6 +308,8 @@ pub(super) async fn forward_stream_ir(
     };
     let input_t = final_usage.input_tokens as i64;
     let cr = final_usage.cache_read_input_tokens as i64;
+    let first_token_ms = first_token_at
+        .map(|t| t.duration_since(start_time).as_millis() as i64);
     let _ = state.database.insert_usage_log(
         chrono::Utc::now().timestamp(),
         provider_id,
@@ -302,6 +329,7 @@ pub(super) async fn forward_stream_ir(
         true,
         None,
         cr,
+        first_token_ms,
     );
 
     // 5. 对话审查：流结束后 upsert（请求消息 + 助手回复一起记录）
@@ -457,6 +485,7 @@ pub(super) fn extract_non_sse_error(body: &str, provider_kind: &str) -> Option<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::ir::types::IrContentBlockStart;
     use serde_json::json;
 
     // ── classify_error ──
@@ -605,5 +634,42 @@ mod tests {
     fn test_non_sse_no_error_key_not_error() {
         let body = r#"{"message":"some other error"}"#;
         assert!(extract_non_sse_error(body, "chat").is_none());
+    }
+
+    // ── is_generation_delta（TTFT 打点口径）──
+
+    #[test]
+    fn test_is_generation_delta_only_non_empty_content() {
+        // 非空内容增量 → 计入首字
+        assert!(is_generation_delta(&IrStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: IrContentDelta::TextDelta("你".to_string()),
+        }));
+        assert!(is_generation_delta(&IrStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: IrContentDelta::ThinkingDelta("m".to_string()),
+        }));
+        assert!(is_generation_delta(&IrStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: IrContentDelta::InputJsonDelta("{".to_string()),
+        }));
+
+        // 空增量（部分上游发空 delta 占位）→ 不计入，否则 TTFT 虚早、速度虚高
+        assert!(!is_generation_delta(&IrStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: IrContentDelta::TextDelta(String::new()),
+        }));
+
+        // 元事件（响应头后即刻到达，早于任何 token）→ 一律不计入
+        assert!(!is_generation_delta(&IrStreamEvent::MessageStart {
+            id: "msg_1".to_string(),
+            model: "m".to_string(),
+            usage: None,
+        }));
+        assert!(!is_generation_delta(&IrStreamEvent::ContentBlockStart {
+            index: 0,
+            block: IrContentBlockStart::Text,
+        }));
+        assert!(!is_generation_delta(&IrStreamEvent::MessageStop));
     }
 }

@@ -345,7 +345,7 @@ pub async fn proxy_stream(
                             Some(&picked.id), key_name.as_str(), key_masked.as_str(),
                             Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
                             endpoint,
-                            0, 0, duration_ms, false, Some(&e.to_string()), 0,
+                            0, 0, duration_ms, false, Some(&e.to_string()), 0, None,
                         );
                         send_error_event(&tx, client_format, "api_error", &e.to_string());
                         return;
@@ -374,7 +374,7 @@ pub async fn proxy_stream(
                             Some(&picked.id), key_name.as_str(), key_masked.as_str(),
                             Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
                             endpoint,
-                            0, 0, duration_ms, false, Some(&msg), 0,
+                            0, 0, duration_ms, false, Some(&msg), 0, None,
                         );
                         send_error_event(&tx, client_format, "api_error", &msg);
                         return;
@@ -504,7 +504,7 @@ pub async fn proxy_stream(
                     Some(&key_id), key_name.as_str(), key_masked.as_str(),
                     Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
                     endpoint,
-                    0, 0, duration_ms, false, Some(&msg), 0,
+                    0, 0, duration_ms, false, Some(&msg), 0, None,
                 );
                 send_error_event(&tx, client_format, "api_error", &msg);
                 return;
@@ -519,7 +519,7 @@ pub async fn proxy_stream(
                     Some(&key_id), key_name.as_str(), key_masked.as_str(),
                     Some(service_key.id.as_str()), service_key.name.as_str(), service_key.key_masked.as_str(),
                     endpoint,
-                    0, 0, duration_ms, false, Some(&msg), 0,
+                    0, 0, duration_ms, false, Some(&msg), 0, None,
                 );
                 send_error_event(&tx, client_format, "api_error", &msg);
                 return;
@@ -536,7 +536,7 @@ pub async fn proxy_stream(
                     endpoint,
                     0, 0, duration_ms, false,
                     Some(&format!("upstream 5xx: {} | body: {}", msg, body.chars().take(200).collect::<String>())),
-                    0,
+                    0, None,
                 );
                 send_error_event(&tx, client_format, "api_error", &msg);
                 return;
@@ -554,7 +554,7 @@ pub async fn proxy_stream(
                     endpoint,
                     0, 0, duration_ms, false,
                     Some(&format!("upstream stream error {}: {}", status, message)),
-                    0,
+                    0, None,
                 );
                 send_error_event(&tx, client_format, "api_error", &msg);
                 return;
@@ -576,7 +576,7 @@ pub async fn proxy_stream(
                 endpoint,
                 0, 0, duration_ms, false,
                 Some(&format!("upstream status {}: {}", s, body_str.chars().take(200).collect::<String>())),
-                0,
+                0, None,
             );
             send_error_event(&tx, client_format, "api_error", &msg);
             return;
@@ -594,7 +594,7 @@ pub async fn proxy_stream(
                 endpoint,
                 0, 0, duration_ms, false,
                 Some(&format!("upstream status 400: {}", body_str.chars().take(200).collect::<String>())),
-                0,
+                0, None,
             );
             send_error_event(&tx, client_format, "api_error", &msg);
             return;

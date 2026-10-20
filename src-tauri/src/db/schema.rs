@@ -394,4 +394,13 @@ ALTER TABLE plugins ADD COLUMN work_dir TEXT;
 ALTER TABLE plugins ADD COLUMN autostart INTEGER NOT NULL DEFAULT 0;
 DELETE FROM api_keys WHERE provider_id IN (SELECT provider_id FROM plugins WHERE provider_id IS NOT NULL);
 "#,
+    // V25: usage_log.first_token_ms — 首个内容增量（Text/Thinking/InputJson delta）
+    // 相对请求开始的毫秒数，即 TTFT。请求日志的输出速度按「生成窗口」口径计算
+    // （completion_tokens ÷ (latency_ms − first_token_ms)），把排队 + prefill
+    // 等待从分母里剥掉，长输入请求的速度不再被系统性压低。
+    // 用 NULL（不加 NOT NULL DEFAULT）：历史行与失败行语义是「未知」，不是 0——
+    // 0 会被读成「首字即出」，速度算出来虚高。
+    r#"
+ALTER TABLE usage_log ADD COLUMN first_token_ms INTEGER;
+"#,
 ];

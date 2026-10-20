@@ -362,7 +362,7 @@ mod tests {
             Some("pk1"), "PK", "pk-masked",
             Some("sk-quota"), "限额测试", "****uota",
             "/v1/messages",
-            10, 5, 10, true, None, 0,
+            10, 5, 10, true, None, 0, None,
         ).unwrap();
         state.database.update_service_key("sk-quota", None, None, Some(10), None).unwrap();
         let resp = client

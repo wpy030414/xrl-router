@@ -185,6 +185,8 @@ mod tests {
         assert!(ucols.contains(&"cache_read_input_tokens".to_string()));
         assert!(!ucols.contains(&"cache_creation_input_tokens".to_string()));
         assert!(!ucols.contains(&"cost_estimate".to_string()));
+        // V25：应有 first_token_ms（TTFT，供请求日志输出速度按生成窗口口径派生）。
+        assert!(ucols.contains(&"first_token_ms".to_string()));
 
         // V21：local_models 应有 thinking 列（思考模式开关，默认 1）。
         let lcols: Vec<String> = conn
