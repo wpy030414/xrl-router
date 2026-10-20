@@ -36,6 +36,7 @@ impl super::Database {
     /// Append one row to usage_log. Called once per proxied request (success or failure).
     /// 统计信息自包含：写入时快照 provider_name / model_display_name / key_name / key_masked /
     /// service_key_name / service_key_masked，确保删除父表行后统计不受影响。
+    /// `first_token_ms` = 首个内容增量相对请求开始的毫秒数（TTFT）；未知或失败行传 None。
     pub fn insert_usage_log(
         &self,
         timestamp: i64,
@@ -56,11 +57,12 @@ impl super::Database {
         success: bool,
         error_message: Option<&str>,
         cache_read_input_tokens: i64,
+        first_token_ms: Option<i64>,
     ) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO usage_log (timestamp, provider_id, provider_name, model_id, model_display_name, key_id, key_name, key_masked, service_key_id, service_key_name, service_key_masked, request_type, prompt_tokens, completion_tokens, latency_ms, success, error_message, cache_read_input_tokens)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO usage_log (timestamp, provider_id, provider_name, model_id, model_display_name, key_id, key_name, key_masked, service_key_id, service_key_name, service_key_masked, request_type, prompt_tokens, completion_tokens, latency_ms, success, error_message, cache_read_input_tokens, first_token_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 timestamp,
                 provider_id,
@@ -80,6 +82,7 @@ impl super::Database {
                 success as i32,
                 error_message,
                 cache_read_input_tokens,
+                first_token_ms,
             ],
         )?;
         // 同步递增局域网用户（service_key）的累计统计（只动计数与
@@ -257,7 +260,8 @@ impl super::Database {
                 request_type,
                 prompt_tokens, completion_tokens, latency_ms,
                 cache_read_input_tokens,
-                success, error_message
+                success, error_message,
+                first_token_ms
              FROM usage_log u{}
              ORDER BY timestamp DESC, id DESC
              LIMIT ?1 OFFSET ?2",
@@ -283,6 +287,10 @@ impl super::Database {
                 "cache_read_input_tokens": row.get::<_, i64>(12)?,
                 "success": row.get::<_, i64>(13)? != 0,
                 "error_message": row.get::<_, Option<String>>(14)?,
+                // TTFT（首个内容增量耗时）；历史行与新列缺失时为 null。
+                // 输出速度（t/s）由前端按生成窗口口径派生：
+                // completion_tokens / ((latency_ms - first_token_ms)/1000)。
+                "first_token_ms": row.get::<_, Option<i64>>(15)?,
             }))
         })?;
 
@@ -310,7 +318,7 @@ mod tests {
                 Some("pk1"), "PK", "pk-masked",
                 Some("sk1"), "SK", "sk-masked",
                 "/v1/messages",
-                10, 20, 30, i % 2 == 0, Some("err"), 0,
+                10, 20, 30, i % 2 == 0, Some("err"), 0, None,
             )
             .unwrap();
         }
@@ -349,6 +357,37 @@ mod tests {
         assert_eq!(total_range, 10);
     }
 
+    /// first_token_ms（TTFT）往返：Some 落库回读为数字，None 回读为 JSON null。
+    /// 守护 INSERT 列/参数与 SELECT 列的位置对齐——错配是运行时错误，编译期查不出来。
+    #[test]
+    fn test_first_token_ms_roundtrip() {
+        let db = super::super::Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+
+        // 有 TTFT：8000ms 总耗时，首字 2000ms → 生成窗口 6s
+        db.insert_usage_log(
+            1_000_000_000, "p1", "P1", "m1", "M1",
+            Some("pk1"), "PK", "pk-masked",
+            Some("sk1"), "SK", "sk-masked",
+            "/v1/messages",
+            10, 120, 8000, true, None, 0, Some(2000),
+        ).unwrap();
+        // 无 TTFT（失败行 / 历史行）
+        db.insert_usage_log(
+            1_000_000_001, "p1", "P1", "m1", "M1",
+            Some("pk1"), "PK", "pk-masked",
+            Some("sk1"), "SK", "sk-masked",
+            "/v1/messages",
+            0, 0, 500, false, Some("boom"), 0, None,
+        ).unwrap();
+
+        let (_, rows) = db.get_usage_log_page(1, 10, None, None, None).unwrap();
+        assert_eq!(rows.len(), 2);
+        // 逆序：无 TTFT 的行在前
+        assert_eq!(rows[0]["first_token_ms"], serde_json::Value::Null);
+        assert_eq!(rows[1]["first_token_ms"], serde_json::json!(2000));
+    }
+
     /// 5h / 7d 固定窗口聚合：只有当前窗口内的行被计入，跨窗口后用量归零。
     #[test]
     fn test_get_service_key_usage_windows() {
@@ -363,7 +402,7 @@ mod tests {
                 Some("pk1"), "PK", "pk-masked",
                 Some("sk1"), "SK", "sk-masked",
                 "/v1/messages",
-                tokens, 0, 10, true, None, 0,
+                tokens, 0, 10, true, None, 0, None,
             )
             .unwrap();
         };
@@ -397,7 +436,7 @@ mod tests {
                 Some("pk1"), "PK", "pk-masked",
                 Some("sk1"), "SK", "sk-masked",
                 "/v1/messages",
-                tokens, 0, 10, true, None, 0,
+                tokens, 0, 10, true, None, 0, None,
             )
             .unwrap();
         };

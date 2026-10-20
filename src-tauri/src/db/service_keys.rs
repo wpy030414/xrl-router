@@ -142,7 +142,7 @@ mod tests {
                 ts, "p1", "P1", "m1", "M1",
                 Some("pk1"), "PK", "pk-masked",
                 Some("sk1"), "测试", "mask",
-                "/v1/messages", tokens, 0, 10, true, None, 0,
+                "/v1/messages", tokens, 0, 10, true, None, 0, None,
             )
             .unwrap();
         }
