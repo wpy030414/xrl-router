@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -38,7 +39,7 @@ import { useSettingsStore } from '@/stores/settings';
 import { useTheme } from '@/hooks/useTheme';
 import { useI18nStore, type Locale } from '@/i18n';
 import { useT } from '@/i18n';
-import { settingsApi, type AppSettings } from '@/lib/api';
+import { settingsApi, type AppSettings, type SettingsUpdate } from '@/lib/api';
 import { tauriAutostart, tauriDialog, tauriFs, tauriShell, tauriApp, isTauri } from '@/lib/tauri';
 import { cn } from '@/lib/utils';
 
@@ -64,6 +65,12 @@ export function SettingsView() {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [injectText, setInjectText] = useState('');
   const [injectSaved, setInjectSaved] = useState(false);
+  const [searchBackend, setSearchBackend] = useState('auto');
+  const [searxngUrl, setSearxngUrl] = useState('');
+  const [tavilyKey, setTavilyKey] = useState('');
+  const [exaKey, setExaKey] = useState('');
+  const [braveKey, setBraveKey] = useState('');
+  const [searchSaved, setSearchSaved] = useState(false);
 
   // Load settings and Tauri state
   useEffect(() => {
@@ -86,11 +93,44 @@ export function SettingsView() {
     }
   }, [settings?.session_inject]);
 
+  // Sync search config from settings store
+  useEffect(() => {
+    setSearchBackend(settings?.search_backend || 'auto');
+    setSearxngUrl(settings?.search_searxng_url || '');
+  }, [settings?.search_backend, settings?.search_searxng_url]);
+
   // Toggle handlers
   const handleSettingToggle = async (key: keyof AppSettings, value: boolean) => {
     setSaving(true);
     try {
       await updateSettings({ [key]: value });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveSearchConfig = async (clear?: 'tavily' | 'exa' | 'brave') => {
+    setSaving(true);
+    try {
+      const payload: SettingsUpdate = {
+        search_backend: searchBackend,
+        search_searxng_url: searxngUrl,
+      };
+      if (clear === 'tavily' || (!clear && tavilyKey.trim())) {
+        payload.tavily_api_key = clear === 'tavily' ? '' : tavilyKey.trim();
+      }
+      if (clear === 'exa' || (!clear && exaKey.trim())) {
+        payload.exa_api_key = clear === 'exa' ? '' : exaKey.trim();
+      }
+      if (clear === 'brave' || (!clear && braveKey.trim())) {
+        payload.brave_api_key = clear === 'brave' ? '' : braveKey.trim();
+      }
+      await updateSettings(payload);
+      setTavilyKey('');
+      setExaKey('');
+      setBraveKey('');
+      setSearchSaved(true);
+      window.setTimeout(() => setSearchSaved(false), 2000);
     } finally {
       setSaving(false);
     }
@@ -440,6 +480,129 @@ export function SettingsView() {
                 onCheckedChange={(v) => handleSettingToggle('mcp_websearch', v)}
               />
             </div>
+
+            {/* 搜索来源配置：默认 Bing；配置多个来源时并发融合 */}
+            {settings.mcp_websearch && (
+              <div className="ml-7 space-y-3 rounded-md border bg-muted/30 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{t('settings.search.title')}</p>
+                    <p className="text-xs text-muted-foreground">{t('settings.search.desc')}</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {t('settings.search.effective')}: {(settings.search_engines || ['bing']).join(' + ')}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Label className="w-28 shrink-0 text-sm">{t('settings.search.backend')}</Label>
+                  <Select value={searchBackend} onValueChange={setSearchBackend}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {['auto', 'bing', 'searxng', 'tavily', 'exa', 'brave'].map((key) => (
+                        <SelectItem key={key} value={key}>
+                          {t(`settings.search.backend.${key}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {(searchBackend === 'auto' || searchBackend === 'searxng') && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Label className="w-28 shrink-0 text-sm">{t('settings.search.searxng')}</Label>
+                      <Input
+                        value={searxngUrl}
+                        onChange={(e) => setSearxngUrl(e.target.value)}
+                        placeholder={t('settings.search.searxng.placeholder')}
+                        className="flex-1 font-mono text-xs"
+                      />
+                    </div>
+                    <p className="pl-[7.5rem] text-xs text-muted-foreground">
+                      {t('settings.search.searxng.hint')}
+                    </p>
+                  </div>
+                )}
+
+                {(searchBackend === 'auto' || searchBackend === 'tavily') && (
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 shrink-0 text-sm">Tavily</Label>
+                    <Input
+                      type="password"
+                      value={tavilyKey}
+                      onChange={(e) => setTavilyKey(e.target.value)}
+                      placeholder={
+                        settings.search_tavily_key_set
+                          ? t('settings.search.key.configured')
+                          : t('settings.search.key.empty')
+                      }
+                      className="flex-1 text-xs"
+                    />
+                    {settings.search_tavily_key_set && (
+                      <Button size="sm" variant="ghost" onClick={() => saveSearchConfig('tavily')}>
+                        {t('settings.search.clear')}
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {(searchBackend === 'auto' || searchBackend === 'exa') && (
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 shrink-0 text-sm">Exa</Label>
+                    <Input
+                      type="password"
+                      value={exaKey}
+                      onChange={(e) => setExaKey(e.target.value)}
+                      placeholder={
+                        settings.search_exa_key_set
+                          ? t('settings.search.key.configured')
+                          : t('settings.search.key.empty')
+                      }
+                      className="flex-1 text-xs"
+                    />
+                    {settings.search_exa_key_set && (
+                      <Button size="sm" variant="ghost" onClick={() => saveSearchConfig('exa')}>
+                        {t('settings.search.clear')}
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {(searchBackend === 'auto' || searchBackend === 'brave') && (
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 shrink-0 text-sm">Brave</Label>
+                    <Input
+                      type="password"
+                      value={braveKey}
+                      onChange={(e) => setBraveKey(e.target.value)}
+                      placeholder={
+                        settings.search_brave_key_set
+                          ? t('settings.search.key.configured')
+                          : t('settings.search.key.empty')
+                      }
+                      className="flex-1 text-xs"
+                    />
+                    {settings.search_brave_key_set && (
+                      <Button size="sm" variant="ghost" onClick={() => saveSearchConfig('brave')}>
+                        {t('settings.search.clear')}
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1">
+                  <Button size="sm" onClick={() => saveSearchConfig()} disabled={saving}>
+                    {t('settings.search.save')}
+                  </Button>
+                  {searchSaved && (
+                    <span className="text-xs text-muted-foreground">{t('settings.search.saved')}</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Web Fetch */}
             <div className="flex items-center justify-between py-3 border-b">

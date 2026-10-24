@@ -112,7 +112,7 @@ main.rs
   ├─ keys/pool/          KeyPool (RwLock HashMap)
   ├─ plugin/             PluginManager
   ├─ middleware/rate_limit.rs  令牌桶
-  ├─ search/bing.rs           Bing 搜索
+  ├─ search/                 搜索引擎抽象（mod 编排+RRF / bing / engines / config）
   ├─ content/                 内容增强层（readability 提取/抽取式摘要/启发式重排）
   ├─ wallpaper/               桌面壁纸劫持（FM 像素艺术 → 桌面层）
   │    ├─ mod.rs              WallpaperState + 建窗/挂载/重建
@@ -421,7 +421,7 @@ xrl-router-plugin-wukong (外部进程)
 
 | 工具 | 功能 | 开关 |
 |------|------|------|
-| `web_search` | 本地 Bing 搜索 + 内容增强（并发抓正文生成抽取式摘要、rerank_score 0~3 重排、日期/站点/权威度元数据；`ori_question` 注入多轮意图） | `mcp_websearch` |
+| `web_search` | 多来源搜索（Bing 默认；SearXNG/Tavily/Exa/Brave 可选，auto 并发 + RRF 融合 + 15min 查询缓存）+ 内容增强（并发抓正文生成命中段摘录、rerank_score 0~3 参考分、日期/站点/权威度元数据；`num_results`/`freshness`/域名过滤/`ori_question`） | `mcp_websearch` |
 | `web_fetch` | 静态优先抓取（HTML/文本/JSON/XML/CSV/PDF）→ 正文提取转 Markdown；正文过薄或反爬时升级内置 WebView 渲染；15min 内容缓存；`start_index`/`max_chars` 分段读取 | `mcp_webfetch` |
 | `notify` | 发送系统桌面通知 | `mcp_notify` |
 

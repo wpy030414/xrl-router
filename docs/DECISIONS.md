@@ -1152,3 +1152,61 @@ Claude Code 这类携带 100K+ 输入的场景，首字前等待可达数秒，�
 - `src-tauri/src/mcp/tools.rs`（`web_fetch` schema / 参数解析）
 - `src-tauri/src/content/mod.rs`（搜索富化抓取接入守卫）
 - `docs/specs/module-mcp-tools.md`
+
+---
+
+## ADR-057：搜索层多后端融合与命中段摘录
+
+**日期**: 2026-10-24
+**状态**: 已采纳
+
+### 背景
+
+ADR-053 的内容增强层解决了「只有 snippet」的问题，但搜索侧仍是单引擎裸爬 Bing：
+Bing 风控降级时无备选；查询只有 `q` 一个参数（条数/时间/站点全部靠模型在自然语言
+里猜）；每次搜索并发抓 5 页生成 600~800 字**抽取式摘要**——句子按词频挑选后拼接，
+上下文断裂，表格/代码/数字常被筛掉，对模型是高噪声 token。对照社区（Exa highlights、
+Tavily 清洗片段、Open WebUI 的 search engine / web loader 两层抽象），方向明确：
+**搜索与抓取分层、多引擎融合、给命中段落而不是句子合集。**
+
+### 决策
+
+1. **引擎抽象（`search/`）**
+   - `bing`（零配置默认，保留 cookie 预热与降级检测）+ `engines`（SearXNG / Tavily /
+     Exa / Brave 的 JSON API）。
+   - `auto` 模式把已配置来源**并发**执行，RRF（k=60）融合名次 + URL 归一化去重；
+     全失败回退 Bing。显式指定后端时不做融合。
+2. **查询参数**：`num_results`（1~20）、`freshness`、`include_domains` /
+   `exclude_domains`。无原生域名参数的引擎用 `site:` / `-site:` 操作符表达；结果侧
+   再统一过滤。Bing 的时间过滤用 `qft`（best-effort）。
+3. **查询缓存**：`(backend, query, num_results, freshness, domains)`，TTL 15min、
+   容量 64——同一会话反复搜索不再重复打外部接口。
+4. **命中段摘录**：`summary` 从「贪心句子合集」改为「以最高分句为锚点的连续窗口」
+   （≤600 字，前后各至多 2 句），保留上下文衔接；抓取候选从 5 降到 3，输出上限
+   10 → 20（由 `num_results` 控制）。
+5. **配置面**：`settings` 新增 `search_backend` / `search_searxng_url` /
+   `search_{tavily,exa,brave}_key`（后者 AES-256-GCM 加密）。`/api/settings` 只回显
+   「是否已配置」，明文永不回传；设置页新增搜索来源卡片（中文/英文同步）。
+6. **`rerank_score` 降级为参考分**：工具描述不再要求模型「忽略接近 0 的结果」；
+   分数仍输出，但由模型自行判断。
+
+### 代价
+
+- 配置面变大：多后端意味着用户可能填错地址/密钥。错误信息按来源聚合返回
+  （`所有搜索来源均失败：searxng: ...；tavily: ...`），便于定位。
+- `auto` 模式会同时打多个外部接口；有 15min 缓存兜底，且仅对**已配置**来源并发。
+- Bing 的 `qft` 与 `site:` 属半官方行为，Bing 改版时可能失效；结果侧域名过滤与
+  Bing 自身的降级检测作为兜底。
+- 摘录比旧的「800 字合集」短，单条信息量下降，但噪声显著减少；需要全文时模型应
+  调用 `web_fetch`（这也是两层工具分工的本意）。
+- 搜索引擎密钥与 Provider 密钥分离存放（搜索服务不在 Provider 注册表内）。
+
+### 关键文件
+
+- `src-tauri/src/search/{mod,bing,engines,config}.rs`
+- `src-tauri/src/content/{mod,summary}.rs`
+- `src-tauri/src/mcp/tools.rs`（schema / 参数解析 / 调度）
+- `src-tauri/src/gateway/server.rs`（`search_config` 注入）
+- `src-tauri/src/api/handlers/stats.rs`（settings 读写）
+- `src/views/SettingsView.tsx` + `src/i18n/{zh-CN,en}.ts`
+- `docs/specs/module-mcp-tools.md`

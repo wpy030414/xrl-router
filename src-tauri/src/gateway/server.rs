@@ -1,12 +1,12 @@
+use crate::api::handlers::FmEngine;
 use crate::config::Config;
 use crate::db::Database;
 use crate::keys::KeyPool;
+use crate::local::LocalManager;
 use crate::middleware::RateLimiter;
 use crate::models::ModelRegistry;
 use crate::plugin::PluginManager;
 use crate::providers::ProviderRegistry;
-use crate::api::handlers::FmEngine;
-use crate::local::LocalManager;
 use anyhow::Result;
 use axum::http::HeaderValue;
 use std::sync::Arc;
@@ -52,12 +52,19 @@ pub struct AppState {
     pub fm: FmEngine,
     /// 搜索 HTTP 客户端（完整浏览器头 + cookie 复用 + 懒预热）。
     pub search_http: crate::search::bing::SearchHttp,
+    /// 搜索后端配置（设置页热更新；密钥解密后驻留内存）。
+    pub search_config: Arc<std::sync::RwLock<crate::search::SearchConfig>>,
     /// 本地模型管理（私有化）：下载/引擎/provider 注册。契约见 spec-local-models.md。
     pub local: LocalManager,
 }
 
 impl AppState {
-    pub fn new(config: Config, database: Database, master_key: crate::crypto::MasterKey, data_dir: &std::path::Path) -> Self {
+    pub fn new(
+        config: Config,
+        database: Database,
+        master_key: crate::crypto::MasterKey,
+        data_dir: &std::path::Path,
+    ) -> Self {
         let providers = ProviderRegistry::new(database.clone());
         let _ = providers.load_from_db();
         let models = ModelRegistry::new(database.clone());
@@ -114,9 +121,14 @@ impl AppState {
                 .unwrap_or_default(),
         ));
         let provider_cooldowns = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        let search_config = Arc::new(std::sync::RwLock::new(crate::search::SearchConfig::load(
+            &database,
+            &master_key,
+        )));
 
         let plugins = PluginManager::new(database.clone(), providers.providers_map());
-        let plugin_host = crate::plugin::PluginProcessManager::new(database.clone(), data_dir.to_path_buf());
+        let plugin_host =
+            crate::plugin::PluginProcessManager::new(database.clone(), data_dir.to_path_buf());
 
         // 共享 HTTP 客户端（reqwest 内部有连接池 + TLS 缓存，clone 只复制 Arc）。
         // 复用后同一上游的后续请求无需重新 TCP+TLS 握手，减少首次响应延迟。
@@ -160,6 +172,7 @@ impl AppState {
             http_client,
             fm,
             search_http: Default::default(),
+            search_config,
             local,
         }
     }
@@ -245,9 +258,7 @@ async fn bind_dual_stack(port: u16) -> std::io::Result<tokio::net::TcpListener> 
     let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_only_v6(false)?;
     socket.set_reuse_address(true)?;
-    socket.bind(
-        &std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into(),
-    )?;
+    socket.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
     socket.listen(1024)?;
     let std_listener: std::net::TcpListener = socket.into();
     std_listener.set_nonblocking(true)?;
@@ -258,9 +269,7 @@ async fn bind_dual_stack(port: u16) -> std::io::Result<tokio::net::TcpListener> 
 /// previous `allow_origin: *` policy). Falls back to permissive only if the
 /// origin list is explicitly empty.
 fn build_cors_layer(config: &Config) -> CorsLayer {
-    let mut layer = CorsLayer::new()
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let mut layer = CorsLayer::new().allow_methods(Any).allow_headers(Any);
     if config.cors_origins.is_empty() {
         layer = layer.allow_origin(Any);
     } else {
@@ -309,14 +318,23 @@ mod tests {
         let client = reqwest::Client::new();
         // 等服务器就绪
         for _ in 0..50 {
-            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+            if client
+                .get(format!("http://{}/health", addr))
+                .send()
+                .await
+                .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         // /health：完整链路（DB 连接、providers/models 注册表、key pool）
-        let resp = client.get(format!("http://{}/health", addr)).send().await.unwrap();
+        let resp = client
+            .get(format!("http://{}/health", addr))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "ok");
@@ -324,13 +342,21 @@ mod tests {
         assert_eq!(body["database"], "ok");
 
         // /api/providers：CRUD handler 路径（loopback → admin_ip_guard 放行，空库返回空数组）
-        let resp = client.get(format!("http://{}/api/providers", addr)).send().await.unwrap();
+        let resp = client
+            .get(format!("http://{}/api/providers", addr))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         let providers: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(providers.as_array().map(|a| a.len()), Some(0));
 
         // /v1/models：proxy 认证路径（无 service key 应 401）
-        let resp = client.get(format!("http://{}/v1/models", addr)).send().await.unwrap();
+        let resp = client
+            .get(format!("http://{}/v1/models", addr))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 401);
 
         // /v1/chat/completions：proxy 认证 + 路由解析路径（无 service key 应 401）
@@ -354,17 +380,39 @@ mod tests {
         // 配额 429：创建 service key（quota_5h=10）→ 写入 15 tokens 用量 → 请求应 429。
         let raw_key = "xrl-test-quota-key";
         let key_hash = crate::crypto::hash_service_key(raw_key).unwrap();
-        state.database.save_service_key("sk-quota", "限额测试", &key_hash, "****uota", None).unwrap();
+        state
+            .database
+            .save_service_key("sk-quota", "限额测试", &key_hash, "****uota", None)
+            .unwrap();
         let now = chrono::Utc::now().timestamp();
-        state.database.insert_usage_log(
-            now,
-            "p1", "P1", "m1", "M1",
-            Some("pk1"), "PK", "pk-masked",
-            Some("sk-quota"), "限额测试", "****uota",
-            "/v1/messages",
-            10, 5, 10, true, None, 0, None,
-        ).unwrap();
-        state.database.update_service_key("sk-quota", None, None, Some(10), None).unwrap();
+        state
+            .database
+            .insert_usage_log(
+                now,
+                "p1",
+                "P1",
+                "m1",
+                "M1",
+                Some("pk1"),
+                "PK",
+                "pk-masked",
+                Some("sk-quota"),
+                "限额测试",
+                "****uota",
+                "/v1/messages",
+                10,
+                5,
+                10,
+                true,
+                None,
+                0,
+                None,
+            )
+            .unwrap();
+        state
+            .database
+            .update_service_key("sk-quota", None, None, Some(10), None)
+            .unwrap();
         let resp = client
             .post(format!("http://{}/v1/chat/completions", addr))
             .header("Content-Type", "application/json")
@@ -375,7 +423,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 429);
         // retry-after 应存在且为正值（在消费 body 之前读取）
-        let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok());
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok());
         assert!(retry_after.is_some(), "429 应携带 retry-after 头");
         assert!(retry_after.unwrap().parse::<i64>().unwrap() > 0);
         let body: serde_json::Value = resp.json().await.unwrap();
@@ -394,13 +445,20 @@ mod tests {
         assert_eq!(zm["success"], true);
         assert_eq!(zm["data"]["quota_5_hour"]["usage_percentage"], 1.5);
         assert!(
-            zm["data"]["quota_5_hour"]["resets_at"].as_str().unwrap().contains("T"),
+            zm["data"]["quota_5_hour"]["resets_at"]
+                .as_str()
+                .unwrap()
+                .contains("T"),
             "resets_at 应为 ISO 字符串（CCSwitch 用 as_str 解析）"
         );
         assert!(zm["data"].get("quota_7_day").is_none(), "未设限窗口应省略");
 
         // /install → SPA fallback（测试环境无 dist/，返回 404 即可证明 fallback 路径生效）
-        let resp = client.get(format!("http://{}/install", addr)).send().await.unwrap();
+        let resp = client
+            .get(format!("http://{}/install", addr))
+            .send()
+            .await
+            .unwrap();
         assert!(
             resp.status() == 200 || resp.status() == 404,
             "/install 应触发 SPA fallback（200 if dist/ exists, 404 otherwise）"
@@ -408,16 +466,28 @@ mod tests {
 
         // /api/stats/requests：请求日志分页（冒烟测试早前插过 usage 行）
         let resp = client
-            .get(format!("http://{}/api/stats/requests?page=1&page_size=10", addr))
+            .get(format!(
+                "http://{}/api/stats/requests?page=1&page_size=10",
+                addr
+            ))
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
         let logs: serde_json::Value = resp.json().await.unwrap();
         assert!(logs["total"].as_i64().unwrap_or(0) >= 1, "日志应至少有一条");
-        assert!(logs["data"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
-        assert!(logs["data"][0].get("success").is_some(), "日志应带 success 字段");
-        assert!(logs["data"][0].get("timestamp").is_some(), "日志应带 timestamp 字段");
+        assert!(logs["data"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false));
+        assert!(
+            logs["data"][0].get("success").is_some(),
+            "日志应带 success 字段"
+        );
+        assert!(
+            logs["data"][0].get("timestamp").is_some(),
+            "日志应带 timestamp 字段"
+        );
     }
 
     /// 故障转移 E2E：主 provider 5xx → 自动切到备选 provider 成功；开关关闭 → 透传 5xx。
@@ -425,8 +495,8 @@ mod tests {
     #[tokio::test]
     async fn test_failover_switches_provider_on_5xx() {
         use axum::http::StatusCode;
-        use axum::response::IntoResponse;
         use axum::response::sse::{Event, KeepAlive, Sse};
+        use axum::response::IntoResponse;
         use axum::routing::post;
         use futures::stream;
         use std::convert::Infallible;
@@ -434,9 +504,7 @@ mod tests {
         // 假上游 A：一律 500
         let router_a = axum::Router::new().route(
             "/v1/chat/completions",
-            post(|| async {
-                (StatusCode::INTERNAL_SERVER_ERROR, "boom from A").into_response()
-            }),
+            post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom from A").into_response() }),
         );
         let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_a = listener_a.local_addr().unwrap();
@@ -522,7 +590,8 @@ mod tests {
         // service key（分发密钥）——空 allowed_models = 允许全部
         let raw_service_key = "xrl-test-failover-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
-        db.save_service_key("sk-failover", "故障转移测试", &sk_hash, "***key", None).unwrap();
+        db.save_service_key("sk-failover", "故障转移测试", &sk_hash, "***key", None)
+            .unwrap();
 
         // 不写 failover_enabled setting：开关已强制常开（不读 settings），
         // 构造后应恒为 true——这里同时防止回归到「读 settings 默认 false」。
@@ -538,7 +607,9 @@ mod tests {
             &std::env::temp_dir(),
         ));
         assert!(
-            state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
+            state
+                .failover_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
             "failover 必须强制常开，不受 settings 影响"
         );
         let router = crate::api::build_router(state.clone());
@@ -555,7 +626,12 @@ mod tests {
 
         let client = reqwest::Client::new();
         for _ in 0..50 {
-            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+            if client
+                .get(format!("http://{}/health", addr))
+                .send()
+                .await
+                .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -572,20 +648,34 @@ mod tests {
 
         // 开关开：A 500 → 自动切 B → 200 且内容来自 B
         let resp = send().send().await.unwrap();
-        assert_eq!(resp.status(), 200, "failover 开启时 5xx 应自动切换备选 provider");
+        assert_eq!(
+            resp.status(),
+            200,
+            "failover 开启时 5xx 应自动切换备选 provider"
+        );
         let text = resp.text().await.unwrap();
-        assert!(text.contains("hello from B"), "响应应来自备选 provider B: {}", text);
+        assert!(
+            text.contains("hello from B"),
+            "响应应来自备选 provider B: {}",
+            text
+        );
 
         // failover 已强制常开：即使 settings 表写 false，重启构造后仍为 true
         db.set_setting("failover_enabled", "false").unwrap();
         let state2 = AppState::new(
-            Config { port: 0, host: "127.0.0.1".to_string(), ..Default::default() },
+            Config {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                ..Default::default()
+            },
             db.clone(),
             master_key,
             &std::env::temp_dir(),
         );
         assert!(
-            state2.failover_enabled.load(std::sync::atomic::Ordering::Relaxed),
+            state2
+                .failover_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
             "settings 里的 false 不得关闭强制常开的 failover"
         );
     }
@@ -595,8 +685,8 @@ mod tests {
     #[tokio::test]
     async fn test_combo_end_to_end() {
         use axum::http::StatusCode;
-        use axum::response::IntoResponse;
         use axum::response::sse::{Event, KeepAlive, Sse};
+        use axum::response::IntoResponse;
         use axum::routing::post;
         use futures::stream;
         use std::convert::Infallible;
@@ -608,7 +698,9 @@ mod tests {
         );
         let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_a = listener_a.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener_a, router_a).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener_a, router_a).await.unwrap();
+        });
 
         // 假上游 B：200 SSE 流（组合回退的终点）
         let router_b = axum::Router::new().route(
@@ -624,7 +716,9 @@ mod tests {
         );
         let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_b = listener_b.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener_b, router_b).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener_b, router_b).await.unwrap();
+        });
 
         // 假上游 C：普通 400（请求级错误，组合应立即透传）
         let router_c = axum::Router::new().route(
@@ -639,7 +733,9 @@ mod tests {
         );
         let listener_c = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_c = listener_c.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener_c, router_c).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener_c, router_c).await.unwrap();
+        });
 
         // 假上游 D：400 + 配额耗尽（供应商级失败，应换成员）
         let router_d = axum::Router::new().route(
@@ -654,7 +750,9 @@ mod tests {
         );
         let listener_d = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_d = listener_d.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener_d, router_d).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener_d, router_d).await.unwrap();
+        });
 
         // 网关：四个 provider 各一模型一 key；三个组合（回退语义各不相同）
         let db = Database::open_in_memory().unwrap();
@@ -679,7 +777,12 @@ mod tests {
         save_provider(&db, "pb", &format!("http://{}", addr_b));
         save_provider(&db, "pc", &format!("http://{}", addr_c));
         save_provider(&db, "pd", &format!("http://{}", addr_d));
-        for (pid, real) in [("pa", "real-a"), ("pb", "real-b"), ("pc", "real-c"), ("pd", "real-d")] {
+        for (pid, real) in [
+            ("pa", "real-a"),
+            ("pb", "real-b"),
+            ("pc", "real-c"),
+            ("pd", "real-d"),
+        ] {
             db.save_model(&crate::types::Model {
                 id: format!("m-{}", pid),
                 provider_id: pid.to_string(),
@@ -698,7 +801,8 @@ mod tests {
                 id: format!("k-{}", pid),
                 provider_id: pid.to_string(),
                 name: format!("K-{}", pid),
-                key_hash: crate::crypto::encrypt(format!("sk-test-{}", pid).as_str(), &master_key).unwrap(),
+                key_hash: crate::crypto::encrypt(format!("sk-test-{}", pid).as_str(), &master_key)
+                    .unwrap(),
                 key_masked: "***x".to_string(),
                 key_plain: None,
                 status: "green".to_string(),
@@ -736,7 +840,8 @@ mod tests {
         // service key——空 allowed_models = 允许全部
         let raw_service_key = "xrl-test-combo-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
-        db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key", None).unwrap();
+        db.save_service_key("sk-combo", "组合测试", &sk_hash, "***key", None)
+            .unwrap();
         // 不写 failover_enabled setting：开关已强制常开（组合回退语义不变，
         // 普通 5xx 也自此默认换供应商）
         let config = Config {
@@ -750,7 +855,9 @@ mod tests {
             master_key,
             &std::env::temp_dir(),
         ));
-        assert!(state.failover_enabled.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(state
+            .failover_enabled
+            .load(std::sync::atomic::Ordering::Relaxed));
         let router = crate::api::build_router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -765,7 +872,12 @@ mod tests {
 
         let client = reqwest::Client::new();
         for _ in 0..50 {
-            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+            if client
+                .get(format!("http://{}/health", addr))
+                .send()
+                .await
+                .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -775,36 +887,62 @@ mod tests {
                 .post(format!("http://{}/v1/chat/completions", addr))
                 .header("x-api-key", raw_service_key)
                 .header("Content-Type", "application/json")
-                .body(format!(r#"{{"model":"{}","messages":[{{"role":"user","content":"hi"}}]}}"#, model))
+                .body(format!(
+                    r#"{{"model":"{}","messages":[{{"role":"user","content":"hi"}}]}}"#,
+                    model
+                ))
         };
 
         // 1. 组合 + 配额 400（供应商级）：pd 失败 → 换 pb → 内容来自 B
         let resp = send("c-quota").send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let text = resp.text().await.unwrap();
-        assert!(text.contains("hello from B"), "配额 400 应换成员到 B: {}", text);
+        assert!(
+            text.contains("hello from B"),
+            "配额 400 应换成员到 B: {}",
+            text
+        );
 
         // 2. 组合 + 500（供应商级）：pa 失败 → 换 pb（组合强制回退）
         let resp = send("c-fail").send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let text = resp.text().await.unwrap();
-        assert!(text.contains("hello from B"), "组合成员间应强制回退: {}", text);
+        assert!(
+            text.contains("hello from B"),
+            "组合成员间应强制回退: {}",
+            text
+        );
 
         // 3. 组合 + 普通 400（请求级）：立即透传，不换成员
         let resp = send("c-400").send().await.unwrap();
-        assert_eq!(resp.status(), 400, "普通 400 以真实状态码透传（非流式路径）");
+        assert_eq!(
+            resp.status(),
+            400,
+            "普通 400 以真实状态码透传（非流式路径）"
+        );
         let text = resp.text().await.unwrap();
-        assert!(text.contains("bad request from C"), "应透传 400 错误体: {}", text);
-        assert!(!text.contains("hello from B"), "普通 400 不得换成员: {}", text);
+        assert!(
+            text.contains("bad request from C"),
+            "应透传 400 错误体: {}",
+            text
+        );
+        assert!(
+            !text.contains("hello from B"),
+            "普通 400 不得换成员: {}",
+            text
+        );
 
         // 4. 白名单：授予组合名 → 放行；只授予成员名 → 403
-        db.update_service_key("sk-combo", None, Some(r#"["c-fail"]"#.into()), None, None).unwrap();
+        db.update_service_key("sk-combo", None, Some(r#"["c-fail"]"#.into()), None, None)
+            .unwrap();
         let resp = send("c-fail").send().await.unwrap();
         assert_eq!(resp.status(), 200, "白名单含组合名应放行");
-        db.update_service_key("sk-combo", None, Some(r#"["pa"]"#.into()), None, None).unwrap();
+        db.update_service_key("sk-combo", None, Some(r#"["pa"]"#.into()), None, None)
+            .unwrap();
         let resp = send("c-fail").send().await.unwrap();
         assert_eq!(resp.status(), 403, "白名单只含成员名时组合应 403");
-        db.update_service_key("sk-combo", None, Some(r#"[]"#.into()), None, None).unwrap();
+        db.update_service_key("sk-combo", None, Some(r#"[]"#.into()), None, None)
+            .unwrap();
 
         // 5. GET /v1/models 应包含 enabled 组合条目
         let resp = client
@@ -822,7 +960,12 @@ mod tests {
             .filter_map(|m| m["id"].as_str())
             .collect();
         for combo_name in ["c-fail", "c-400", "c-quota"] {
-            assert!(ids.contains(&combo_name), "模型列表应含组合 {}: {:?}", combo_name, ids);
+            assert!(
+                ids.contains(&combo_name),
+                "模型列表应含组合 {}: {:?}",
+                combo_name,
+                ids
+            );
         }
         let combo_entry = body["data"]
             .as_array()
@@ -832,7 +975,6 @@ mod tests {
             .unwrap();
         assert_eq!(combo_entry["owned_by"], "combo");
     }
-
 
     /// 双栈 listener 应同时接受 IPv4 与 IPv6 连接（v6only=false）。
     #[tokio::test]
@@ -847,7 +989,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         // IPv4 直连应成功（双栈 socket 接受 IPv4-mapped 连接）
-        let mut client4 = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut client4 = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
         // 纯 IPv6 回环直连也应成功
         let mut client6 = tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port))
             .await
@@ -883,8 +1027,8 @@ mod tests {
     /// 且 first_token_ms < latency_ms，保证前端的生成窗口分母为正。
     #[tokio::test]
     async fn test_first_token_ms_recorded_for_output_speed() {
-        use axum::response::IntoResponse;
         use axum::response::sse::{Event, KeepAlive, Sse};
+        use axum::response::IntoResponse;
         use axum::routing::post;
         use std::convert::Infallible;
         use std::time::Duration;
@@ -929,7 +1073,9 @@ mod tests {
         );
         let listener_u = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr_u = listener_u.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener_u, router_u).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener_u, router_u).await.unwrap();
+        });
 
         let db = Database::open_in_memory().unwrap();
         db.migrate().unwrap();
@@ -983,10 +1129,15 @@ mod tests {
         .unwrap();
         let raw_service_key = "xrl-test-speed-key";
         let sk_hash = crate::crypto::hash_service_key(raw_service_key).unwrap();
-        db.save_service_key("sk-speed", "速度测试", &sk_hash, "***peed", None).unwrap();
+        db.save_service_key("sk-speed", "速度测试", &sk_hash, "***peed", None)
+            .unwrap();
 
         let state = Arc::new(AppState::new(
-            Config { port: 0, host: "127.0.0.1".to_string(), ..Default::default() },
+            Config {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                ..Default::default()
+            },
             db.clone(),
             master_key,
             &std::env::temp_dir(),
@@ -1005,7 +1156,12 @@ mod tests {
 
         let client = reqwest::Client::new();
         for _ in 0..50 {
-            if client.get(format!("http://{}/health", addr)).send().await.is_ok() {
+            if client
+                .get(format!("http://{}/health", addr))
+                .send()
+                .await
+                .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1043,11 +1199,21 @@ mod tests {
 
         for row in &rows {
             let label = row["request_type"].to_string();
-            assert_eq!(row["success"], serde_json::json!(true), "{label}: 应为成功行");
-            assert_eq!(row["completion_tokens"], serde_json::json!(COMPLETION_TOKENS));
-            let ft = row["first_token_ms"]
-                .as_i64()
-                .unwrap_or_else(|| panic!("{label}: first_token_ms 不应为 null，实际 = {}", row["first_token_ms"]));
+            assert_eq!(
+                row["success"],
+                serde_json::json!(true),
+                "{label}: 应为成功行"
+            );
+            assert_eq!(
+                row["completion_tokens"],
+                serde_json::json!(COMPLETION_TOKENS)
+            );
+            let ft = row["first_token_ms"].as_i64().unwrap_or_else(|| {
+                panic!(
+                    "{label}: first_token_ms 不应为 null，实际 = {}",
+                    row["first_token_ms"]
+                )
+            });
             let latency = row["latency_ms"].as_i64().unwrap();
 
             // 核心：TTFT 落在「首字前那次 sleep」上，而不是 headers/message_start。
@@ -1073,7 +1239,10 @@ mod tests {
 
         // 管理 API 把新列透出给前端（LAN 页面同样能算速度）
         let resp = client
-            .get(format!("http://{}/api/stats/requests?page=1&page_size=10", addr))
+            .get(format!(
+                "http://{}/api/stats/requests?page=1&page_size=10",
+                addr
+            ))
             .send()
             .await
             .unwrap();

@@ -289,11 +289,26 @@ export interface AppSettings {
   theme: string;
   hue: number;
   locale: string;
+  /** 搜索后端：auto | bing | searxng | tavily | exa | brave */
+  search_backend: string;
+  search_searxng_url: string;
+  search_tavily_key_set: boolean;
+  search_exa_key_set: boolean;
+  search_brave_key_set: boolean;
+  /** auto 模式下实际参与融合的来源 */
+  search_engines: string[];
+}
+
+/** 可写设置项（密钥字段只写不读，空串表示清除）。 */
+export interface SettingsUpdate extends Partial<AppSettings> {
+  tavily_api_key?: string;
+  exa_api_key?: string;
+  brave_api_key?: string;
 }
 
 export const settingsApi = {
   get: () => request<AppSettings>('/api/settings'),
-  update: (data: { mcp_websearch?: boolean; mcp_webfetch?: boolean; mcp_notify?: boolean; audit_enabled?: boolean; session_inject?: string; theme?: string; hue?: number; locale?: string }) =>
+  update: (data: SettingsUpdate) =>
     request<{ status: string }>('/api/settings', { method: 'PUT', body: data }),
 };
 

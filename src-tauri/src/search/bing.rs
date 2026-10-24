@@ -20,17 +20,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, UPGRADE_INSECURE_REQUESTS, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, UPGRADE_INSECURE_REQUESTS, USER_AGENT,
+};
 use scraper::{Html, Selector};
-use serde::Serialize;
 use tokio::sync::Mutex;
+
+use super::{SearchParams, SearchResult};
 
 /// 单次 HTTP 搜索的超时（秒）。
 const SEARCH_TIMEOUT_SECS: u64 = 20;
-
-/// 解析结果上限。取 12 条给内容增强层（重排/摘要）留足候选，最终输出由
-/// `content::enrich_search_results` 按 rerank_score 裁剪到 10 条。
-const MAX_RESULTS: usize = 12;
 
 /// 搜索 HTTP 客户端：完整浏览器头 + cookie_store 复用 + 懒预热。
 ///
@@ -64,7 +63,10 @@ impl SearchHttp {
                 "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             ),
         );
-        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"));
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
         headers.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
         // Client Hints：真实 Chrome 会发送，Bing 据此识别浏览器会话
         headers.insert(
@@ -147,33 +149,46 @@ impl Clone for SearchHttp {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SearchResult {
-    pub title: String,
-    pub url: String,
-    pub snippet: String,
-}
-
-/// 构造 Bing 搜索 URL（保留旧 HTTP 版同款参数：q / adlt / mkt）。
-fn build_search_url(domain: &str, query: &str) -> url::Url {
-    url::Url::parse_with_params(
+/// 构造 Bing 搜索 URL：查询操作符（site: 过滤）+ count + 相对时间过滤。
+///
+/// `qft` 是 Bing 的「按时间筛选」参数（分钟阈值），属 best-effort——Bing 可能
+/// 忽略它，因此结果侧仍以日期元数据为准。
+fn build_search_url(domain: &str, params: &SearchParams) -> url::Url {
+    let query = super::build_engine_query(params);
+    let count = params.num_results.to_string();
+    let mut url = url::Url::parse_with_params(
         &format!("https://{}/search", domain),
-        &[("q", query), ("adlt", "off"), ("mkt", "zh-CN")],
+        &[
+            ("q", query.as_str()),
+            ("adlt", "off"),
+            ("mkt", "zh-CN"),
+            ("count", count.as_str()),
+        ],
     )
-    .expect("static URL with params cannot fail")
+    .expect("static URL with params cannot fail");
+    if let Some(freshness) = params.freshness {
+        url.query_pairs_mut()
+            .append_pair("qft", freshness.bing_qft());
+    }
+    url
 }
 
 /// 对一个域名执行 HTTP 搜索。
 async fn search_domain(
     search: &SearchHttp,
     domain: &str,
-    query: &str,
+    params: &SearchParams,
 ) -> anyhow::Result<Vec<SearchResult>> {
-    let url = build_search_url(domain, query);
+    let url = build_search_url(domain, params);
     let html = search.get(url).await?;
-    tracing::debug!(domain, query, html_len = html.len(), "bing: http html received");
+    tracing::debug!(
+        domain,
+        query = %params.query,
+        html_len = html.len(),
+        "bing: http html received"
+    );
 
-    Ok(parse_results(&html))
+    Ok(parse_results(&html, params.num_results))
 }
 
 /// Bing 结果链接解码：`https://www.bing.com/ck/a?u=a1<base64url>` → 真实 URL。
@@ -183,7 +198,9 @@ fn decode_ck_href(href: &str) -> String {
             if let Some(encoded) = u.strip_prefix("a1") {
                 // base64url without padding → 补 padding 后解码
                 let padded = format!("{}{}", encoded, "=".repeat((4 - encoded.len() % 4) % 4));
-                if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes()) {
+                if let Ok(decoded) =
+                    base64::engine::general_purpose::URL_SAFE.decode(padded.as_bytes())
+                {
                     if let Ok(s) = String::from_utf8(decoded) {
                         return s;
                     }
@@ -207,7 +224,7 @@ fn is_external_url(href: &str) -> bool {
 /// 输入既可以是完整 HTML 文档，也可以是 JS 回传的 `li.b_algo` 容器片段
 /// （`Html::parse_document` 对片段同样成立，`ol#b_results li.b_algo` 选择器命中
 /// 包含 ol 的片段；实际回传即片段集合）。
-fn parse_results(html: &str) -> Vec<SearchResult> {
+fn parse_results(html: &str, limit: usize) -> Vec<SearchResult> {
     let document = Html::parse_document(html);
     let algo_sel = Selector::parse("ol#b_results li.b_algo").unwrap();
     let link_sel = Selector::parse("h2 a").unwrap();
@@ -246,7 +263,7 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
             url,
             snippet,
         });
-        if results.len() >= MAX_RESULTS {
+        if results.len() >= limit {
             break;
         }
     }
@@ -255,12 +272,16 @@ fn parse_results(html: &str) -> Vec<SearchResult> {
 }
 
 /// 搜索入口：预热 cookie → www.bing.com 优先，空壳/失败/降级时 fallback cn.bing.com。
-pub async fn search(search: &SearchHttp, query: &str) -> anyhow::Result<Vec<SearchResult>> {
+pub async fn search(
+    search: &SearchHttp,
+    params: &SearchParams,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let query = params.query.as_str();
     // 0. 预热：首次搜索前 GET 主页建 cookie（复用会话，后续不再降级）
     search.ensure_prewarmed().await;
 
     // 1. www.bing.com（国际版，质量更高）
-    match search_domain(search, "www.bing.com", query).await {
+    match search_domain(search, "www.bing.com", params).await {
         Ok(results) if !results.is_empty() && !is_degraded_results(&results, query) => {
             tracing::info!(query = %query, results_count = results.len(), "bing: www http results");
             return Ok(results);
@@ -281,7 +302,7 @@ pub async fn search(search: &SearchHttp, query: &str) -> anyhow::Result<Vec<Sear
     // 但「张雪峰」单搜正常
     if let Some(simplified) = simplify_query(query) {
         tracing::info!(query = %query, simplified = %simplified, "bing: retrying with simplified query");
-        match search_domain(search, "www.bing.com", &simplified).await {
+        match search_domain(search, "www.bing.com", &params.with_query(&simplified)).await {
             Ok(results) if !results.is_empty() && !is_degraded_results(&results, query) => {
                 tracing::info!(query = %simplified, results_count = results.len(), "bing: www simplified results");
                 return Ok(results);
@@ -296,7 +317,7 @@ pub async fn search(search: &SearchHttp, query: &str) -> anyhow::Result<Vec<Sear
     }
 
     // 2. cn.bing.com 兜底
-    let results = search_domain(search, "cn.bing.com", query).await?;
+    let results = search_domain(search, "cn.bing.com", params).await?;
     tracing::info!(query = %query, results_count = results.len(), "bing: cn http results");
     Ok(results)
 }
@@ -351,11 +372,32 @@ mod tests {
 
     #[test]
     fn test_build_search_url() {
-        let u = build_search_url("www.bing.com", "张雪峰 2026");
+        let mut params = SearchParams::new("张雪峰 2026");
+        params.num_results = 8;
+        let u = build_search_url("www.bing.com", &params);
         assert_eq!(u.host_str(), Some("www.bing.com"));
         assert!(u.query_pairs().any(|(k, v)| k == "q" && v == "张雪峰 2026"));
         assert!(u.query_pairs().any(|(k, v)| k == "adlt" && v == "off"));
         assert!(u.query_pairs().any(|(k, v)| k == "mkt" && v == "zh-CN"));
+        assert!(u.query_pairs().any(|(k, v)| k == "count" && v == "8"));
+        assert!(!u.query_pairs().any(|(k, _)| k == "qft"));
+    }
+
+    #[test]
+    fn test_build_search_url_with_freshness_and_domains() {
+        let mut params = SearchParams::new("tokio");
+        params.freshness = Some(super::super::Freshness::Week);
+        params.include_domains = vec!["docs.rs".into()];
+        let u = build_search_url("www.bing.com", &params);
+        let q = u
+            .query_pairs()
+            .find(|(k, _)| k == "q")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        assert!(q.contains("site:docs.rs"), "q: {q}");
+        assert!(u
+            .query_pairs()
+            .any(|(k, v)| k == "qft" && v == "+filterui:age-lt10080"));
     }
 
     #[test]
@@ -364,7 +406,10 @@ mod tests {
         let href = "https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdlP3g9MQ&ntb=1";
         assert_eq!(decode_ck_href(href), "https://example.com/page?x=1");
         // 非 ck/a 链接原样返回
-        assert_eq!(decode_ck_href("https://example.com/direct"), "https://example.com/direct");
+        assert_eq!(
+            decode_ck_href("https://example.com/direct"),
+            "https://example.com/direct"
+        );
     }
 
     #[test]
@@ -394,7 +439,7 @@ mod tests {
         </ol>
         </body></html>
         "#;
-        let results = parse_results(html);
+        let results = parse_results(html, 8);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Test Title");
         assert_eq!(results[0].url, "https://example.com/page");
@@ -406,10 +451,10 @@ mod tests {
     #[test]
     fn test_parse_empty_html() {
         let html = "<html><body></body></html>";
-        assert!(parse_results(html).is_empty());
+        assert!(parse_results(html, 8).is_empty());
     }
 
-    /// 结果上限：20 条候选只保留 MAX_RESULTS（12）条，供内容增强层重排筛选
+    /// 结果上限：20 条候选只保留请求条数
     #[test]
     fn test_parse_results_limit() {
         let items: String = (0..20)
@@ -420,63 +465,122 @@ mod tests {
             })
             .collect();
         let html = format!(r#"<html><body><ol id="b_results">{items}</ol></body></html>"#);
-        let results = parse_results(&html);
-        assert_eq!(results.len(), MAX_RESULTS);
-        assert_eq!(
-            results.last().unwrap().title,
-            format!("Title {}", MAX_RESULTS - 1)
-        );
+        let results = parse_results(&html, 12);
+        assert_eq!(results.len(), 12);
+        assert_eq!(results.last().unwrap().title, "Title 11");
     }
 }
 
-    // ── 降级检测测试 ──
+// ── 降级检测测试 ──
 
-    /// 真实降级场景：热点人名+附加词 → 全是「张」字字典释义（标题高度雷同）
-    #[test]
-    fn test_is_degraded_dictionary_results() {
-        let results = vec![
-            SearchResult { title: "张（汉语汉字）_百度百科".into(), url: "https://baike.baidu.com/item/张".into(), snippet: "".into() },
-            SearchResult { title: "张姓（中国姓氏）_百度百科".into(), url: "https://baike.baidu.com/item/张姓".into(), snippet: "".into() },
-            SearchResult { title: "张的意思,张的解释,张的拼音,张的部首,张的笔顺-汉语国学".into(), url: "https://www.hanyuguoxue.com/zidian/zi-24352".into(), snippet: "".into() },
-            SearchResult { title: "《张》的拼音,张字的意思、组词、部首、笔画、笔顺 - 汉语查".into(), url: "https://www.hgcha.com/zidian/6721ca45.html".into(), snippet: "".into() },
-            SearchResult { title: "张-字典-意思-解释-拼音-注音-读音-部首-出处".into(), url: "https://www.shidianguji.com/character/张".into(), snippet: "".into() },
-        ];
-        assert!(is_degraded_results(&results, "张雪峰 高考志愿填报"), "字典释义页应判定为降级");
-    }
+/// 真实降级场景：热点人名+附加词 → 全是「张」字字典释义（标题高度雷同）
+#[test]
+fn test_is_degraded_dictionary_results() {
+    let results = vec![
+        SearchResult {
+            title: "张（汉语汉字）_百度百科".into(),
+            url: "https://baike.baidu.com/item/张".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "张姓（中国姓氏）_百度百科".into(),
+            url: "https://baike.baidu.com/item/张姓".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "张的意思,张的解释,张的拼音,张的部首,张的笔顺-汉语国学".into(),
+            url: "https://www.hanyuguoxue.com/zidian/zi-24352".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "《张》的拼音,张字的意思、组词、部首、笔画、笔顺 - 汉语查".into(),
+            url: "https://www.hgcha.com/zidian/6721ca45.html".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "张-字典-意思-解释-拼音-注音-读音-部首-出处".into(),
+            url: "https://www.shidianguji.com/character/张".into(),
+            snippet: "".into(),
+        },
+    ];
+    assert!(
+        is_degraded_results(&results, "张雪峰 高考志愿填报"),
+        "字典释义页应判定为降级"
+    );
+}
 
-    /// 正常结果：标题各不相同（真实新闻/百科混合）→ 不降级
-    #[test]
-    fn test_is_degraded_normal_results() {
-        let results = vec![
-            SearchResult { title: "张雪峰报志愿逻辑及核心观点（完整详细版） - 知乎".into(), url: "https://zhuanlan.zhihu.com".into(), snippet: "".into() },
-            SearchResult { title: "2025张雪峰最全高考志愿填报指南！！！ - 知乎".into(), url: "https://zhuanlan.zhihu.com".into(), snippet: "".into() },
-            SearchResult { title: "张雪峰：高考是全世界最公平的考试".into(), url: "https://www.163.com".into(), snippet: "".into() },
-            SearchResult { title: "峰学蔚来教育科技有限公司 - 企查查".into(), url: "https://www.qcc.com".into(), snippet: "".into() },
-        ];
-        assert!(!is_degraded_results(&results, "张雪峰 高考志愿填报"), "正常结果不应判定为降级");
-    }
+/// 正常结果：标题各不相同（真实新闻/百科混合）→ 不降级
+#[test]
+fn test_is_degraded_normal_results() {
+    let results = vec![
+        SearchResult {
+            title: "张雪峰报志愿逻辑及核心观点（完整详细版） - 知乎".into(),
+            url: "https://zhuanlan.zhihu.com".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "2025张雪峰最全高考志愿填报指南！！！ - 知乎".into(),
+            url: "https://zhuanlan.zhihu.com".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "张雪峰：高考是全世界最公平的考试".into(),
+            url: "https://www.163.com".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "峰学蔚来教育科技有限公司 - 企查查".into(),
+            url: "https://www.qcc.com".into(),
+            snippet: "".into(),
+        },
+    ];
+    assert!(
+        !is_degraded_results(&results, "张雪峰 高考志愿填报"),
+        "正常结果不应判定为降级"
+    );
+}
 
-    /// 少量结果（<3 条）不判定降级（可能是真没结果）
-    #[test]
-    fn test_is_degraded_few_results() {
-        let results = vec![
-            SearchResult { title: "张（汉语汉字）".into(), url: "https://baike.baidu.com".into(), snippet: "".into() },
-            SearchResult { title: "张姓".into(), url: "https://baike.baidu.com".into(), snippet: "".into() },
-        ];
-        assert!(!is_degraded_results(&results, "张雪峰 高考志愿填报"), "少于 3 条不判定降级");
-    }
+/// 少量结果（<3 条）不判定降级（可能是真没结果）
+#[test]
+fn test_is_degraded_few_results() {
+    let results = vec![
+        SearchResult {
+            title: "张（汉语汉字）".into(),
+            url: "https://baike.baidu.com".into(),
+            snippet: "".into(),
+        },
+        SearchResult {
+            title: "张姓".into(),
+            url: "https://baike.baidu.com".into(),
+            snippet: "".into(),
+        },
+    ];
+    assert!(
+        !is_degraded_results(&results, "张雪峰 高考志愿填报"),
+        "少于 3 条不判定降级"
+    );
+}
 
-    /// 简化查询：多词查询取第一个词
-    #[test]
-    fn test_simplify_query_multi_word() {
-        assert_eq!(simplify_query("张雪峰 高考志愿填报"), Some("张雪峰".to_string()));
-        assert_eq!(simplify_query("张雪峰 高考 志愿 填报"), Some("张雪峰".to_string()));
-        assert_eq!(simplify_query("今天北京天气"), None, "无空白不可简化");
-    }
+/// 简化查询：多词查询取第一个词
+#[test]
+fn test_simplify_query_multi_word() {
+    assert_eq!(
+        simplify_query("张雪峰 高考志愿填报"),
+        Some("张雪峰".to_string())
+    );
+    assert_eq!(
+        simplify_query("张雪峰 高考 志愿 填报"),
+        Some("张雪峰".to_string())
+    );
+    assert_eq!(simplify_query("今天北京天气"), None, "无空白不可简化");
+}
 
-    /// 简化查询：带引号
-    #[test]
-    fn test_simplify_query_quoted() {
-        assert_eq!(simplify_query("\"张雪峰\" 最新消息"), Some("张雪峰".to_string()));
-        assert_eq!(simplify_query("张雪峰"), None, "单词查询无需简化");
-    }
+/// 简化查询：带引号
+#[test]
+fn test_simplify_query_quoted() {
+    assert_eq!(
+        simplify_query("\"张雪峰\" 最新消息"),
+        Some("张雪峰".to_string())
+    );
+    assert_eq!(simplify_query("张雪峰"), None, "单词查询无需简化");
+}

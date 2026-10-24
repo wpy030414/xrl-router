@@ -3,7 +3,8 @@
 //! 提供三个工具，分别由设置开关控制（`tools/list` 按请求实时过滤，开关切换后
 //! 客户端重新连接即可看到最新列表）：
 //!
-//! - `web_search`（`mcp_websearch`）：本地 Bing 搜索，复用 `crate::search::bing::search`。
+//! - `web_search`（`mcp_websearch`）：多来源搜索（Bing 默认，可配 SearXNG/Tavily/Exa/Brave），
+//!   见 `crate::search`。
 //!   开关同时控制代理层剔除请求自带的搜索类工具（见 `api/proxy/stream.rs`），
 //!   防止上游官方搜索生效。
 //! - `web_fetch`（`mcp_webfetch`）：静态优先抓取（HTML/文本/JSON/XML/CSV/PDF），
@@ -82,7 +83,10 @@ pub(crate) async fn handle_mcp_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if crate::api::proxy::auth::verify_service_key(&state, key).await.is_none() {
+    if crate::api::proxy::auth::verify_service_key(&state, key)
+        .await
+        .is_none()
+    {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::CONTENT_TYPE, "application/json")],
@@ -115,10 +119,7 @@ mod tests {
             .uri("/mcp")
             .header(header::HOST, "127.0.0.1:19068")
             .header(header::CONTENT_TYPE, "application/json")
-            .header(
-                header::ACCEPT,
-                "application/json, text/event-stream",
-            );
+            .header(header::ACCEPT, "application/json, text/event-stream");
         for (k, v) in headers {
             builder = builder.header(*k, v.clone());
         }
@@ -133,7 +134,9 @@ mod tests {
             "tools/list 应返回 200，响应体: {text}"
         );
         // 传输层可能以 SSE（data: {...}）或纯 JSON 应答，统一取出 JSON 对象。
-        let start = text.find('{').unwrap_or_else(|| panic!("响应体无 JSON: {text}"));
+        let start = text
+            .find('{')
+            .unwrap_or_else(|| panic!("响应体无 JSON: {text}"));
         let end = text.rfind('}').unwrap();
         serde_json::from_str(&text[start..=end])
             .unwrap_or_else(|e| panic!("JSON 解析失败 {e}: {text}"))

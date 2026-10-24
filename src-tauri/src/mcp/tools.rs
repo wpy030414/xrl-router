@@ -139,20 +139,22 @@ fn filter_tools(websearch: bool, webfetch: bool, notify: bool) -> Vec<Tool> {
 fn web_search_tool() -> Tool {
     Tool::new(
         "web_search",
-        "Search the web for current information using local Bing search, then \
-         enrich each hit with an extractive summary, a rerank_score (0-3, where \
-         >=1.5 means relevant), publish date and site metadata. Prefer results \
-         with higher rerank_score; ignore those near 0. Pass ori_question in \
-         multi-turn conversations so ranking and summaries track the user's \
-         original intent. Use this when the question requires up-to-date facts, \
-         recent events, or information not in the training data.",
+        "Search the web using the gateway's configured sources (Bing by default; \
+         SearXNG, Tavily, Exa or Brave when configured). Multiple sources are \
+         merged and deduplicated. Each hit returns title, URL, publish date, site \
+         metadata, an advisory relevance score (0-3) and a passage excerpt around \
+         the best match. Use the excerpt to decide which pages are worth fetching \
+         with web_fetch. Pass ori_question in multi-turn conversations so ranking \
+         and excerpts track the user's original intent. Use this when the question \
+         requires up-to-date facts, recent events, or information outside your \
+         training data.",
         Arc::new(web_search_schema()),
     )
     .with_title("Web Search")
     .with_annotations(ToolAnnotations::new().read_only(true))
 }
 
-/// web_search 的 JSON Schema：`query`（required）+ `ori_question`（optional）。
+/// web_search 的 JSON Schema：`query`（required）+ 查询参数（optional）。
 fn web_search_schema() -> JsonObject {
     json!({
         "type": "object",
@@ -161,11 +163,34 @@ fn web_search_schema() -> JsonObject {
                 "type": "string",
                 "description": "The search query"
             },
+            "num_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Optional. Number of results to return (default 8)."
+            },
+            "freshness": {
+                "type": "string",
+                "enum": ["day", "week", "month", "year"],
+                "description": "Optional. Only return pages published within this window \
+                    (not supported by every source)."
+            },
+            "include_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional. Restrict results to these domains, \
+                    e.g. [\"docs.rs\", \"github.com\"]."
+            },
+            "exclude_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional. Exclude results from these domains."
+            },
             "ori_question": {
                 "type": "string",
                 "description": "Optional. The user's original question or intent that \
                     led to this search (multi-turn context). Improves relevance ranking \
-                    and summary extraction."
+                    and excerpt selection."
             }
         },
         "required": ["query"],
@@ -288,22 +313,62 @@ async fn run_web_search(args: &JsonObject) -> CallToolResponse {
         return tool_unavailable();
     };
 
-    info!(query = %query, ori = ?ori_question, "mcp: web_search executing");
-    match crate::search::bing::search(&state.search_http, &query).await {
-        Ok(results) if results.is_empty() => CallToolResult::success(vec![ContentBlock::text(
-            format!("No web search results found for: {query}"),
-        )])
-        .into(),
-        Ok(results) => {
-            let raw_count = results.len();
+    let params = crate::search::SearchParams {
+        query: query.clone(),
+        num_results: args
+            .get("num_results")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(8),
+        freshness: args
+            .get("freshness")
+            .and_then(|v| v.as_str())
+            .and_then(crate::search::Freshness::parse),
+        include_domains: string_array(args.get("include_domains")),
+        exclude_domains: string_array(args.get("exclude_domains")),
+    };
+    // 配置在 await 前克隆：RwLock guard 不能跨 await 持有（非 Send）
+    let config = state
+        .search_config
+        .read()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    let ctx = crate::search::SearchCtx {
+        config: &config,
+        bing: &state.search_http,
+        client: &state.http_client,
+    };
+
+    info!(
+        query = %query,
+        ori = ?ori_question,
+        backend = %config.backend,
+        "mcp: web_search executing"
+    );
+    match crate::search::search(&ctx, &params).await {
+        Ok(outcome) if outcome.results.is_empty() => {
+            CallToolResult::success(vec![ContentBlock::text(format!(
+                "No web search results found for: {query}"
+            ))])
+            .into()
+        }
+        Ok(outcome) => {
+            let raw_count = outcome.results.len();
+            let engines = outcome.engines.join(",");
             let enriched = crate::content::enrich_search_results(
                 &state.http_client,
-                results,
+                outcome.results,
                 &query,
                 ori_question.as_deref(),
             )
             .await;
-            info!(query = %query, raw = raw_count, results = enriched.len(), "mcp: web_search succeeded");
+            info!(
+                query = %query,
+                engines = %engines,
+                raw = raw_count,
+                results = enriched.len(),
+                "mcp: web_search succeeded"
+            );
             CallToolResult::success(vec![ContentBlock::text(format_search_text(&enriched))]).into()
         }
         Err(e) => {
@@ -314,6 +379,21 @@ async fn run_web_search(args: &JsonObject) -> CallToolResponse {
             .into()
         }
     }
+}
+
+/// JSON 数组参数 → Vec<String>（非数组/非字符串项静默忽略）。
+fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// web_fetch 执行：Tauri WebView 渲染后取正文（Markdown）。
@@ -485,7 +565,10 @@ mod tests {
         assert_eq!(schema["required"][0].as_str(), Some("query"));
         let props = schema["properties"].as_object().unwrap();
         assert!(props.contains_key("query"));
-        assert!(props.contains_key("ori_question"), "missing optional ori_question");
+        assert!(
+            props.contains_key("ori_question"),
+            "missing optional ori_question"
+        );
         assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
     }
 

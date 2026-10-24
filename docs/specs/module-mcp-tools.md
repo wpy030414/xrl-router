@@ -21,29 +21,52 @@
 
 ### `web_search`（受 `mcp_websearch` 开关控制）
 
-- **参数**：`{ "query": string, "ori_question"?: string }`（`query` required；`ori_question` optional——多轮对话的原始意图，注入后参与重排打分与摘要句子选取，对齐 DeepSeek Search API 同名字段语义）。
-- **实现**：`crate::search::bing::search`（AppState 的 `SearchHttp`：完整浏览器头 + cookie 复用 + 懒预热 + 双域名 fallback + 绕过代理直连，取 ≤12 条候选）→ `crate::content::enrich_search_results` 内容增强：
-  1. 黑名单过滤（文档倒卖/内容农场站）+ URL 去重 + 零成本预排（title/snippet 覆盖度 + 域名权威度）选出 top 5 抓取候选；
-  2. 并发静态抓取候选页（复用 `AppState.http_client` 统一工厂 + 浏览器 UA，单页 8s 超时、整体 10s 预算，deadline 下放到 join 循环保留部分结果）；
-  3. readability 提取正文 → 抽取式 `summary`（600~800 字，查询词覆盖引导）+ `rerank_score`（0~3，相关性 × 域名权威 × 新鲜度 × 内容质量）；
-  4. 按 `rerank_score` 稳定降序，裁剪到 ≤10 条输出。
-  - 慢页/失败页降级为仅 snippet；TTL 提取缓存（容量 32、15min）只服务重复搜索，**web_fetch 不读**（防静态降级内容污染 WebView 渲染路径）。
+- **参数**：
+  - `query`（required）
+  - `num_results`（optional，1~20，默认 8）
+  - `freshness`（optional，`day`/`week`/`month`/`year`；各引擎支持度不同，Bing 为 best-effort）
+  - `include_domains` / `exclude_domains`（optional，string[]）
+  - `ori_question`（optional，多轮对话原始意图，参与重排与摘录选取）
+- **引擎选择（`crate::search`）**：
+  - 后端：`auto`（默认）| `bing` | `searxng` | `tavily` | `exa` | `brave`；密钥与实例地址存
+    `settings` 表（API Key 走 AES-256-GCM，见 `search/config.rs`）。
+  - `auto`：把**已配置**的 SearXNG / Tavily / Exa / Brave **并发**执行（单引擎 15s、
+    整体 20s 预算），按 RRF（k=60）融合名次，再做 URL 归一化去重（去 fragment /
+    跟踪参数 / 尾斜杠）；全部失败时回退 Bing。未配置任何来源 → 仅 Bing。
+  - 显式指定后端时不做融合，直接返回该引擎排序。
+  - **查询缓存**：`(backend, query, num_results, freshness, domains)` 为键，TTL 15min、
+    容量 64，避免同一会话反复打同一查询。
+  - **域名过滤**：Tavily 用原生参数，其余引擎用 `site:` / `-site:` 操作符表达；
+    结果侧再统一过滤一次（子域匹配、排除优先）。
+- **内容增强**（`crate::content::enrich_search_results`，永不失败）：
+  1. 黑名单过滤（文档倒卖/内容农场站）+ URL 去重 + 零成本预排（title/snippet
+     覆盖度 + 域名权威度）选出 top 3 抓取候选；
+  2. 并发静态抓取候选页（复用 `AppState.http_client` 统一工厂 + 浏览器 UA，
+     单页 8s 超时、整体 10s 预算，deadline 下放到 join 循环保留部分结果）；
+  3. readability 提取正文 → **命中段摘录** `summary`（围绕最高分句的连续窗口，
+     ≤600 字，带上下文衔接）+ `rerank_score`（0~3，参考分，由相关性 × 域名权威 ×
+     新鲜度 × 内容质量组成）；
+  4. 按 `rerank_score` 稳定降序，裁剪到 ≤20 条输出。
+  - 慢页/失败页降级为仅 snippet；TTL 提取缓存（容量 32、15min）只服务重复搜索，
+    **web_fetch 不读**（防静态降级内容污染渲染路径）。
 - **输出格式**（`[n] title\nURL:\n元数据行\n摘要:` 多条拼接）：
 
 ```
 [1] 标题1
 URL: https://example.com/1
 日期: 2026-03-12 | 站点: Example Blog | 权威度: 3 | 相关度: 2.6/3
-摘要: 长摘要1（抓到正文时为 600~800 字抽取式摘要；未抓到时退化为 Bing snippet）
+摘要: 命中段摘录1（抓到正文时为围绕最佳句的连续窗口；未抓到时退化为 snippet）
 
 [2] 标题2
 URL: https://example.com/2
 日期: 未知 | 站点: 未知 | 权威度: 1 | 相关度: 0.3/3
-摘要: Bing snippet2
+摘要: Bing/引擎 snippet2
 ```
 
-  - `相关度 ≥1.5` 视为相关（工具描述中已告知 LLM 该约定）；缺失元数据显示「未知」。
-- **错误处理**：空结果 → "No web search results found for: {query}"；搜索失败 → "Web search unavailable: {error}. Do NOT make up information."（工具级错误，客户端可见）。enrichment 阶段永不失败——全部抓取失败时退化为纯 snippet 输出。
+  - `相关度` 是**参考分**，工具描述不再要求模型按阈值丢弃结果；缺失元数据显示「未知」。
+- **错误处理**：空结果 → "No web search results found for: {query}"；全部来源失败 →
+  "Web search unavailable: {各来源错误}. Do NOT make up information."（工具级错误）。
+  enrichment 阶段永不失败——全部抓取失败时退化为纯 snippet 输出。
 
 ### `web_fetch`（受 `mcp_webfetch` 开关控制）
 
@@ -128,6 +151,9 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
   - `rank.rs` — rerank_score 组合打分
   - `text.rs` — 分词（CJK bigram + Latin 分词）/分句/查询词覆盖度
   - `authority.rs` — 域名分级表 + 垃圾站黑名单
+- `src-tauri/src/search/` — 搜索层：`mod.rs`（引擎计划 / 并发 / RRF / 缓存）、
+  `bing.rs`（零配置默认后端）、`engines.rs`（SearXNG / Tavily / Exa / Brave）、
+  `config.rs`（settings 读写 + API Key 加密）。
 - `src-tauri/src/api/proxy/stream.rs` — `strip_search_tools` + 入口调用。
 - `src-tauri/src/api/router.rs` — `/mcp` 路由注册。
 - `src/views/SettingsView.tsx` — 三个开关 + MCP 接入信息卡（端点 + 注册命令 + 复制）。

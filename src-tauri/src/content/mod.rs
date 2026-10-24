@@ -32,7 +32,7 @@ pub(crate) use readability::{decode_body, extract, ExtractedPage};
 use text::QueryTerms;
 
 /// 并发抓取的结果页数量。
-const FETCH_TOP_N: usize = 5;
+const FETCH_TOP_N: usize = 3;
 /// 单页抓取超时（连接 + 读体，reqwest per-request）。
 const PER_PAGE_TIMEOUT: Duration = Duration::from_secs(8);
 /// enrichment 整体预算（超时即返回已得部分结果，残余任务 abort）。
@@ -40,7 +40,7 @@ const ENRICH_BUDGET: Duration = Duration::from_secs(10);
 /// 响应体字节上限（超出直接跳过；html5ever 容忍截断文档）。
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// 最终输出条数上限。
-const MAX_RESULTS_OUT: usize = 10;
+const MAX_RESULTS_OUT: usize = 20;
 /// 提取缓存容量（条）。
 const CACHE_CAPACITY: usize = 32;
 /// 提取缓存 TTL。
@@ -309,7 +309,7 @@ fn assemble_enriched(
                 } else {
                     p.title.clone()
                 };
-                let summary = summary::build_summary(&p.paragraphs, &title, &r.snippet, terms);
+                let summary = summary::build_excerpt(&p.paragraphs, &title, &r.snippet, terms);
                 (
                     title,
                     summary,
@@ -498,10 +498,10 @@ mod tests {
         assert!(out[0].rerank_score > 1.0, "score: {}", out[0].rerank_score);
     }
 
-    /// 输出上限 10 条。
+    /// 输出上限 20 条。
     #[test]
     fn test_assemble_truncates() {
-        let results: Vec<SearchResult> = (0..12)
+        let results: Vec<SearchResult> = (0..25)
             .map(|i| {
                 result(
                     &format!("标题{i}"),
@@ -512,7 +512,7 @@ mod tests {
             .collect();
         let terms = QueryTerms::build("标题", None);
         let out = assemble_enriched(&results, &terms, &HashMap::new(), chrono::Utc::now());
-        assert_eq!(out.len(), 10);
+        assert_eq!(out.len(), 20);
     }
 
     /// 预排候选：黑名单不进、URL 去重、覆盖度高者优先。
@@ -587,7 +587,8 @@ mod tests {
             .try_init();
 
         let search_http = crate::search::bing::SearchHttp::new();
-        let results = crate::search::bing::search(&search_http, "tokio JoinSet 用法")
+        let params = crate::search::SearchParams::new("tokio JoinSet 用法");
+        let results = crate::search::bing::search(&search_http, &params)
             .await
             .expect("bing search should succeed");
         assert!(!results.is_empty(), "bing returned no results");

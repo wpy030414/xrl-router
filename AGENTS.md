@@ -152,12 +152,12 @@ src-tauri/src/
 │   ├── handlers/              管理 API（providers/keys/models/stats/settings/data/install/plugin/fm）
 │   └── proxy/                 LLM 代理核心（handler/stream/forward/ir/auth/quota/route/failover）
 ├── mcp/                       MCP 工具服务器（/mcp 端点）
-├── content/                   内容增强层（readability 提取/抽取式摘要/启发式重排，服务 MCP web_search/web_fetch）
+├── content/                   内容增强层（readability 提取/命中段摘录/启发式重排，服务 MCP web_search/web_fetch）
 ├── db/                        SQLite 封装（schema + CRUD）
 ├── keys/pool/                 密钥池（轮询 + 健康 + 持久化）
 ├── plugin/                    插件系统（WebSocket 注册）
 ├── providers/                 Provider 适配器
-├── search/bing.rs             Bing 搜索
+├── search/                    搜索层（mod 引擎编排+RRF融合 / bing 默认后端 / engines JSON API / config 密钥）
 ├── wallpaper/                 桌面壁纸劫持（FM 像素艺术 → 桌面层）
 ├── local/                     本地模型管理（GGUF 导入 + llama-server 引擎）
 │    ├─ mod.rs                 LocalManager（导入/启动/停止/删除/自启动/崩溃重启）

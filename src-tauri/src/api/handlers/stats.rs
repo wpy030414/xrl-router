@@ -44,7 +44,13 @@ pub(crate) async fn get_stats_requests(
     let page_size = params.page_size.unwrap_or(10).clamp(1, 100);
     let (total, data) = state
         .database
-        .get_usage_log_page(page, page_size, params.from, params.to, params.service_key_id.as_deref())
+        .get_usage_log_page(
+            page,
+            page_size,
+            params.from,
+            params.to,
+            params.service_key_id.as_deref(),
+        )
         .unwrap_or_else(|_| (0, Vec::new()));
     Json(serde_json::json!({
         "total": total,
@@ -69,7 +75,13 @@ pub(crate) async fn get_stats(
     let tz_offset = params.tz_offset.unwrap_or(0);
     let data = state
         .database
-        .get_usage_by_day_and_key(from, to, bucket_seconds, tz_offset, params.service_key_id.as_deref())
+        .get_usage_by_day_and_key(
+            from,
+            to,
+            bucket_seconds,
+            tz_offset,
+            params.service_key_id.as_deref(),
+        )
         .unwrap_or_default();
     let model_usage = state
         .database
@@ -81,10 +93,31 @@ pub(crate) async fn get_stats(
 }
 
 pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let theme = state.database.get_setting("theme").ok().flatten().unwrap_or_else(|| "system".to_string());
-    let hue = state.database.get_setting("hue").ok().flatten().unwrap_or_else(|| "264".to_string());
-    let locale = state.database.get_setting("locale").ok().flatten().unwrap_or_else(|| "zh-CN".to_string());
+    let theme = state
+        .database
+        .get_setting("theme")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "system".to_string());
+    let hue = state
+        .database
+        .get_setting("hue")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "264".to_string());
+    let locale = state
+        .database
+        .get_setting("locale")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "zh-CN".to_string());
     let session_inject = state.session_inject.read().unwrap().clone();
+    let search = state
+        .search_config
+        .read()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    let search_engines = search.effective();
 
     Json(serde_json::json!({
         "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
@@ -95,6 +128,12 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
         "theme": theme,
         "hue": hue.parse::<i32>().unwrap_or(264),
         "locale": locale,
+        "search_backend": search.backend,
+        "search_searxng_url": search.searxng_url.unwrap_or_default(),
+        "search_tavily_key_set": search.tavily_key.is_some(),
+        "search_exa_key_set": search.exa_key.is_some(),
+        "search_brave_key_set": search.brave_key.is_some(),
+        "search_engines": search_engines,
     }))
 }
 
@@ -108,6 +147,11 @@ pub(crate) struct UpdateSettingsRequest {
     theme: Option<String>,
     hue: Option<i32>,
     locale: Option<String>,
+    search_backend: Option<String>,
+    search_searxng_url: Option<String>,
+    tavily_api_key: Option<String>,
+    exa_api_key: Option<String>,
+    brave_api_key: Option<String>,
 }
 
 pub(crate) async fn update_settings(
@@ -115,7 +159,9 @@ pub(crate) async fn update_settings(
     Json(req): Json<UpdateSettingsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     if let Some(v) = req.mcp_websearch {
-        state.mcp_websearch.store(v, std::sync::atomic::Ordering::Relaxed);
+        state
+            .mcp_websearch
+            .store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_websearch", val) {
             return Err((
@@ -125,7 +171,9 @@ pub(crate) async fn update_settings(
         }
     }
     if let Some(v) = req.mcp_webfetch {
-        state.mcp_webfetch.store(v, std::sync::atomic::Ordering::Relaxed);
+        state
+            .mcp_webfetch
+            .store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_webfetch", val) {
             return Err((
@@ -135,7 +183,9 @@ pub(crate) async fn update_settings(
         }
     }
     if let Some(v) = req.mcp_notify {
-        state.mcp_notify.store(v, std::sync::atomic::Ordering::Relaxed);
+        state
+            .mcp_notify
+            .store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_notify", val) {
             return Err((
@@ -145,7 +195,9 @@ pub(crate) async fn update_settings(
         }
     }
     if let Some(v) = req.audit_enabled {
-        state.audit_enabled.store(v, std::sync::atomic::Ordering::Relaxed);
+        state
+            .audit_enabled
+            .store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("audit_enabled", val) {
             return Err((
@@ -190,15 +242,94 @@ pub(crate) async fn update_settings(
             ));
         }
     }
+    // ── 搜索后端配置（后端名/实例地址/各类 API Key） ──
+    if let Some(ref backend) = req.search_backend {
+        let mut cfg = state.search_config.write().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "search config lock poisoned"})),
+            )
+        })?;
+        cfg.set_backend(backend).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
+        crate::search::persist_backend(&state.database, &cfg.backend).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
+    }
+    if let Some(ref url) = req.search_searxng_url {
+        let mut cfg = state.search_config.write().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "search config lock poisoned"})),
+            )
+        })?;
+        cfg.set_searxng_url(url);
+        let stored = cfg.searxng_url.clone().unwrap_or_default();
+        crate::search::persist_searxng_url(&state.database, &stored).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
+    }
+    for (value, engine) in [
+        (req.tavily_api_key.as_deref(), crate::search::Engine::Tavily),
+        (req.exa_api_key.as_deref(), crate::search::Engine::Exa),
+        (req.brave_api_key.as_deref(), crate::search::Engine::Brave),
+    ] {
+        let Some(value) = value else { continue };
+        let mut cfg = state.search_config.write().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "search config lock poisoned"})),
+            )
+        })?;
+        cfg.set_key(engine, value).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
+        crate::search::persist_key(&state.database, &state.master_key, engine, value).map_err(
+            |e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                )
+            },
+        )?;
+    }
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
 
 /// GET /api/ui-settings — 公开端点，返回 UI 设置（主题/令牌色/语言）。
 /// 供 LAN 浏览器 install 页面读取管理端配置，无需 loopback 限制。
 pub(crate) async fn get_ui_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let theme = state.database.get_setting("theme").ok().flatten().unwrap_or_else(|| "system".to_string());
-    let hue = state.database.get_setting("hue").ok().flatten().unwrap_or_else(|| "264".to_string());
-    let locale = state.database.get_setting("locale").ok().flatten().unwrap_or_else(|| "zh-CN".to_string());
+    let theme = state
+        .database
+        .get_setting("theme")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "system".to_string());
+    let hue = state
+        .database
+        .get_setting("hue")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "264".to_string());
+    let locale = state
+        .database
+        .get_setting("locale")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "zh-CN".to_string());
 
     Json(serde_json::json!({
         "theme": theme,

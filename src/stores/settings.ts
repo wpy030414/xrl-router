@@ -1,11 +1,11 @@
 import { create } from 'zustand';
-import { settingsApi, type AppSettings } from '@/lib/api';
+import { settingsApi, type AppSettings, type SettingsUpdate } from '@/lib/api';
 
 interface SettingsState {
   settings: AppSettings | null;
   loading: boolean;
   fetchSettings: () => Promise<void>;
-  updateSettings: (data: Partial<AppSettings>) => Promise<void>;
+  updateSettings: (data: SettingsUpdate) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
@@ -23,10 +23,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     }
   },
 
-  async updateSettings(data: Partial<AppSettings>) {
+  async updateSettings(data: SettingsUpdate) {
     await settingsApi.update(data);
-    set((state) => ({
-      settings: state.settings ? { ...state.settings, ...data } : null,
-    }));
+    // 服务端会归一化（密钥只回显「是否已配置」），重新拉取而不是本地合并
+    const settings = await settingsApi.get();
+    set({ settings });
   },
 }));
