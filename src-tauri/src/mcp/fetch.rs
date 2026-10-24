@@ -54,6 +54,10 @@ const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_JS_RETURN_CHARS: usize = 1_500_000;
 /// 同时存在的隐藏渲染窗口数。
 const RENDER_POOL_SIZE: usize = 2;
+/// 批量抓取的单次上限。
+const MAX_BATCH_URLS: usize = 8;
+/// 批量抓取的并发度。
+const BATCH_CONCURRENCY: usize = 3;
 /// 正文低于此字符数时，若页面像 SPA 则升级渲染。
 const SPA_TEXT_THRESHOLD: usize = 400;
 /// 提取质量低于此值时退回整页转换。
@@ -72,12 +76,27 @@ pub(crate) fn init(app: AppHandle) {
 
 // ── 对外入口 ──────────────────────────────────────────────────────────────
 
+/// 单次抓取选项。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FetchOptions {
+    pub start_index: usize,
+    pub max_chars: usize,
+    /// 本地抓取全部失败时，是否允许走 Jina Reader（第三方渲染）。
+    pub jina_fallback: bool,
+}
+
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self {
+            start_index: 0,
+            max_chars: DEFAULT_MAX_CHARS,
+            jina_fallback: false,
+        }
+    }
+}
+
 /// 抓取页面正文（Markdown），按 `start_index` / `max_chars` 分段返回。
-pub(super) async fn fetch_url(
-    url: &str,
-    start_index: usize,
-    max_chars: usize,
-) -> anyhow::Result<String> {
+pub(super) async fn fetch_url(url: &str, opts: &FetchOptions) -> anyhow::Result<String> {
     let target = normalize_url(url)?;
     crate::net_guard::ensure_public_url(&target)
         .await
@@ -90,12 +109,12 @@ pub(super) async fn fetch_url(
             page
         }
         None => {
-            let page = Arc::new(load_page(&target).await?);
+            let page = Arc::new(load_page(&target, opts.jina_fallback).await?);
             cache_put(&key, page.clone());
             page
         }
     };
-    Ok(frame_output(&page, start_index, max_chars))
+    Ok(frame_output(&page, opts.start_index, opts.max_chars))
 }
 
 /// URL 归一化：接受 `http`/`https`；无协议时补 `https://`。
@@ -125,6 +144,7 @@ fn normalize_url(input: &str) -> anyhow::Result<Url> {
 enum Source {
     Static,
     Rendered,
+    Jina,
 }
 
 impl Source {
@@ -132,6 +152,7 @@ impl Source {
         match self {
             Source::Static => "静态抓取",
             Source::Rendered => "WebView 渲染",
+            Source::Jina => "Jina Reader（第三方兜底）",
         }
     }
 }
@@ -148,7 +169,7 @@ struct Page {
 }
 
 /// 抓取一页：静态优先，必要时升级渲染。
-async fn load_page(url: &Url) -> anyhow::Result<Page> {
+async fn load_page(url: &Url, jina_fallback: bool) -> anyhow::Result<Page> {
     let static_result = static_fetch(url).await;
     let needs_render = match &static_result {
         Ok((_, needs_render)) => {
@@ -180,12 +201,104 @@ async fn load_page(url: &Url) -> anyhow::Result<Page> {
                 );
                 Ok(page)
             }
-            Err(e) => Err(anyhow!(
-                "抓取失败：{}；WebView 渲染失败：{render_err}",
-                e.message
-            )),
+            Err(e) => {
+                if jina_fallback {
+                    tracing::info!(url = %url, "mcp: local fetch failed, trying Jina Reader");
+                    if let Ok(page) = jina_reader(url).await {
+                        return Ok(page);
+                    }
+                }
+                Err(anyhow!(
+                    "抓取失败：{}；WebView 渲染失败：{render_err}",
+                    e.message
+                ))
+            }
         },
     }
+}
+
+/// Jina Reader 兜底：`https://r.jina.ai/<url>` 返回 LLM 友好 Markdown。
+///
+/// 仅在用户显式开启且本地静态 + WebView 都失败时调用；无 API Key 时限流约 20 RPM，
+/// 因此不做并发扇出（批量抓取的并发上限由调用方控制）。
+async fn jina_reader(url: &Url) -> anyhow::Result<Page> {
+    let target = format!("https://r.jina.ai/{}", url.as_str());
+    let response = static_client()
+        .get(&target)
+        .header(ACCEPT, "text/plain")
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .context("Jina Reader 请求失败")?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Jina Reader HTTP {}", status.as_u16());
+    }
+    if text.trim().is_empty() {
+        bail!("Jina Reader 返回空内容");
+    }
+    Ok(Page {
+        title: None,
+        final_url: url.to_string(),
+        source: Source::Jina,
+        note: Some("本地抓取失败，内容由 Jina Reader（第三方）渲染".to_string()),
+        markdown: text,
+    })
+}
+
+/// 批量 URL 预处理：trim、去空、保序去重、截断到上限（纯函数，便于单测）。
+fn dedupe_batch_urls(urls: &[String]) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for url in urls {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() && !unique.iter().any(|u| u == trimmed) {
+            unique.push(trimmed.to_string());
+        }
+    }
+    unique.truncate(MAX_BATCH_URLS);
+    unique
+}
+
+/// 批量抓取：去重、截断到 8 条、并发 3，单条失败不影响其他条目。
+pub(super) async fn fetch_many(urls: &[String], opts: &FetchOptions) -> String {
+    let unique = dedupe_batch_urls(urls);
+    if unique.is_empty() {
+        return "Error: no urls provided".to_string();
+    }
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(BATCH_CONCURRENCY));
+    let futures = unique.iter().map(|url| {
+        let url = url.clone();
+        let semaphore = semaphore.clone();
+        let opts = *opts;
+        async move {
+            let _permit = semaphore.acquire().await;
+            let result = fetch_url(&url, &opts).await;
+            (url, result)
+        }
+    });
+    let results = futures::future::join_all(futures).await;
+    results
+        .into_iter()
+        .map(|(url, result)| match result {
+            Ok(text) => format!(
+                "===== {url} =====
+{text}"
+            ),
+            Err(e) => format!(
+                "===== {url} =====
+抓取失败：{e}"
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+
+---
+
+",
+        )
 }
 
 // ── 静态抓取 ──────────────────────────────────────────────────────────────
@@ -937,6 +1050,30 @@ mod tests {
     }
 
     #[test]
+    fn test_dedupe_batch_urls() {
+        let urls = vec![
+            " https://a.com ".to_string(),
+            "".to_string(),
+            "https://a.com".to_string(),
+            "https://b.com".to_string(),
+        ];
+        assert_eq!(
+            dedupe_batch_urls(&urls),
+            vec!["https://a.com".to_string(), "https://b.com".to_string()]
+        );
+        let many: Vec<String> = (0..12).map(|i| format!("https://x.com/{i}")).collect();
+        assert_eq!(dedupe_batch_urls(&many).len(), MAX_BATCH_URLS);
+    }
+
+    #[test]
+    fn test_fetch_options_default() {
+        let opts = FetchOptions::default();
+        assert_eq!(opts.start_index, 0);
+        assert_eq!(opts.max_chars, DEFAULT_MAX_CHARS);
+        assert!(!opts.jina_fallback);
+    }
+
+    #[test]
     fn test_frame_output_full() {
         let p = page(Some("标题"), "正文内容");
         let out = frame_output(&p, 0, DEFAULT_MAX_CHARS);
@@ -981,7 +1118,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要真实网络访问 example.com"]
     async fn e2e_static_fetch_real_network() {
-        let out = fetch_url("https://example.com", 0, DEFAULT_MAX_CHARS)
+        let opts = FetchOptions::default();
+        let out = fetch_url("https://example.com", &opts)
             .await
             .expect("static fetch should succeed");
         assert!(out.contains("> 抓取方式: 静态抓取"), "output: {out}");
@@ -989,21 +1127,32 @@ mod tests {
         assert!(out.contains("> URL: https://example.com/"), "output: {out}");
 
         // 缓存命中：第二次调用不应改变内容
-        let again = fetch_url("https://example.com", 0, DEFAULT_MAX_CHARS)
+        let again = fetch_url("https://example.com", &opts)
             .await
             .expect("cached fetch should succeed");
         assert_eq!(out, again);
 
         // 分段读取：从中间开始，头部标注区间
-        let tail = fetch_url("https://example.com", 100, 1000)
+        let slice_opts = FetchOptions {
+            start_index: 100,
+            max_chars: 1000,
+            ..opts
+        };
+        let tail = fetch_url("https://example.com", &slice_opts)
             .await
             .expect("sliced fetch should succeed");
         assert!(tail.contains("本次返回 100–"), "output: {tail}");
 
         // SSRF：本机管理端点必须被拒绝
-        let err = fetch_url("http://127.0.0.1:19068/api/settings", 0, 1000)
-            .await
-            .unwrap_err();
+        let err = fetch_url(
+            "http://127.0.0.1:19068/api/settings",
+            &FetchOptions {
+                max_chars: 1000,
+                ..opts
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("不允许抓取"), "error: {err}");
     }
 

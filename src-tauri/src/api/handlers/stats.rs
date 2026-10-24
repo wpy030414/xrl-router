@@ -123,6 +123,9 @@ pub(crate) async fn get_settings(State(state): State<Arc<AppState>>) -> impl Int
         "mcp_websearch": state.mcp_websearch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_webfetch": state.mcp_webfetch.load(std::sync::atomic::Ordering::Relaxed),
         "mcp_notify": state.mcp_notify.load(std::sync::atomic::Ordering::Relaxed),
+        "webfetch_jina_fallback": state
+            .webfetch_jina_fallback
+            .load(std::sync::atomic::Ordering::Relaxed),
         "audit_enabled": state.audit_enabled.load(std::sync::atomic::Ordering::Relaxed),
         "session_inject": session_inject,
         "theme": theme,
@@ -142,6 +145,7 @@ pub(crate) struct UpdateSettingsRequest {
     mcp_websearch: Option<bool>,
     mcp_webfetch: Option<bool>,
     mcp_notify: Option<bool>,
+    webfetch_jina_fallback: Option<bool>,
     audit_enabled: Option<bool>,
     session_inject: Option<String>,
     theme: Option<String>,
@@ -188,6 +192,18 @@ pub(crate) async fn update_settings(
             .store(v, std::sync::atomic::Ordering::Relaxed);
         let val = if v { "true" } else { "false" };
         if let Err(e) = state.database.set_setting("mcp_notify", val) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ));
+        }
+    }
+    if let Some(v) = req.webfetch_jina_fallback {
+        state
+            .webfetch_jina_fallback
+            .store(v, std::sync::atomic::Ordering::Relaxed);
+        let val = if v { "true" } else { "false" };
+        if let Err(e) = state.database.set_setting("webfetch_jina_fallback", val) {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),

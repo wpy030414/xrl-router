@@ -422,7 +422,7 @@ xrl-router-plugin-wukong (外部进程)
 | 工具 | 功能 | 开关 |
 |------|------|------|
 | `web_search` | 多来源搜索（Bing 默认；SearXNG/Tavily/Exa/Brave 可选，auto 并发 + RRF 融合 + 15min 查询缓存）+ 内容增强（并发抓正文生成命中段摘录、rerank_score 0~3 参考分、日期/站点/权威度元数据；`num_results`/`freshness`/域名过滤/`ori_question`） | `mcp_websearch` |
-| `web_fetch` | 静态优先抓取（HTML/文本/JSON/XML/CSV/PDF）→ 正文提取转 Markdown；正文过薄或反爬时升级内置 WebView 渲染；15min 内容缓存；`start_index`/`max_chars` 分段读取 | `mcp_webfetch` |
+| `web_fetch` | 静态优先抓取（HTML/文本/JSON/XML/CSV/PDF）→ 正文提取转 Markdown；正文过薄或反爬时升级内置 WebView 渲染；15min 内容缓存；`urls` 批量（≤8，并发 3）；`start_index`/`max_chars` 分段读取；可选 Jina Reader 第三方兜底 | `mcp_webfetch` |
 | `notify` | 发送系统桌面通知 | `mcp_notify` |
 
 **鉴权**：与 `/v1/*` 代理一致，`Authorization: Bearer <service-key>`（Argon2 校验）。

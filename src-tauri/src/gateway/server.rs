@@ -32,6 +32,8 @@ pub struct AppState {
     pub mcp_webfetch: Arc<std::sync::atomic::AtomicBool>,
     /// MCP Notify 开关：开启 = /mcp 提供 notify 工具（发送系统桌面通知）。
     pub mcp_notify: Arc<std::sync::atomic::AtomicBool>,
+    /// WebFetch 第三方兜底：本地静态 + WebView 都失败时走 Jina Reader。
+    pub webfetch_jina_fallback: Arc<std::sync::atomic::AtomicBool>,
     /// 故障转移开关：同一模型多 provider 时，主 provider 失败自动切换下一个。
     /// 恒为 true——同名模型多供应商自此成为默认路由语义（别名级授权 +
     /// 模型行级启停已能表达供应商粒度的排除），不再提供关闭入口。
@@ -102,6 +104,14 @@ impl AppState {
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ));
+        let webfetch_jina_fallback = Arc::new(std::sync::atomic::AtomicBool::new(
+            database
+                .get_setting("webfetch_jina_fallback")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(false),
+        ));
         // failover 强制常开：历史上的 failover_enabled setting 不再读取
         // （存量值留在 settings 表中无害；数据导出仍自包含）。
         let failover_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -163,6 +173,7 @@ impl AppState {
             mcp_websearch,
             mcp_webfetch,
             mcp_notify,
+            webfetch_jina_fallback,
             failover_enabled,
             audit_enabled,
             session_inject,

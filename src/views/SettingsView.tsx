@@ -619,6 +619,20 @@ export function SettingsView() {
               />
             </div>
 
+            {/* WebFetch 第三方兜底 */}
+            {settings.mcp_webfetch && (
+              <div className="ml-7 flex items-center justify-between rounded-md border bg-muted/30 p-3">
+                <div>
+                  <p className="text-sm font-medium">{t('settings.webfetch_jina.title')}</p>
+                  <p className="text-xs text-muted-foreground">{t('settings.webfetch_jina.desc')}</p>
+                </div>
+                <Switch
+                  checked={settings.webfetch_jina_fallback}
+                  onCheckedChange={(v) => handleSettingToggle('webfetch_jina_fallback', v)}
+                />
+              </div>
+            )}
+
             {/* Notify */}
             <div className="flex items-center justify-between py-3 border-b">
               <div className="flex items-center gap-2">

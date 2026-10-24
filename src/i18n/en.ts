@@ -87,6 +87,9 @@ export default {
   'settings.mcp_webfetch.on': 'Enabled',
   'settings.mcp_webfetch.off': 'Disabled',
 
+  'settings.webfetch_jina.title': 'Jina Reader fallback',
+  'settings.webfetch_jina.desc': 'When both static fetch and local rendering fail, fall back to Jina Reader (third-party); keyless rate limit is about 20 requests/min',
+
   'settings.mcp_info.title': 'MCP Connection Info',
   'settings.mcp_info.desc': 'Register the local MCP endpoint in your client so the model can call the tools above. Auth uses a Service Key (Bearer)',
   'settings.mcp_info.endpoint': 'Endpoint',

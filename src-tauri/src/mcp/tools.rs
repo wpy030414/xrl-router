@@ -215,14 +215,23 @@ fn web_fetch_tool() -> Tool {
     .with_annotations(ToolAnnotations::new().read_only(true).open_world(true))
 }
 
-/// web_fetch 的 JSON Schema：`url`（required）+ 分段读取参数（optional）。
+/// web_fetch 的 JSON Schema：单个 URL 或批量 URL（二选一）+ 分段参数。
 fn web_fetch_schema() -> JsonObject {
     json!({
         "type": "object",
         "properties": {
             "url": {
                 "type": "string",
-                "description": "The URL of the page to fetch (http or https)"
+                "description": "The URL of the page to fetch (http or https). \
+                    Provide either url or urls."
+            },
+            "urls": {
+                "type": "array",
+                "items": { "type": "string" },
+                "maxItems": 8,
+                "description": "Optional. Fetch several pages in one call (up to 8, fetched \
+                    concurrently). Per-URL failures are reported inline and do not abort \
+                    the rest."
             },
             "start_index": {
                 "type": "integer",
@@ -234,10 +243,11 @@ fn web_fetch_schema() -> JsonObject {
                 "type": "integer",
                 "minimum": 1000,
                 "maximum": 200000,
-                "description": "Optional. Maximum characters to return in this call (default 60000)."
+                "description": "Optional. Maximum characters to return per page in this call \
+                    (default 60000)."
             }
         },
-        "required": ["url"],
+        "required": [],
         "additionalProperties": false
     })
     .as_object()
@@ -398,34 +408,46 @@ fn string_array(value: Option<&serde_json::Value>) -> Vec<String> {
 
 /// web_fetch 执行：Tauri WebView 渲染后取正文（Markdown）。
 async fn run_web_fetch(args: &JsonObject) -> CallToolResponse {
-    let url = match args
+    let url = args
         .get("url")
         .and_then(|v| v.as_str())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-    {
-        Some(u) => u.to_string(),
-        None => {
-            return CallToolResult::error(vec![ContentBlock::text(
-                "Error: missing required argument `url`".to_string(),
-            )])
-            .into()
-        }
+        .map(str::to_string);
+    let urls = string_array(args.get("urls"));
+    if url.is_none() && urls.is_empty() {
+        return CallToolResult::error(vec![ContentBlock::text(
+            "Error: provide either `url` or `urls`".to_string(),
+        )])
+        .into();
+    }
+    let Some(state) = app_state() else {
+        return tool_unavailable();
     };
 
-    // 分段参数宽松解析：负数/非整数视为未提供（schema 已声明 minimum）
-    let start_index = args
-        .get("start_index")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(0);
-    let max_chars = args
-        .get("max_chars")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(super::fetch::DEFAULT_MAX_CHARS);
+    let opts = super::fetch::FetchOptions {
+        // 分段参数宽松解析：负数/非整数视为未提供（schema 已声明 minimum）
+        start_index: args
+            .get("start_index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0),
+        max_chars: args
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(super::fetch::DEFAULT_MAX_CHARS),
+        jina_fallback: state
+            .webfetch_jina_fallback
+            .load(std::sync::atomic::Ordering::Relaxed),
+    };
 
-    match super::fetch::fetch_url(&url, start_index, max_chars).await {
+    if !urls.is_empty() {
+        let text = super::fetch::fetch_many(&urls, &opts).await;
+        return CallToolResult::success(vec![ContentBlock::text(text)]).into();
+    }
+    let url = url.expect("url present when urls empty");
+    match super::fetch::fetch_url(&url, &opts).await {
         Ok(markdown) => CallToolResult::success(vec![ContentBlock::text(markdown)]).into(),
         Err(e) => {
             tracing::warn!(url = %url, error = %e, "mcp: web_fetch failed");
@@ -549,12 +571,29 @@ mod tests {
 
     #[test]
     fn test_tool_schemas_required_fields() {
-        for t in [web_search_tool(), web_fetch_tool(), notify_tool()] {
-            let schema = &t.input_schema;
-            assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
-            let required = schema["required"].as_array().unwrap();
-            assert_eq!(required.len(), 1);
-        }
+        // web_fetch 的 url / urls 二选一，required 为空，由运行时校验
+        assert_eq!(
+            web_search_tool().input_schema["required"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            notify_tool().input_schema["required"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let fetch = web_fetch_tool().input_schema;
+        assert_eq!(
+            fetch
+                .get("required")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
     }
 
     #[test]
@@ -575,10 +614,9 @@ mod tests {
     #[test]
     fn test_web_fetch_schema_has_pagination_params() {
         let schema = web_fetch_tool().input_schema;
-        // 仅 url 必填；start_index / max_chars 可选
-        assert_eq!(schema["required"][0].as_str(), Some("url"));
         let props = schema["properties"].as_object().unwrap();
         assert!(props.contains_key("url"));
+        assert!(props.contains_key("urls"));
         assert!(props.contains_key("start_index"));
         assert!(props.contains_key("max_chars"));
         assert_eq!(schema["additionalProperties"].as_bool(), Some(false));

@@ -86,7 +86,7 @@
 
 | ID | 功能 | 价值 |
 |----|------|------|
-| F-21 | 本地 MCP 工具服务器 | 提供 web_search / web_fetch / notify 工具；搜索支持 Bing/SearXNG/Tavily/Exa/Brave 多来源融合、命中段摘录、0~3 参考分与垃圾站过滤；抓取静态优先、按需渲染，输出干净 Markdown 并支持分段续读 |
+| F-21 | 本地 MCP 工具服务器 | 提供 web_search / web_fetch / notify 工具；搜索支持 Bing/SearXNG/Tavily/Exa/Brave 多来源融合、命中段摘录、0~3 参考分与垃圾站过滤；抓取静态优先、按需渲染，输出干净 Markdown，支持批量、分段续读与可选 Jina Reader 兜底 |
 | F-22 | 模型同步 | 从上游拉取可用模型列表 |
 | F-23 | 系统托盘 | 关闭窗口后继续运行 |
 | F-24 | 插件系统 | 扩展支持非标 API |

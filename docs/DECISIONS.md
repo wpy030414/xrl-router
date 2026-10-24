@@ -1210,3 +1210,50 @@ Tavily 清洗片段、Open WebUI 的 search engine / web loader 两层抽象）�
 - `src-tauri/src/api/handlers/stats.rs`（settings 读写）
 - `src/views/SettingsView.tsx` + `src/i18n/{zh-CN,en}.ts`
 - `docs/specs/module-mcp-tools.md`
+
+---
+
+## ADR-058：web_fetch 批量抓取与 Jina Reader 兜底
+
+**日期**: 2026-10-24
+**状态**: 已采纳
+
+### 背景
+
+ADR-056 之后，单页抓取已经「静态优先 + 按需渲染 + 缓存 + 分段」。实际使用里还剩
+两个高频痛点：
+
+1. 模型常常需要同时读 3~8 个结果页。逐个调用 `web_fetch` 会串行等待（渲染池只有
+   2 个窗口），一次调研动辄几十秒；
+2. 知乎、部分公众号与 Cloudflare 站点对本地出口直接 403，静态与 WebView 都拿不到
+   正文，只能空手而归。
+
+### 决策
+
+1. **批量参数**：`web_fetch` 新增 `urls: string[]`（与 `url` 二选一，运行时校验）。
+   预处理做 trim/去空/保序去重，上限 8 条；信号量并发 3 抓取；结果按输入顺序以
+   `===== {url} =====` 分节输出，单条失败只在所属分节报错。`start_index` /
+   `max_chars` 按单页语义作用于每一条。
+2. **Jina Reader 兜底**：新增设置 `webfetch_jina_fallback`（默认关）。当且仅当本地
+   静态与 WebView 渲染**都失败**时，GET `https://r.jina.ai/<url>` 取 Markdown；输出
+   标注「Jina Reader（第三方）」，方便模型判断可信度。
+   - 走统一 HTTP 工厂（继承系统代理）；30s 超时；无 Key 时限流约 20 RPM，因此批量
+     并发上限保持在 3。
+   - 不引入 Jina API Key 配置：免费额度足够个人使用，避免又多一处密钥管理面。
+3. **缓存**：批量与单页共用同一份内容缓存（按 URL），Jina 结果同样入缓存（TTL 15min）。
+
+### 代价
+
+- 批量会放大对外请求量（最多 8 条 × 内部渲染/兜底）；已用并发 3 与缓存约束。
+- Jina Reader 是第三方服务，页面内容会经过其服务器；默认关闭，由用户显式开启并
+  在输出中标注来源。
+- `required: []` 让 schema 无法在协议层强制「url 或 urls」，只能运行时校验；换来
+  的是同一工具支持两种调用形态，避免再多一个工具名。
+
+### 关键文件
+
+- `src-tauri/src/mcp/fetch.rs`（`FetchOptions` / `fetch_many` / `jina_reader`）
+- `src-tauri/src/mcp/tools.rs`（schema + 参数解析 + 开关读取）
+- `src-tauri/src/gateway/server.rs`、`src-tauri/src/api/handlers/stats.rs`（开关持久化）
+- `src/views/SettingsView.tsx` + `src/i18n/*`
+- `docs/specs/module-mcp-tools.md`

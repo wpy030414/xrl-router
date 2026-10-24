@@ -70,8 +70,9 @@ URL: https://example.com/2
 
 ### `web_fetch`（受 `mcp_webfetch` 开关控制）
 
-- **参数**：`{ "url": string, "start_index"?: integer, "max_chars"?: integer }`
-  - `url` required；`start_index` 默认 0（按字符计）；`max_chars` 默认 60000，clamp 到 `[1000, 200000]`。
+- **参数**：`{ "url"?: string, "urls"?: string[], "start_index"?: integer, "max_chars"?: integer }`
+  - `url` 与 `urls` **二选一**（required 为空，运行时校验）；`urls` 最多 8 条，去重后并发 3 抓取。
+  - `start_index` 默认 0（按字符计）；`max_chars` 默认 60000，clamp 到 `[1000, 200000]`（按单页计）。
 - **抓取链**（`mcp/fetch.rs::fetch_url`）——**静态优先，按需渲染**：
   1. `normalize_url`（无协议补 `https://`，仅接受 http/https）→ **SSRF 守卫**
      （`crate::net_guard::ensure_public_url`：字面量 + DNS 解析后双重检查，拒绝
@@ -96,7 +97,11 @@ URL: https://example.com/2
      `{ href, html }`（JS 侧截断 ~1.5MB）→ `content::extract` + `htmd`。
      `on_navigation` 对每次导航（含 3xx）做内网闸。
   6. **降级链**：渲染失败但静态成功 → 用静态内容并在头部注明「可能不含 JS 渲染
-     结果」；两者都失败 → 错误文本同时包含两侧原因。
+     结果」；两者都失败且用户开启 `webfetch_jina_fallback` → 走 **Jina Reader**
+     （`https://r.jina.ai/<url>`，第三方渲染，输出标注来源），否则错误文本同时
+     包含两侧原因。
+  7. **批量**：`urls` 去重后最多 8 条、并发 3（信号量），按输入顺序拼接为
+     `===== {url} =====` 分节，单条失败在所属分节内报错，不影响其他条目。
 - **输出框架**：`# {title}`（有标题时）+ 元数据头（`URL` / `抓取方式` /
   `正文: {total} 字符；本次返回 {start}–{end}`）+ 指定区间正文。截断时尾部附
   「剩余 N 字符，可设置 `start_index={end}` 继续读取」；`start_index` 越界时明确
@@ -124,6 +129,7 @@ URL: https://example.com/2
 | `mcp_websearch` | `false`（V16 迁移自 `websearch_hijack`） | ON：`/mcp` 提供 `web_search` + **代理剔除请求自带的搜索类工具**；OFF：不碰工具定义 |
 | `mcp_webfetch` | `false` | ON：`/mcp` 提供 `web_fetch`；OFF：不提供 |
 | `mcp_notify` | `false` | ON：`/mcp` 提供 `notify`（系统桌面通知）；OFF：不提供 |
+| `webfetch_jina_fallback` | `false` | ON：web_fetch 本地静态 + 渲染都失败时走 Jina Reader（第三方）；OFF：只报错 |
 
 持久化：`settings` 表（`mcp_websearch` / `mcp_webfetch`），AppState 原子量运行时读写，`/api/settings` GET/PUT。
 

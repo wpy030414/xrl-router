@@ -284,6 +284,7 @@ export interface AppSettings {
   mcp_websearch: boolean;
   mcp_webfetch: boolean;
   mcp_notify: boolean;
+  webfetch_jina_fallback: boolean;
   audit_enabled: boolean;
   session_inject: string;
   theme: string;

@@ -87,6 +87,9 @@ export default {
   'settings.mcp_webfetch.on': '已开启',
   'settings.mcp_webfetch.off': '已关闭',
 
+  'settings.webfetch_jina.title': 'Jina Reader 兜底',
+  'settings.webfetch_jina.desc': '本地静态抓取与浏览器渲染都失败时，改用 Jina Reader（第三方服务）渲染；无 Key 时限流约 20 次/分钟',
+
   'settings.mcp_info.title': 'MCP 接入信息',
   'settings.mcp_info.desc': '在客户端注册本地 MCP 端点后，模型即可调用下述工具。鉴权使用 Service Key（Bearer）',
   'settings.mcp_info.endpoint': '端点',
