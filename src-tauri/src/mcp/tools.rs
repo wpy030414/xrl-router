@@ -179,16 +179,45 @@ fn web_search_schema() -> JsonObject {
 fn web_fetch_tool() -> Tool {
     Tool::new(
         "web_fetch",
-        "Fetch a web page and return its content as Markdown. The page is rendered \
-         with a local webview (JavaScript executes, so SPA/JS content is included). \
-         Use this to read full article content from a URL.",
-        Arc::new(schema_with_single_field(
-            "url",
-            "The URL of the page to fetch (http or https)",
-        )),
+        "Fetch a web page and return its content as clean Markdown. Static requests \
+         are tried first; JavaScript-heavy pages are automatically re-rendered in a \
+         local webview. Supports HTML, plain text, JSON, XML, CSV and PDF. Long pages \
+         are paginated: the header reports the total length and the range returned, \
+         and start_index reads the remainder. Private/loopback addresses are refused.",
+        Arc::new(web_fetch_schema()),
     )
     .with_title("Web Fetch")
-    .with_annotations(ToolAnnotations::new().read_only(true))
+    .with_annotations(ToolAnnotations::new().read_only(true).open_world(true))
+}
+
+/// web_fetch 的 JSON Schema：`url`（required）+ 分段读取参数（optional）。
+fn web_fetch_schema() -> JsonObject {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The URL of the page to fetch (http or https)"
+            },
+            "start_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optional. Character offset to start reading from (default 0). \
+                    Use it when a previous call reported truncated content."
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 200000,
+                "description": "Optional. Maximum characters to return in this call (default 60000)."
+            }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+    })
+    .as_object()
+    .unwrap()
+    .clone()
 }
 
 fn notify_tool() -> Tool {
@@ -229,24 +258,6 @@ fn notify_tool() -> Tool {
     )
     .with_title("Notify")
     .with_annotations(ToolAnnotations::new().read_only(true))
-}
-
-/// 单字段工具的 JSON Schema（object + 一个 required string 字段）。
-fn schema_with_single_field(field: &str, field_desc: &str) -> JsonObject {
-    json!({
-        "type": "object",
-        "properties": {
-            field: {
-                "type": "string",
-                "description": field_desc
-            }
-        },
-        "required": [field],
-        "additionalProperties": false
-    })
-    .as_object()
-    .unwrap()
-    .clone()
 }
 
 /// web_search 执行：本地 Bing 搜索 → 内容增强层（摘要/重排/元数据）。
@@ -322,7 +333,19 @@ async fn run_web_fetch(args: &JsonObject) -> CallToolResponse {
         }
     };
 
-    match super::fetch::fetch_url(&url).await {
+    // 分段参数宽松解析：负数/非整数视为未提供（schema 已声明 minimum）
+    let start_index = args
+        .get("start_index")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(0);
+    let max_chars = args
+        .get("max_chars")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(super::fetch::DEFAULT_MAX_CHARS);
+
+    match super::fetch::fetch_url(&url, start_index, max_chars).await {
         Ok(markdown) => CallToolResult::success(vec![ContentBlock::text(markdown)]).into(),
         Err(e) => {
             tracing::warn!(url = %url, error = %e, "mcp: web_fetch failed");

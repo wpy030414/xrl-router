@@ -145,7 +145,7 @@ pub(crate) fn extract(html: &str, url: &str) -> ExtractedPage {
 }
 
 /// 字节入口：先按编码链解码（BOM → Content-Type charset → meta 声明 → UTF-8）再提取。
-pub(super) fn extract_bytes(bytes: &[u8], content_type: Option<&str>, url: &str) -> ExtractedPage {
+pub(crate) fn extract_bytes(bytes: &[u8], content_type: Option<&str>, url: &str) -> ExtractedPage {
     let html = decode_body(bytes, content_type);
     extract(&html, url)
 }
@@ -155,7 +155,7 @@ pub(super) fn extract_bytes(bytes: &[u8], content_type: Option<&str>, url: &str)
 /// 响应体解码。reqwest 的 `text()` 只认 Content-Type 头 charset，中文老站常在
 /// meta 里声明 GBK/GB2312 而头里没有——这里显式嗅探（encoding_rs 已是 reqwest
 /// 传递依赖）。UTF-8 是最终兜底（decode 对非法序列做替换而非报错）。
-fn decode_body(bytes: &[u8], content_type: Option<&str>) -> String {
+pub(crate) fn decode_body(bytes: &[u8], content_type: Option<&str>) -> String {
     let enc = content_type
         .and_then(extract_charset)
         .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))

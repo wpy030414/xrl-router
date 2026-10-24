@@ -85,6 +85,8 @@ rmcp = { version = "3", features = ["server", "macros", "transport-streamable-ht
 
 # 渲染后的 HTML → Markdown（喂给模型前压缩体积、保留结构）
 htmd = "0.2"
+# web_fetch：PDF 文本层提取（纯 Rust）
+pdf-extract = "0.12"
 
 # 内容增强层：非 UTF-8 中文页面解码（GBK/GB2312/BIG5）。
 # 已是 reqwest 传递依赖，显式声明零编译体积增量（见 content/readability.rs decode_body）

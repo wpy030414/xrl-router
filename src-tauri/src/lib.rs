@@ -22,6 +22,8 @@ mod local;
 mod mcp;
 mod middleware;
 mod models;
+// 出站 URL 安全守卫（SSRF）：web_fetch / web_search 抓取共用
+mod net_guard;
 mod plugin;
 mod providers;
 // pub：MCP 工具模块复用 SearchHttp / search()

@@ -6,8 +6,8 @@
 //! - `web_search`（`mcp_websearch`）：本地 Bing 搜索，复用 `crate::search::bing::search`。
 //!   开关同时控制代理层剔除请求自带的搜索类工具（见 `api/proxy/stream.rs`），
 //!   防止上游官方搜索生效。
-//! - `web_fetch`（`mcp_webfetch`）：Tauri 内置 WebView 渲染（隐藏窗口执行页面 JS
-//!   后提取正文 Markdown），渲染不可用时回退静态抓取（见 `fetch.rs`）。
+//! - `web_fetch`（`mcp_webfetch`）：静态优先抓取（HTML/文本/JSON/XML/CSV/PDF），
+//!   正文过薄或反爬时才升级到 Tauri WebView 渲染；带内容缓存与分段读取（见 `fetch.rs`）。
 //! - `notify`（`mcp_notify`）：发送系统桌面通知（见 `notify.rs`）。
 //!
 //! 鉴权与 `/v1/*` 代理一致：`Authorization: Bearer <service-key>`（argon2 校验）。

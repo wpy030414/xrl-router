@@ -1,121 +1,585 @@
-//! WebFetch 渲染层：复用 Tauri 自带 WebView（macOS WKWebView / Windows WebView2 /
-//! Linux WebKitGTK）执行页面 JS 后取正文（Markdown）。
+//! WebFetch 抓取层：**静态优先，按需渲染**。
 //!
-//! 设计取舍（见 docs/DECISIONS.md ADR-038）：
-//! - **不探测本机 Chrome/Edge**——网关进程即 Tauri 进程（窗口关闭只隐藏到托盘），
-//!   WebView 可用性 ≈ 应用可用性：三端全覆盖，无额外浏览器进程，无需 headless_chrome。
-//! - **隐藏窗口 + Rust 单向 eval**——远程页面拿不到 Tauri IPC（不配 remote 域
-//!   capability，也无 `withGlobalTauri`），HTML 提取完全由 Rust 发起（eval_with_callback）。
-//! - **懒创建 + 全局保活**——首次抓取建隐藏窗口，之后复用；抓取间 `tokio::sync::Mutex`
-//!   串行（跨 await 持有，一次渲染一页）。
-//! - **渲染等待**——轮询 `readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号），
-//!   不是固定 sleep；导航失败（DNS/TLS 等）时 readyState 停驻 → 超时报错。
-//! - **降级路径**——WebView 创建失败/超时/eval 异常 → 静态抓取（`crate::http`
-//!   客户端，继承系统代理）并在输出开头注明「可能不含 JS 渲染结果」。
+//! 抓取链（`fetch_url`）：
+//! 1. URL 归一化 + SSRF 守卫（`net_guard`：拒绝本机/内网/云元数据地址）；
+//! 2. 内容缓存（归一化 URL 为键，TTL 15 分钟）——重复抓取零成本；
+//! 3. **静态请求**（reqwest，浏览器头，继承系统代理）：HTML 走正文提取，
+//!    text/json/xml/csv/pdf 走对应分支；
+//! 4. 仅在「静态失败且值得重试」或「正文过薄且页面像 SPA」时升级到 WebView 渲染；
+//! 5. 输出统一加元数据头，支持 `start_index` / `max_chars` 分段读取。
+//!
+//! 设计取舍：
+//! - **静态优先**——绝大多数页面不需要 JS，静默降级不再污染输出；此前「一律
+//!   WebView」让每页多付 3~10 秒，且全局串行。
+//! - **渲染池**——隐藏窗口池（默认 2 个）+ 信号量限流，替代全局单窗口串行锁；
+//!   静态路径完全不受渲染池影响，可任意并发。
+//! - **导航白名单**——`on_navigation` 对每次（含重定向）导航做内网地址检查，
+//!   防止 3xx 跳转到 loopback 管理端点。
+//! - **显式截断**——输出头写明总长度与本次区间，尾部提示 `start_index` 续读，
+//!   不再让模型在「已截断」三个字之后失去后半篇。
+//!
+//! WebView 资产（见 docs/DECISIONS.md ADR-038 / ADR-056）：不探测外部浏览器、
+//! 隐藏窗口 + Rust 单向 eval、远程页面拿不到 Tauri IPC。
 
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
+use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT};
 use tauri::{AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::Url;
 
+use crate::content::ExtractedPage;
+
+/// 单次输出默认上限（字符）。
+pub(super) const DEFAULT_MAX_CHARS: usize = 60_000;
+/// 单次输出硬上限（防止模型用 max_chars 把整站灌进上下文）。
+const HARD_MAX_CHARS: usize = 200_000;
+/// 单次输出下限。
+const MIN_MAX_CHARS: usize = 1_000;
+/// 内容缓存 TTL。
+const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+/// 内容缓存容量。
+const CACHE_CAPACITY: usize = 64;
+/// 静态请求超时。
+const STATIC_TIMEOUT: Duration = Duration::from_secs(20);
+/// 响应体上限（HTML/PDF 通用）。
+const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 /// 页面加载（等待导航稳定）超时。
 const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(30);
-/// 输出正文上限（按字符计），超出截断并附注。
-const MAX_OUTPUT_CHARS: usize = 60_000;
 /// JS 侧回传 HTML 上限（防 WebView2 `ExecuteScriptWithResult` 结果体积限制）。
 const MAX_JS_RETURN_CHARS: usize = 1_500_000;
-/// 隐藏渲染窗口的 label。
-const RENDER_WINDOW_LABEL: &str = "fetcher";
+/// 同时存在的隐藏渲染窗口数。
+const RENDER_POOL_SIZE: usize = 2;
+/// 正文低于此字符数时，若页面像 SPA 则升级渲染。
+const SPA_TEXT_THRESHOLD: usize = 400;
+/// 提取质量低于此值时退回整页转换。
+const EXTRACTION_QUALITY_THRESHOLD: f32 = 0.35;
+
+const CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                         (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// 全局 AppHandle（`mcp::init` 注入，`lib.rs` setup 调用）。
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
-/// 全局渲染窗口（懒创建，进程级保活）。
-static RENDER_WINDOW: OnceLock<Mutex<Option<WebviewWindow>>> = OnceLock::new();
-/// 抓取串行锁：跨 await 持有，须 tokio Mutex（一次渲染一页）。
-static FETCH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// 注入 AppHandle（`lib.rs` setup 创建 AppState 后调用）。
 pub(crate) fn init(app: AppHandle) {
     let _ = APP_HANDLE.set(app);
 }
 
-/// 抓取页面正文（Markdown）。
-///
-/// 优先 Tauri WebView 渲染（JS 执行，SPA 内容可得）；
-/// 渲染不可用/失败 → 静态抓取，开头注明「可能不含 JS 渲染结果」。
-pub(super) async fn fetch_url(url: &str) -> anyhow::Result<String> {
-    let normalized = normalize_url(url)?;
-    match render_with_webview(&normalized).await {
-        Ok(html) => Ok(html_to_markdown(html, normalized.clone()).await),
-        Err(render_err) => {
-            tracing::warn!(
-                url = %normalized,
-                error = %render_err,
-                "mcp: webview render failed, falling back to static fetch"
-            );
-            let html = static_fetch(&normalized).await?;
-            let body = html_to_markdown(html, normalized.clone()).await;
-            Ok(format!(
-                "（WebView 渲染不可用：{render_err}。以下为静态抓取内容，可能不含 JS 渲染结果）\n{body}"
-            ))
+// ── 对外入口 ──────────────────────────────────────────────────────────────
+
+/// 抓取页面正文（Markdown），按 `start_index` / `max_chars` 分段返回。
+pub(super) async fn fetch_url(
+    url: &str,
+    start_index: usize,
+    max_chars: usize,
+) -> anyhow::Result<String> {
+    let target = normalize_url(url)?;
+    crate::net_guard::ensure_public_url(&target)
+        .await
+        .map_err(|e| anyhow!("该地址不允许抓取：{e}"))?;
+
+    let key = cache_key(&target);
+    let page = match cache_get(&key) {
+        Some(page) => {
+            tracing::debug!(url = %target, "mcp: web_fetch cache hit");
+            page
+        }
+        None => {
+            let page = Arc::new(load_page(&target).await?);
+            cache_put(&key, page.clone());
+            page
+        }
+    };
+    Ok(frame_output(&page, start_index, max_chars))
+}
+
+/// URL 归一化：接受 `http`/`https`；无协议时补 `https://`。
+fn normalize_url(input: &str) -> anyhow::Result<Url> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        bail!("empty url");
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let url = Url::parse(&candidate).map_err(|e| anyhow!("invalid url: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("unsupported scheme: {}", url.scheme());
+    }
+    if url.host_str().is_none() {
+        bail!("url has no host");
+    }
+    Ok(url)
+}
+
+// ── 抓取编排 ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    Static,
+    Rendered,
+}
+
+impl Source {
+    fn label(self) -> &'static str {
+        match self {
+            Source::Static => "静态抓取",
+            Source::Rendered => "WebView 渲染",
         }
     }
 }
 
-/// URL 归一化：接受 `http`/`https`；无协议时补 `https://`。
-fn normalize_url(url: &str) -> anyhow::Result<String> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("empty url"));
-    }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Ok(trimmed.to_string());
-    }
-    Ok(format!("https://{trimmed}"))
+/// 一页的最终内容（缓存单位）。
+struct Page {
+    title: Option<String>,
+    final_url: String,
+    source: Source,
+    /// 附加说明（如「静态兜底，可能不含 JS 渲染结果」）。
+    note: Option<String>,
+    /// 正文 Markdown（不含标题 H1，标题由输出框架补）。
+    markdown: String,
 }
 
-/// WebView 渲染单页：懒创建隐藏窗口 → 导航 → 轮询加载完成 → eval 取渲染后 HTML。
-async fn render_with_webview(url: &str) -> anyhow::Result<String> {
-    let _guard = FETCH_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-    let app = APP_HANDLE.get().context("webview renderer not initialized")?;
-    let window = get_or_create_window(app)?;
-    window.navigate(Url::parse(url).context("invalid url")?)?;
-    wait_for_load(&window).await?;
-    extract_html(&window).await
+/// 抓取一页：静态优先，必要时升级渲染。
+async fn load_page(url: &Url) -> anyhow::Result<Page> {
+    let static_result = static_fetch(url).await;
+    let needs_render = match &static_result {
+        Ok((_, needs_render)) => {
+            if *needs_render {
+                tracing::debug!(url = %url, "mcp: static content thin, escalating to webview");
+            }
+            *needs_render
+        }
+        Err(e) if !e.try_render => return Err(anyhow!(e.message.clone())),
+        Err(e) => {
+            tracing::debug!(url = %url, error = %e.message, "mcp: static fetch failed, trying webview");
+            true
+        }
+    };
+    if !needs_render {
+        return match static_result {
+            Ok((page, _)) => Ok(page),
+            Err(e) => Err(anyhow!(e.message)),
+        };
+    }
+
+    match render_page(url).await {
+        Ok(page) => Ok(page),
+        Err(render_err) => match static_result {
+            Ok((mut page, _)) => {
+                tracing::warn!(url = %url, error = %render_err, "mcp: webview render failed, using static content");
+                page.note = Some(
+                    "WebView 渲染失败，以下为静态抓取内容（可能不含 JS 渲染结果）".to_string(),
+                );
+                Ok(page)
+            }
+            Err(e) => Err(anyhow!(
+                "抓取失败：{}；WebView 渲染失败：{render_err}",
+                e.message
+            )),
+        },
+    }
 }
 
-/// 懒创建隐藏渲染窗口（进程级保活复用）。
-fn get_or_create_window(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
-    let slot = RENDER_WINDOW.get_or_init(|| Mutex::new(None));
-    let mut guard = slot
-        .lock()
-        .map_err(|_| anyhow!("render window slot poisoned"))?;
-    if let Some(w) = guard.as_ref() {
-        return Ok(w.clone());
+// ── 静态抓取 ──────────────────────────────────────────────────────────────
+
+struct StaticError {
+    message: String,
+    /// 是否值得再用 WebView 试一次（403/429/5xx/网络错误 → 值得）。
+    try_render: bool,
+}
+
+impl StaticError {
+    fn no_render(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            try_render: false,
+        }
     }
-    let window = WebviewWindowBuilder::new(
+}
+
+/// 静态抓取客户端：继承系统代理 + 浏览器头 + 逐跳重定向守卫。
+fn static_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(CHROME_UA));
+        // 内容协商：优先向支持「Markdown for Agents」的站点拿现成 Markdown
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static(
+                "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.8, \
+                 text/plain;q=0.7, */*;q=0.5",
+            ),
+        );
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
+        crate::http::build_http_client()
+            .default_headers(headers)
+            .timeout(STATIC_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error(std::io::Error::other("重定向次数过多"));
+                }
+                if let Some(reason) = crate::net_guard::blocked_literal_reason(attempt.url()) {
+                    return attempt
+                        .error(std::io::Error::other(format!("重定向目标被拒绝：{reason}")));
+                }
+                attempt.follow()
+            }))
+            .build()
+            .expect("failed to build web_fetch http client")
+    })
+}
+
+/// 静态抓取一页。返回 `(页面, 是否需要升级渲染)`。
+async fn static_fetch(url: &Url) -> Result<(Page, bool), StaticError> {
+    let resp = static_client()
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|e| StaticError {
+            message: format!("请求失败：{e}"),
+            try_render: true,
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(StaticError {
+            message: format!("HTTP {}", status.as_u16()),
+            // 403/429/451 多为反爬或风控，WebView 有机会过；404/410 不必重试
+            try_render: matches!(status.as_u16(), 403 | 429 | 451) || status.is_server_error(),
+        });
+    }
+
+    let final_url = resp.url().to_string();
+    let content_type = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let kind = classify_content_type(content_type.as_deref());
+    if matches!(kind, ContentKind::Unsupported) {
+        return Err(StaticError::no_render(format!(
+            "不支持的内容类型：{}",
+            content_type.as_deref().unwrap_or("未知")
+        )));
+    }
+
+    let bytes = read_capped(resp, MAX_BODY_BYTES).await?;
+    let ct = content_type.clone();
+    let url_for_build = final_url.clone();
+    let built = tokio::task::spawn_blocking(move || {
+        build_page(kind, &bytes, ct.as_deref(), &url_for_build)
+    })
+    .await
+    .map_err(|e| StaticError::no_render(format!("内容处理任务失败：{e}")))?
+    .map_err(StaticError::no_render)?;
+    Ok((built.page, built.needs_render))
+}
+
+/// 读取响应体，超过上限直接报错（截断 PDF 会得到损坏内容）。
+async fn read_capped(resp: reqwest::Response, cap: usize) -> Result<Vec<u8>, StaticError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| StaticError {
+            message: format!("读取响应体失败：{e}"),
+            try_render: false,
+        })?;
+        if buf.len() + chunk.len() > cap {
+            return Err(StaticError::no_render(format!(
+                "响应体超过 {} MB 上限",
+                cap / 1024 / 1024
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// 按内容类型分支构建页面（同步纯 CPU，调用方放 blocking 线程）。
+fn build_page(
+    kind: ContentKind,
+    bytes: &[u8],
+    content_type: Option<&str>,
+    final_url: &str,
+) -> Result<BuiltPage, String> {
+    match kind {
+        ContentKind::Html => {
+            let html = crate::content::decode_body(bytes, content_type);
+            let extracted = crate::content::extract(&html, final_url);
+            let markdown = page_to_markdown(&extracted, &html);
+            // 正文过薄且页面带 SPA 特征（或几乎没有文本）才升级渲染：
+            // 真正短小的静态页不值得多花一次 3~10 秒的渲染。
+            let thin = extracted.text_len < SPA_TEXT_THRESHOLD;
+            let needs_render = thin && (looks_like_spa(&html) || extracted.text_len < 80);
+            Ok(BuiltPage {
+                page: Page {
+                    title: Some(extracted.title),
+                    final_url: final_url.to_string(),
+                    source: Source::Static,
+                    note: None,
+                    markdown,
+                },
+                needs_render,
+            })
+        }
+        ContentKind::PlainText | ContentKind::Json | ContentKind::Xml | ContentKind::Csv => {
+            let text = crate::content::decode_body(bytes, content_type);
+            let markdown = match kind {
+                ContentKind::Json => format!("```json\n{}\n```", text.trim_end()),
+                ContentKind::Xml => format!("```xml\n{}\n```", text.trim_end()),
+                ContentKind::Csv => format!("```csv\n{}\n```", text.trim_end()),
+                _ => text,
+            };
+            Ok(BuiltPage {
+                page: Page {
+                    title: None,
+                    final_url: final_url.to_string(),
+                    source: Source::Static,
+                    note: None,
+                    markdown,
+                },
+                needs_render: false,
+            })
+        }
+        ContentKind::Pdf => {
+            let text = pdf_extract::extract_text_from_mem(bytes)
+                .map_err(|e| format!("PDF 解析失败：{e}"))?;
+            if text.trim().is_empty() {
+                return Err("PDF 未解析出文本（可能是扫描件）".to_string());
+            }
+            let title = final_url
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            Ok(BuiltPage {
+                page: Page {
+                    title,
+                    final_url: final_url.to_string(),
+                    source: Source::Static,
+                    note: Some("内容由 PDF 文本层提取，可能丢失排版/表格结构".to_string()),
+                    markdown: text,
+                },
+                needs_render: false,
+            })
+        }
+        ContentKind::Unsupported => Err("不支持的内容类型".to_string()),
+    }
+}
+
+struct BuiltPage {
+    page: Page,
+    needs_render: bool,
+}
+
+/// 正文提取 → Markdown。质量过低或正文太短时退回整页转换。
+fn page_to_markdown(extracted: &ExtractedPage, full_html: &str) -> String {
+    if extracted.quality >= EXTRACTION_QUALITY_THRESHOLD && !extracted.html.is_empty() {
+        if let Ok(md) = htmd::convert(&extracted.html) {
+            if md.chars().count() >= 80 {
+                return md;
+            }
+        }
+    }
+    htmd::convert(full_html).unwrap_or_else(|_| full_html.to_string())
+}
+
+/// SPA 骨架特征（用于决定是否值得升级渲染）。
+fn looks_like_spa(html: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "id=\"root\"",
+        "id='root'",
+        "id=\"app\"",
+        "id='app'",
+        "id=\"__next\"",
+        "__NEXT_DATA__",
+        "data-reactroot",
+        "ng-version",
+        "window.__NUXT__",
+        "/_next/static/",
+        "vite/modulepreload",
+    ];
+    MARKERS.iter().any(|m| html.contains(m))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ContentKind {
+    Html,
+    PlainText,
+    Json,
+    Xml,
+    Csv,
+    Pdf,
+    Unsupported,
+}
+
+/// 内容类型分类。无 Content-Type 时按 HTML 试解析（兼容老站）。
+fn classify_content_type(ct: Option<&str>) -> ContentKind {
+    let Some(ct) = ct else {
+        return ContentKind::Html;
+    };
+    let base = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if base.is_empty() {
+        return ContentKind::Html;
+    }
+    match base.as_str() {
+        "text/html" | "application/xhtml+xml" => ContentKind::Html,
+        "application/xml" | "text/xml" => ContentKind::Xml,
+        "application/json" | "text/json" => ContentKind::Json,
+        "text/csv" => ContentKind::Csv,
+        "application/pdf" => ContentKind::Pdf,
+        _ => {
+            if base.starts_with("text/") || base.contains("yaml") {
+                ContentKind::PlainText
+            } else {
+                ContentKind::Unsupported
+            }
+        }
+    }
+}
+
+// ── WebView 渲染池 ────────────────────────────────────────────────────────
+
+static RENDER_POOL: OnceLock<RenderPool> = OnceLock::new();
+
+struct RenderPool {
+    /// 空闲窗口（`std::sync::Mutex` 只在同步切片内持有，绝不跨 await）。
+    free: Mutex<Vec<WebviewWindow>>,
+    permits: tokio::sync::Semaphore,
+    next_label: AtomicUsize,
+}
+
+impl RenderPool {
+    async fn acquire(&self) -> anyhow::Result<RenderSlot<'_>> {
+        let permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|_| anyhow!("渲染池已关闭"))?;
+        let reused = self.free.lock().map_err(|_| anyhow!("渲染池锁中毒"))?.pop();
+        let window = match reused {
+            Some(w) => w,
+            None => {
+                let app = APP_HANDLE
+                    .get()
+                    .context("webview renderer not initialized")?;
+                let label = format!(
+                    "fetcher-{}",
+                    self.next_label.fetch_add(1, Ordering::Relaxed)
+                );
+                create_window(app, &label)?
+            }
+        };
+        Ok(RenderSlot {
+            pool: self,
+            window: Some(window),
+            _permit: permit,
+        })
+    }
+}
+
+fn render_pool() -> &'static RenderPool {
+    RENDER_POOL.get_or_init(|| RenderPool {
+        free: Mutex::new(Vec::new()),
+        permits: tokio::sync::Semaphore::new(RENDER_POOL_SIZE),
+        next_label: AtomicUsize::new(0),
+    })
+}
+
+/// 借用中的渲染窗口；Drop 时归还池中。
+struct RenderSlot<'a> {
+    pool: &'a RenderPool,
+    window: Option<WebviewWindow>,
+    _permit: tokio::sync::SemaphorePermit<'a>,
+}
+
+impl RenderSlot<'_> {
+    fn window(&self) -> &WebviewWindow {
+        self.window.as_ref().expect("slot window taken")
+    }
+}
+
+impl Drop for RenderSlot<'_> {
+    fn drop(&mut self) {
+        if let Some(window) = self.window.take() {
+            if let Ok(mut free) = self.pool.free.lock() {
+                free.push(window);
+            }
+        }
+    }
+}
+
+fn create_window(app: &AppHandle, label: &str) -> anyhow::Result<WebviewWindow> {
+    WebviewWindowBuilder::new(
         app,
-        RENDER_WINDOW_LABEL,
+        label,
         WebviewUrl::External("about:blank".parse().expect("about:blank is a valid url")),
     )
     .title("")
     .visible(false)
     .inner_size(1280.0, 2000.0)
+    // 每次导航（含服务端 3xx）都过内网闸：防止跳转到 loopback 管理端点
+    .on_navigation(|url| {
+        if url.scheme() == "about" {
+            return true;
+        }
+        match crate::net_guard::blocked_literal_reason(url) {
+            Some(reason) => {
+                tracing::warn!(url = %url, reason, "mcp: blocked private navigation in render window");
+                false
+            }
+            None => true,
+        }
+    })
     .build()
-    .map_err(|e| anyhow!("create render window failed: {e}"))?;
-    tracing::info!("mcp: web_fetch render window created (hidden)");
-    let _ = guard.insert(window.clone());
-    Ok(window)
+    .map_err(|e| anyhow!("create render window failed: {e}"))
+}
+
+/// WebView 渲染单页 → Markdown。
+async fn render_page(url: &Url) -> anyhow::Result<Page> {
+    let pool = render_pool();
+    let slot = pool.acquire().await?;
+    let window = slot.window();
+    window.navigate(url.clone()).context("navigate failed")?;
+    wait_for_load(window).await?;
+    let (final_url, html) = extract_page(window).await?;
+    let extract_url = final_url.clone();
+    let (markdown, title) = tokio::task::spawn_blocking(move || {
+        let extracted = crate::content::extract(&html, &extract_url);
+        let md = page_to_markdown(&extracted, &html);
+        (md, extracted.title)
+    })
+    .await
+    .map_err(|e| anyhow!("内容处理任务失败：{e}"))?;
+    Ok(Page {
+        title: Some(title).filter(|t| !t.trim().is_empty()),
+        final_url,
+        source: Source::Rendered,
+        note: None,
+        markdown,
+    })
 }
 
 /// 轮询等待页面加载完成：`readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号）。
 ///
-/// 初始页 about:blank 的 readyState 恒为 `complete`，必须等 `location.href`
+/// 初始页 about:blank 的 `readyState` 恒为 `complete`，必须等 `location.href`
 /// 离开初始页再进入资源稳定阶段，否则会在导航生效前误判完成。
 ///
 /// 窗口刚创建时 wry 会把 eval 排队、**回调直接丢弃**（`pending_scripts` 机制，
@@ -145,8 +609,7 @@ async fn wait_for_load(window: &WebviewWindow) -> anyhow::Result<()> {
     let mut prev: Option<u32> = None;
     let mut stable = 0u32;
     while Instant::now() < deadline {
-        let n = match eval_string(window, "performance.getEntriesByType('resource').length").await
-        {
+        let n = match eval_string(window, "performance.getEntriesByType('resource').length").await {
             Ok(v) => v.and_then(|s| s.parse::<u32>().ok()),
             Err(e) => {
                 tracing::debug!(error = %e, "mcp: eval failed during settle poll, retrying");
@@ -167,22 +630,39 @@ async fn wait_for_load(window: &WebviewWindow) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// eval 取渲染后 HTML（JS 侧先截断，防回传体积过大）。
-async fn extract_html(window: &WebviewWindow) -> anyhow::Result<String> {
+/// eval 取渲染后 HTML 与最终 URL（JS 侧先截断，防回传体积过大）。
+async fn extract_page(window: &WebviewWindow) -> anyhow::Result<(String, String)> {
     const MAX: usize = MAX_JS_RETURN_CHARS;
     let js = format!(
         r#"(() => {{
   const root = document.documentElement || document;
   let html = root.outerHTML || '';
   if (html.length > {MAX}) html = html.slice(0, {MAX});
-  return html;
+  return JSON.stringify({{ href: location.href, html: html }});
 }})()"#
     );
     // 同 wait_for_load：刚就绪的窗口 eval 可能被排队丢回调，重试到截止时间。
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match eval_string(window, &js).await {
-            Ok(Some(html)) => return Ok(html),
+            Ok(Some(raw)) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&raw).context("解析页面回传失败")?;
+                let href = parsed
+                    .get("href")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let html = parsed
+                    .get("html")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if html.is_empty() {
+                    bail!("page returned no content");
+                }
+                return Ok((href, html));
+            }
             Ok(None) => {}
             Err(e) => tracing::debug!(error = %e, "mcp: eval failed during extract, retrying"),
         }
@@ -220,119 +700,220 @@ async fn eval_string(window: &WebviewWindow, js: &str) -> anyhow::Result<Option<
     }
 }
 
-/// 回退：静态抓取（继承系统代理，不执行 JS）。
-async fn static_fetch(url: &str) -> anyhow::Result<String> {
-    let client = crate::http::build_http_client()
-        .timeout(NAVIGATE_TIMEOUT)
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
-    let html = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("fetch failed for {url}"))?
-        .error_for_status()
-        .map_err(|e| anyhow!("fetch failed: {e}"))?
-        .text()
-        .await
-        .map_err(|e| anyhow!("read body failed: {e}"))?;
-    Ok(html)
+// ── 内容缓存 ──────────────────────────────────────────────────────────────
+
+type CacheEntry = (Instant, Arc<Page>);
+type CacheMap = Mutex<HashMap<String, CacheEntry>>;
+
+static CACHE: OnceLock<CacheMap> = OnceLock::new();
+
+fn cache_map() -> &'static CacheMap {
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 渲染后 HTML → readability 正文提取 → Markdown → 截断。
-///
-/// 提取质量过低（`quality < EXTRACTION_QUALITY_THRESHOLD`）或正文转出的 Markdown
-/// 太短时，降级为整页 `htmd::convert`（现状行为兜底，两层降级链保留）。
-const EXTRACTION_QUALITY_THRESHOLD: f32 = 0.35;
+fn cache_get(key: &str) -> Option<Arc<Page>> {
+    let now = Instant::now();
+    let guard = cache_map().lock().ok()?;
+    match guard.get(key) {
+        Some((ts, page)) if now.duration_since(*ts) < CACHE_TTL => Some(page.clone()),
+        _ => None,
+    }
+}
 
-/// 同步转换（在 blocking 线程执行）。
-fn html_to_markdown_sync(html: &str, url: &str) -> String {
-    let page = crate::content::extract(html, url);
-    if page.quality >= EXTRACTION_QUALITY_THRESHOLD && !page.html.is_empty() {
-        if let Ok(md) = htmd::convert(&page.html) {
-            if md.chars().count() >= 80 {
-                let title = page.title.trim();
-                let full = if title.is_empty() {
-                    md
-                } else {
-                    format!("# {title}\n\n{md}")
-                };
-                return trim_output(full);
-            }
+fn cache_put(key: &str, page: Arc<Page>) {
+    let now = Instant::now();
+    let Ok(mut guard) = cache_map().lock() else {
+        return;
+    };
+    guard.retain(|_, (ts, _)| now.duration_since(*ts) < CACHE_TTL);
+    while guard.len() >= CACHE_CAPACITY {
+        let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, (ts, _))| *ts)
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        guard.remove(&oldest);
+    }
+    guard.insert(key.to_string(), (now, page));
+}
+
+/// 缓存键：去掉 fragment 与跟踪参数（`utm_*` 等），避免同一页面反复抓取。
+fn cache_key(url: &Url) -> String {
+    let mut normalized = url.clone();
+    normalized.set_fragment(None);
+    let pairs: Vec<(String, String)> = normalized
+        .query_pairs()
+        .filter(|(k, _)| !is_tracking_param(k))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    normalized.set_query(None);
+    if !pairs.is_empty() {
+        let mut query = normalized.query_pairs_mut();
+        for (k, v) in &pairs {
+            query.append_pair(k, v);
         }
     }
-    // 降级：整页转换，htmd 失败再退化为原始 HTML
-    trim_output(htmd::convert(html).unwrap_or_else(|_| html.to_string()))
+    normalized.to_string()
 }
 
-/// 异步入口：`scraper::Html` 非 Send 且大页面解析 CPU 密集，整体卸载到
-/// blocking 线程池。join 失败（极罕见）返回降级提示——原始 html 已 move 进闭包，
-/// 且此处 panic 意味着提取器崩溃，不宜再走重逻辑。
-async fn html_to_markdown(html: String, url: String) -> String {
-    match tokio::task::spawn_blocking(move || html_to_markdown_sync(&html, &url)).await {
-        Ok(md) => md,
-        Err(e) => {
-            tracing::warn!(error = %e, "mcp: html_to_markdown blocking task failed");
-            "（网页内容处理失败，未能提取正文。）".to_string()
-        }
-    }
+fn is_tracking_param(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.starts_with("utm_")
+        || matches!(
+            key.as_str(),
+            "gclid" | "fbclid" | "yclid" | "msclkid" | "spm" | "_hsenc" | "_hsmi" | "ref_src"
+        )
 }
 
-/// 按字符截断到 `MAX_OUTPUT_CHARS`，截断处附注。
-fn trim_output(text: String) -> String {
-    let count = text.chars().count();
-    if count <= MAX_OUTPUT_CHARS {
-        return text;
+// ── 输出框架 ──────────────────────────────────────────────────────────────
+
+/// 输出：标题 + 元数据头 + 指定区间正文 + 截断提示。
+fn frame_output(page: &Page, start_index: usize, max_chars: usize) -> String {
+    let total = page.markdown.chars().count();
+    let start = start_index.min(total);
+    let max = max_chars.clamp(MIN_MAX_CHARS, HARD_MAX_CHARS);
+    let end = (start + max).min(total);
+    let body: String = page
+        .markdown
+        .chars()
+        .skip(start)
+        .take(end - start)
+        .collect();
+
+    let mut out = String::new();
+    if let Some(title) = page
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        out.push_str(&format!("# {title}\n\n"));
     }
-    let truncated: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
-    format!("{truncated}\n\n…（内容过长，已截断 {} 字符）", count - MAX_OUTPUT_CHARS)
+    if let Some(note) = page.note.as_deref() {
+        out.push_str(&format!("> 注意：{note}\n"));
+    }
+    out.push_str(&format!("> URL: {}\n", page.final_url));
+    out.push_str(&format!("> 抓取方式: {}\n", page.source.label()));
+    if total == 0 {
+        out.push_str("> 正文: 0 字符\n");
+    } else {
+        out.push_str(&format!("> 正文: {total} 字符；本次返回 {start}–{end}\n"));
+    }
+    out.push('\n');
+    out.push_str(&body);
+    if total > 0 && start >= total {
+        out.push_str("\n\n（start_index 超出正文长度，未返回内容）");
+    } else if end < total {
+        out.push_str(&format!(
+            "\n\n…（已截断：剩余 {} 字符，可设置 start_index={end} 继续读取）",
+            total - end
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn page(title: Option<&str>, body: &str) -> Page {
+        Page {
+            title: title.map(str::to_string),
+            final_url: "https://example.com/a".to_string(),
+            source: Source::Static,
+            note: None,
+            markdown: body.to_string(),
+        }
+    }
+
     #[test]
     fn test_normalize_url() {
-        assert_eq!(normalize_url("https://a.com").unwrap(), "https://a.com");
-        assert_eq!(normalize_url("http://a.com").unwrap(), "http://a.com");
-        assert_eq!(normalize_url("example.com/x").unwrap(), "https://example.com/x");
-        assert_eq!(normalize_url("  example.com  ").unwrap(), "https://example.com");
+        assert_eq!(
+            normalize_url("https://a.com").unwrap().as_str(),
+            "https://a.com/"
+        );
+        assert_eq!(
+            normalize_url("http://a.com").unwrap().as_str(),
+            "http://a.com/"
+        );
+        assert_eq!(
+            normalize_url("example.com/x").unwrap().as_str(),
+            "https://example.com/x"
+        );
+        assert_eq!(
+            normalize_url("  example.com  ").unwrap().as_str(),
+            "https://example.com/"
+        );
         assert!(normalize_url("").is_err());
         assert!(normalize_url("   ").is_err());
+        // 非 http(s) 协议一律拒绝
+        assert!(normalize_url("file:///etc/passwd").is_err());
     }
 
     #[test]
-    fn test_trim_output_noop_under_limit() {
-        let s = "abc".to_string();
-        assert_eq!(trim_output(s.clone()), s);
-        let exact: String = "字".repeat(MAX_OUTPUT_CHARS);
-        assert_eq!(trim_output(exact.clone()), exact);
-    }
-
-    #[test]
-    fn test_trim_output_truncates_over_limit() {
-        let s = "x".repeat(MAX_OUTPUT_CHARS + 100);
-        let out = trim_output(s);
-        assert!(out.starts_with('x'));
-        assert!(out.contains("已截断"));
-        // 截断后总长度 = 上限 + 附注
-        assert!(out.chars().count() > MAX_OUTPUT_CHARS);
-    }
-
-    #[test]
-    fn test_html_to_markdown_basic() {
-        let md = html_to_markdown_sync(
-            "<html><body><h1>标题</h1><p>这是一段足够长的正文内容，用于让 readability \
-             提取器判定为有效正文而非空壳页面。</p></body></html>",
-            "https://example.com/a",
+    fn test_classify_content_type() {
+        assert_eq!(classify_content_type(None), ContentKind::Html);
+        assert_eq!(
+            classify_content_type(Some("text/html; charset=utf-8")),
+            ContentKind::Html
         );
-        assert!(md.contains("标题"));
+        assert_eq!(
+            classify_content_type(Some("application/xhtml+xml")),
+            ContentKind::Html
+        );
+        assert_eq!(
+            classify_content_type(Some("application/json")),
+            ContentKind::Json
+        );
+        assert_eq!(
+            classify_content_type(Some("application/xml")),
+            ContentKind::Xml
+        );
+        assert_eq!(classify_content_type(Some("text/csv")), ContentKind::Csv);
+        assert_eq!(
+            classify_content_type(Some("application/pdf")),
+            ContentKind::Pdf
+        );
+        assert_eq!(
+            classify_content_type(Some("text/plain")),
+            ContentKind::PlainText
+        );
+        assert_eq!(
+            classify_content_type(Some("application/octet-stream")),
+            ContentKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn test_cache_key_drops_tracking_and_fragment() {
+        let a = Url::parse("https://example.com/a?utm_source=x&id=1#frag").unwrap();
+        let b = Url::parse("https://example.com/a?id=1").unwrap();
+        assert_eq!(cache_key(&a), cache_key(&b));
+        // 非跟踪参数保留
+        let c = Url::parse("https://example.com/a?id=2").unwrap();
+        assert_ne!(cache_key(&a), cache_key(&c));
+    }
+
+    #[test]
+    fn test_looks_like_spa() {
+        assert!(looks_like_spa("<div id=\"root\"></div>"));
+        assert!(looks_like_spa("<script id=\"__NEXT_DATA__\"></script>"));
+        assert!(!looks_like_spa("<article><p>纯静态文章</p></article>"));
+    }
+
+    #[test]
+    fn test_page_to_markdown_basic() {
+        let html = "<html><body><h1>标题</h1><p>这是一段足够长的正文内容，用于让 readability \
+                    提取器判定为有效正文而非空壳页面。</p></body></html>";
+        let extracted = crate::content::extract(html, "https://example.com/a");
+        let md = page_to_markdown(&extracted, html);
         assert!(md.contains("这是一段足够长的正文内容"));
     }
 
     #[test]
-    fn test_html_to_markdown_extracts_title_and_drops_nav() {
+    fn test_page_to_markdown_drops_nav() {
         let html = r#"<html><head><title>文章标题 - 示例站点</title></head><body>
             <nav><a href="/">首页</a><a href="/about">关于我们</a><a href="/x">导航链接</a></nav>
             <article>
@@ -342,27 +923,74 @@ mod tests {
             </article>
             <footer><p>版权所有 保留一切权利 备案号某某某</p></footer>
         </body></html>"#;
-        let md = html_to_markdown_sync(html, "https://example.com/article");
-        // 输出以 `# {title}` 开头，且标题已剥站点名后缀
-        assert!(
-            md.starts_with("# 文章标题"),
-            "md head: {}",
-            md.chars().take(30).collect::<String>()
-        );
-        // 正文保留
+        let extracted = crate::content::extract(html, "https://example.com/article");
+        let md = page_to_markdown(&extracted, html);
         assert!(md.contains("并发任务管理器"));
-        // 导航/页脚被剔除
         assert!(!md.contains("导航链接"), "nav leaked");
         assert!(!md.contains("关于我们"), "nav leaked");
         assert!(!md.contains("版权所有"), "footer leaked");
+        assert!(
+            extracted.title.starts_with("文章标题"),
+            "title: {}",
+            extracted.title
+        );
     }
 
     #[test]
-    fn test_html_to_markdown_low_quality_falls_back_to_fullpage() {
-        // 几乎无正文的空壳页：quality 低 → 降级整页转换（仍返回内容，不报错）
-        let html = "<html><body><div id=\"root\"><span>a</span></div></body></html>";
-        let md = html_to_markdown_sync(html, "https://spa.example.com/");
-        // 降级路径不强制 `# title` 头；此处内容极少，断言不 panic 即可
-        assert!(md.chars().count() < 100);
+    fn test_frame_output_full() {
+        let p = page(Some("标题"), "正文内容");
+        let out = frame_output(&p, 0, DEFAULT_MAX_CHARS);
+        assert!(out.starts_with("# 标题\n\n"));
+        assert!(out.contains("> URL: https://example.com/a"));
+        assert!(out.contains("> 抓取方式: 静态抓取"));
+        assert!(out.contains("本次返回 0–4"));
+        assert!(out.ends_with("正文内容"));
+        assert!(!out.contains("已截断"));
+    }
+
+    #[test]
+    fn test_frame_output_slices_and_notes_remaining() {
+        let body: String = "0123456789".repeat(10); // 100 字符
+        let p = page(None, &body);
+        let out = frame_output(&p, 10, MIN_MAX_CHARS);
+        // max_chars 被 clamp 到下限 1000 > 总长，返回 10..100
+        assert!(out.contains("本次返回 10–100"));
+        assert!(out.contains(&"0123456789".repeat(9)));
+        assert!(!out.contains("已截断"));
+        assert!(!out.starts_with('#'));
+
+        // 缩小上限以触发截断提示：直接用总长以下的值走 clamp 下限以上的分支
+        let long_body: String = "x".repeat(MIN_MAX_CHARS + 500);
+        let p2 = page(None, &long_body);
+        let out2 = frame_output(&p2, 0, MIN_MAX_CHARS);
+        assert!(out2.contains(&format!("本次返回 0–{MIN_MAX_CHARS}")));
+        assert!(out2.contains("剩余 500 字符"));
+        assert!(out2.contains(&format!("start_index={MIN_MAX_CHARS}")));
+    }
+
+    #[test]
+    fn test_frame_output_start_beyond_end() {
+        let p = page(None, "abc");
+        let out = frame_output(&p, 99, DEFAULT_MAX_CHARS);
+        assert!(out.contains("start_index 超出正文长度"));
+    }
+
+    #[test]
+    fn test_cache_put_get_and_ttl() {
+        let key = "https://cache.test/ttl";
+        let p = Arc::new(page(None, "x"));
+        cache_put(key, p);
+        assert!(cache_get(key).is_some());
+        // 过期条目在下次写入时被清理
+        {
+            let mut guard = cache_map().lock().unwrap();
+            guard.insert(
+                key.to_string(),
+                (Instant::now() - CACHE_TTL * 2, Arc::new(page(None, "y"))),
+            );
+        }
+        assert!(cache_get(key).is_none());
+        cache_put("https://cache.test/other", Arc::new(page(None, "z")));
+        assert!(cache_map().lock().unwrap().get(key).is_none());
     }
 }

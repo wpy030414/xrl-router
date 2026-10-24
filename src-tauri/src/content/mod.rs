@@ -28,7 +28,7 @@ mod summary;
 mod text;
 
 use rank::ScoreParts;
-pub(crate) use readability::{extract, ExtractedPage};
+pub(crate) use readability::{decode_body, extract, ExtractedPage};
 use text::QueryTerms;
 
 /// 并发抓取的结果页数量。
@@ -143,6 +143,16 @@ pub async fn enrich_search_results(
 /// 每个失败分支都记 debug 日志：抓取失败是本层最常见的降级路径（反爬/超时/
 /// 非 HTML），静默失败会让「为什么没有长摘要」无法诊断。
 async fn fetch_page(client: &reqwest::Client, url: &str) -> Option<(String, Arc<ExtractedPage>)> {
+    // SSRF 闸：搜索结果是第三方内容，不能让它把请求引向本机/内网
+    match url::Url::parse(url) {
+        Ok(target) => {
+            if let Err(reason) = crate::net_guard::ensure_public_url(&target).await {
+                tracing::debug!(url = %url, reason = %reason, "content: blocked target");
+                return None;
+            }
+        }
+        Err(_) => return None,
+    }
     let resp = match client
         .get(url)
         .header(reqwest::header::USER_AGENT, CHROME_UA)
