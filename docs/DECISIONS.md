@@ -1097,3 +1097,58 @@ Claude Code 这类携带 100K+ 输入的场景，首字前等待可达数秒，�
 - `src-tauri/src/api/proxy/forward.rs`（`is_generation_delta` + 打点）
 - `src-tauri/src/api/proxy/non_stream.rs`（收集路径同口径打点）
 - `src/views/StatsView.tsx`（`computeOutputSpeed` / `formatSpeed`）
+
+---
+
+## ADR-056：web_fetch 静态优先 + SSRF 守卫 + 分段读取
+
+**日期**: 2026-10-24
+**状态**: 已采纳
+
+### 背景
+
+`web_fetch` 原实现「一律隐藏 WebView 渲染 + 全局串行锁 + 60K 字符硬截断」，
+在实际使用中暴露三类问题：
+
+1. **慢**：普通静态页也付 3~10 秒渲染成本；`FETCH_LOCK` 跨 await 持有，
+   模型并行抓多个 URL 时串行排队（每页最多 30s 超时叠加）；
+2. **不可续读**：超过 60K 字符后只剩一句「已截断 N 字符」，模型无法取回后半篇；
+3. **安全**：URL 不做任何检查，`http://127.0.0.1:19068/api/*` 这类本机管理端点
+   可被提示注入后当作普通网页读入上下文；只认 HTML，PDF/JSON/纯文本全部失败；
+   重复抓取同一 URL 每次都重新渲染。
+
+### 决策
+
+1. **静态优先，按需渲染**：先用 reqwest（继承系统代理 + 浏览器头 + 内容协商）
+   抓取；仅在静态失败且状态码值得重试（403/429/451/5xx/网络错误），或正文 < 400
+   字符且页面带 SPA 特征时，才升级到 WebView。404/410 不做无谓重试。
+2. **渲染池替代串行锁**：隐藏窗口池（默认 2 个）+ `Semaphore` 限流，窗口 Drop
+   归还；静态路径完全不受渲染池影响，可任意并发。
+3. **内容缓存**：归一化 URL（去 fragment 与 `utm_*`/`gclid` 等跟踪参数）为键，
+   TTL 15 分钟、容量 64、`Arc<Page>` 共享。
+4. **分段读取**：`web_fetch` 新增 `start_index` / `max_chars`；输出头写明总长度
+   与本次区间，尾部给出续读参数。缓存存全文，切片在输出阶段做。
+5. **内容类型分支**：HTML / text / JSON / XML / CSV / PDF；其他二进制明确报错。
+6. **SSRF 守卫（`net_guard.rs`）**：协议白名单 + 字面量私有段/主机名黑名单 +
+   DNS 解析后逐地址检查；静态 client 的重定向策略与渲染窗口的 `on_navigation`
+   逐跳复查。`web_search` 富化抓取同样接入。
+7. **输出框架**：`# title` + 元数据头（URL / 抓取方式 / 长度区间）+ 正文；降级到
+   静态内容时在头部注明「可能不含 JS 渲染结果」。
+
+### 代价
+
+- 极少数「静态返回空壳但无 SPA 特征」的页面会停在降级内容上；判据保守，
+  宁可少渲染也不把每页拖慢数秒。
+- SSRF 检查与真正连接之间存在 DNS rebinding 窗口；单用户桌面场景不引入
+  「解析并钉死 IP」的复杂度（那需要自建连接器，绕过 reqwest 的连接池）。
+- 局域网地址（192.168/10/172.16）被拦截：`web_fetch` 不承担内网探测职责；
+  确有内网抓取需求时应由用户在客户端侧完成。
+- 新增 `pdf-extract` 依赖（纯 Rust，约增加数百 KB 二进制体积）。
+
+### 关键文件
+
+- `src-tauri/src/mcp/fetch.rs`（静态优先抓取链 + 缓存 + 渲染池 + 分段输出）
+- `src-tauri/src/net_guard.rs`（SSRF 守卫）
+- `src-tauri/src/mcp/tools.rs`（`web_fetch` schema / 参数解析）
+- `src-tauri/src/content/mod.rs`（搜索富化抓取接入守卫）
+- `docs/specs/module-mcp-tools.md`

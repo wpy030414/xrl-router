@@ -100,8 +100,10 @@ main.rs
   ├─ mcp/               MCP 工具服务器 (/mcp 端点)
   │    ├─ mod.rs        /mcp handler + 全局服务单例
   │    ├─ tools.rs      ServerHandler 实现 (web_search / web_fetch / notify)
-  │    ├─ fetch.rs      WebFetch 渲染层 (WebView + 静态回退)
+  │    ├─ fetch.rs      WebFetch 抓取层 (静态优先 + 渲染池 + 缓存 + 分段)
   │    └─ notify.rs     桌面通知工具
+  ├─ net_guard.rs        出站 URL 安全守卫 (SSRF)
+  ├─ content/            内容增强层 (正文提取/摘要/重排，MCP 工具共用)
   ├─ providers/          Provider 适配器
   │    ├─ adapter.rs     Adapter async trait
   │    ├─ anthropic.rs   AnthropicAdapter
@@ -350,7 +352,8 @@ Windows 平台去除原生标题栏，自定义红绿灯风格窗口控制按钮
 | IR 真实值覆盖估算值 | `chars/4` 估算值偏大，max 合并会永久压住真实值 |
 | 上下文超限预警而非硬拒绝 | 估算口径偏保守，硬拒绝会阻断客户端 auto-compact |
 | WebSearch/WebFetch 走本地 MCP | 旧 server-side 劫持循环体验差且复杂 |
-| WebFetch 用内置 WebView 渲染 | 不自动下载浏览器，懒创建隐藏 WebView 窗口 |
+| WebFetch 静态优先、按需渲染 | 普通页面无需 JS；内置 WebView 池只服务 SPA/反爬兜底 |
+| web_fetch 拦截内网地址 | 管理 API 只信 loopback，提示注入可借此读本地数据 (ADR-056) |
 | failover 冷却纯内存 | 与密钥健康同一哲学，不持久化不广播 |
 | 数据导出用 SQL dump | SQLite 原生语句保真度高，导入即执行 |
 | 壁纸窗口用透明 WebView | DWM 视觉合成是桌面 WorkerW 层唯一可靠渲染路径（Windows） |
@@ -419,7 +422,7 @@ xrl-router-plugin-wukong (外部进程)
 | 工具 | 功能 | 开关 |
 |------|------|------|
 | `web_search` | 本地 Bing 搜索 + 内容增强（并发抓正文生成抽取式摘要、rerank_score 0~3 重排、日期/站点/权威度元数据；`ori_question` 注入多轮意图） | `mcp_websearch` |
-| `web_fetch` | Tauri WebView 渲染页面后经 readability 提取正文再转 Markdown（低质降级整页） | `mcp_webfetch` |
+| `web_fetch` | 静态优先抓取（HTML/文本/JSON/XML/CSV/PDF）→ 正文提取转 Markdown；正文过薄或反爬时升级内置 WebView 渲染；15min 内容缓存；`start_index`/`max_chars` 分段读取 | `mcp_webfetch` |
 | `notify` | 发送系统桌面通知 | `mcp_notify` |
 
 **鉴权**：与 `/v1/*` 代理一致，`Authorization: Bearer <service-key>`（Argon2 校验）。

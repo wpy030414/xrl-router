@@ -47,12 +47,52 @@ URL: https://example.com/2
 
 ### `web_fetch`（受 `mcp_webfetch` 开关控制）
 
-- **参数**：`{ "url": string }`（required）。
-- **实现**：`mcp/fetch.rs`——**Tauri 内置 WebView 渲染**（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）：懒创建隐藏窗口（label `fetcher`，进程级保活）→ `navigate` → 轮询 `eval_with_callback` 等 `readyState == "complete"` 且资源计数稳定（SPA 渲染完成信号）→ eval 取渲染后 HTML（JS 侧先截断 ~1.5MB，防 WebView2 回传体积限制）→ **`content::readability` 提取正文子树**（剥离 nav/header/footer/aside/script 与 cookie/banner/sidebar/comment 等噪声节点，选出正文容器；提取在 `spawn_blocking` 执行，`scraper::Html` 非 Send）→ `htmd` 转 Markdown → 加 `# {title}` 头 → 截断（约 60K 字符）。
-  - **提取降级链**：quality < 0.35 或正文转出的 Markdown < 80 字符 → 退回整页 `htmd::convert`（现状行为兜底），htmd 失败再退化为原始 HTML 截断。
-- **回退**：WebView 创建失败/超时/eval 异常 → 静态抓取（`crate::http::build_http_client()`，继承系统代理），输出开头附注「WebView 渲染不可用：{原因}。以下为静态抓取内容，可能不含 JS 渲染结果」。
-- **并发**：`tokio::sync::Mutex` 串行（一次渲染一页，跨 await 持有）。
-- **错误处理**：导航失败/超时 → 工具级错误文本。
+- **参数**：`{ "url": string, "start_index"?: integer, "max_chars"?: integer }`
+  - `url` required；`start_index` 默认 0（按字符计）；`max_chars` 默认 60000，clamp 到 `[1000, 200000]`。
+- **抓取链**（`mcp/fetch.rs::fetch_url`）——**静态优先，按需渲染**：
+  1. `normalize_url`（无协议补 `https://`，仅接受 http/https）→ **SSRF 守卫**
+     （`crate::net_guard::ensure_public_url`：字面量 + DNS 解析后双重检查，拒绝
+     loopback / 私有段 / 链路本地 / 云元数据服务）；
+  2. **内容缓存**（键 = 去 fragment 与 `utm_*`/`gclid` 等跟踪参数的 URL，TTL 15min，
+     容量 64，`Arc<Page>` 共享）——重复抓取零成本；
+  3. **静态请求**（专用 client：`crate::http::build_http_client()` 继承系统代理 +
+     完整浏览器头 + `Accept: text/markdown, text/html;q=0.9, …` 内容协商 +
+     逐跳重定向守卫 + 20s 超时 + 5MB 上限）：
+     - `text/html`/`application/xhtml+xml`：`content::decode_body` 解码 →
+       `content::extract` 提取正文 → `htmd` 转 Markdown；
+     - `text/*`、`application/json`、`application/xml`、`text/csv`：直接返回
+       （JSON/XML/CSV 包代码围栏），不解析；
+     - `application/pdf`：`pdf_extract::extract_text_from_mem` 提取文本层；
+     - 其他二进制类型：工具级错误「不支持的内容类型」。
+  4. **升级渲染判定**：静态失败时按状态码决定——403/429/451/5xx 与网络错误值得
+     再试 WebView，404/410 等直接返回错误；静态成功但正文 < 400 字符**且**页面带
+     SPA 特征（`id="root"`/`__NEXT_DATA__`/`ng-version` 等）或正文 < 80 字符时升级。
+  5. **WebView 渲染**（macOS WKWebView / Windows WebView2 / Linux WebKitGTK）：
+     隐藏窗口**池**（默认 2 个，`Semaphore` 限流，Drop 归还）→ `navigate` →
+     轮询 `readyState == "complete"` 且资源计数稳定 → eval 取渲染后
+     `{ href, html }`（JS 侧截断 ~1.5MB）→ `content::extract` + `htmd`。
+     `on_navigation` 对每次导航（含 3xx）做内网闸。
+  6. **降级链**：渲染失败但静态成功 → 用静态内容并在头部注明「可能不含 JS 渲染
+     结果」；两者都失败 → 错误文本同时包含两侧原因。
+- **输出框架**：`# {title}`（有标题时）+ 元数据头（`URL` / `抓取方式` /
+  `正文: {total} 字符；本次返回 {start}–{end}`）+ 指定区间正文。截断时尾部附
+  「剩余 N 字符，可设置 `start_index={end}` 继续读取」；`start_index` 越界时明确
+  提示未返回内容。
+- **错误处理**：SSRF 拒绝、超时、非 2xx、不支持类型、PDF 无文本层 → 工具级错误文本。
+
+### SSRF 防护（`net_guard.rs`）
+
+`web_fetch` 与 `web_search` 富化抓取共用同一道闸：
+
+- **协议**：仅 `http`/`https`。
+- **字面量**：IPv4 回环/私有/链路本地（含 169.254.169.254）/CGNAT/文档保留/组播；
+  IPv6 回环/未指定/唯一本地/链路本地/组播/IPv4 映射；域名 `localhost`、`*.localhost`、
+  `*.local`、`*.internal`、`*.home.arpa`、云元数据域名。
+- **解析后**：域名先 DNS（3s 超时）解析，任一地址命中私有段即拒绝。
+- **重定向**：静态 client 的 `Policy::custom` 与渲染窗口的 `on_navigation` 逐跳复查
+  字面量。
+- **已知边界**：检查与连接之间的 DNS rebinding 窗口不设防（单用户桌面场景取舍，
+  见 ADR-056）。局域网地址一律拦截——`web_fetch` 不承担内网探测职责。
 
 ## 开关语义（设置页「路由」Tab）
 
@@ -79,7 +119,8 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 
 - `src-tauri/src/mcp/mod.rs` — `/mcp` handler（鉴权 + 委托）+ 全局服务单例 + `init()` 注入 AppState 与 AppHandle。
 - `src-tauri/src/mcp/tools.rs` — `ServerHandler` 实现（`list_tools` 按开关动态过滤 / `call_tool` 分发）+ 工具 schema + `format_search_text`。
-- `src-tauri/src/mcp/fetch.rs` — 隐藏 WebView 窗口管理 + 渲染等待轮询 + eval 提取 + 静态回退 + readability 提取 + HTML→Markdown。
+- `src-tauri/src/mcp/fetch.rs` — 静态优先抓取链 + 内容缓存 + 渲染池 + 内容类型分支 + 分段输出。
+- `src-tauri/src/net_guard.rs` — SSRF 守卫（字面量 + DNS 解析后检查，重定向复用）。
 - `src-tauri/src/content/` — 内容增强层（search 富化与 fetch 提取共用）：
   - `mod.rs` — `enrich_search_results` 编排（预排选候选 + JoinSet 并发抓取 + TTL 缓存）
   - `readability.rs` — trafilatura-lite 正文提取（prune + 自底向上打分选正文 + 元数据 + 质量分 + 编码解码）
@@ -96,6 +137,7 @@ server-side 工具归一化（`from_messages.rs` / `from_responses.rs`：`web_se
 - `rmcp`（MCP Rust SDK）：`server` + `macros` + `transport-streamable-http-server`。
 - Tauri 内置 WebView（`tauri::WebviewWindow` + `eval_with_callback`）——无额外浏览器依赖，见 ADR-038。
 - `htmd`（HTML → Markdown）。
+- `pdf-extract`（PDF 文本层提取，纯 Rust）。
 - `scraper`（HTML CSS 选择器解析，readability 提取复用）+ `ego-tree`（scraper 的 DOM 树类型 NodeId/NodeMut，原地 detach 修剪）+ `encoding_rs`（非 UTF-8 中文页面 GBK/GB2312 解码）。
 
 > rmcp 的 `StreamableHttpService` 泛型接受任意 `http_body::Body`，返回 `BoxBody`，可直接嵌入 axum 0.7 handler，无需升级 0.8。
