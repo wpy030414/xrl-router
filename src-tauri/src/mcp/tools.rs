@@ -490,6 +490,18 @@ mod tests {
     }
 
     #[test]
+    fn test_web_fetch_schema_has_pagination_params() {
+        let schema = web_fetch_tool().input_schema;
+        // 仅 url 必填；start_index / max_chars 可选
+        assert_eq!(schema["required"][0].as_str(), Some("url"));
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("url"));
+        assert!(props.contains_key("start_index"));
+        assert!(props.contains_key("max_chars"));
+        assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
+    }
+
+    #[test]
     fn test_format_search_text() {
         let results = vec![
             crate::content::EnrichedResult {

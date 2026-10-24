@@ -975,6 +975,38 @@ mod tests {
         assert!(out.contains("start_index 超出正文长度"));
     }
 
+    /// 真实网络端到端：静态抓取 → 正文提取 → 分段读取 → 缓存命中 → SSRF 拒绝。
+    /// 默认 `#[ignore]`（依赖外网），手动触发：
+    /// `cargo test --lib e2e_static_fetch -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "需要真实网络访问 example.com"]
+    async fn e2e_static_fetch_real_network() {
+        let out = fetch_url("https://example.com", 0, DEFAULT_MAX_CHARS)
+            .await
+            .expect("static fetch should succeed");
+        assert!(out.contains("> 抓取方式: 静态抓取"), "output: {out}");
+        assert!(out.contains("Example Domain"), "output: {out}");
+        assert!(out.contains("> URL: https://example.com/"), "output: {out}");
+
+        // 缓存命中：第二次调用不应改变内容
+        let again = fetch_url("https://example.com", 0, DEFAULT_MAX_CHARS)
+            .await
+            .expect("cached fetch should succeed");
+        assert_eq!(out, again);
+
+        // 分段读取：从中间开始，头部标注区间
+        let tail = fetch_url("https://example.com", 100, 1000)
+            .await
+            .expect("sliced fetch should succeed");
+        assert!(tail.contains("本次返回 100–"), "output: {tail}");
+
+        // SSRF：本机管理端点必须被拒绝
+        let err = fetch_url("http://127.0.0.1:19068/api/settings", 0, 1000)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("不允许抓取"), "error: {err}");
+    }
+
     #[test]
     fn test_cache_put_get_and_ttl() {
         let key = "https://cache.test/ttl";
